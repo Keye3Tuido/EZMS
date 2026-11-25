@@ -1,0 +1,160 @@
+function makeProofFormat() {
+  const coordinate = (v,w) => `${String.fromCharCode(65 + v % w)}${Math.floor(v / w) + 1}`;
+
+  function label(cells,w,h,visible) {
+    const vs = [...cells].sort((a,b) => a-b);
+    if (vs.length <= 1) return vs.length ? coordinate(vs[0],w) : '';
+    const x = vs.map(v => v%w), y = vs.map(v => Math.floor(v/w));
+    const left = Math.min(...x), right = Math.max(...x), top = Math.min(...y), bottom = Math.max(...y);
+    const targets = new Set(vs);
+    for (let r=top; r<=bottom; r++) for (let c=left; c<=right; c++) {
+      const v=r*w+c;
+      if (!targets.has(v) && !(visible?.[v]>=0)) return vs.map(v => coordinate(v,w)).join('');
+    }
+    if (left === 0 && right === w-1 && top === 0 && bottom === h-1) return '全盘';
+    if (left === 0 && right === w-1 && top === bottom) return `第${top+1}行`;
+    if (top === 0 && bottom === h-1 && left === right) return `${String.fromCharCode(65+left)}列`;
+    return `${coordinate(top*w+left,w)}:${coordinate(bottom*w+right,w)}`;
+  }
+
+  function regions(cells,w,h,visible) {
+    const remaining=new Set(cells);
+    const targets=new Set(remaining);
+    const result=[];
+    while (remaining.size>1) {
+      let best;
+      // For each row span, find runs of columns containing only targets or open gaps.
+      for (let top=0; top<h; top++) {
+        const counts=Array(w).fill(0);
+        for (let bottom=top; bottom<h; bottom++) {
+          let left=-1, right=-1, count=0;
+          for (let c=0; c<=w; c++) {
+            if (c<w && counts[c]>=0) {
+              const v=bottom*w+c;
+              if (remaining.has(v)) counts[c]++;
+              else if (!(visible?.[v]>=0) || targets.has(v)) counts[c]=-1;
+            }
+            if (c<w && counts[c]>=0) {
+              if (counts[c]) {
+                if (left<0) left=c;
+                right=c;
+                count+=counts[c];
+              }
+            } else {
+              const area=(bottom-top+1)*(right-left+1);
+              if (count>1 && (!best || count>best.count || (count===best.count && area<best.area))) {
+                best={top,bottom,left,right,count,area};
+              }
+              left=right=-1;
+              count=0;
+            }
+          }
+        }
+      }
+      if (!best) break;
+      const group=[];
+      for (let r=best.top; r<=best.bottom; r++) for (let c=best.left; c<=best.right; c++) {
+        const v=r*w+c;
+        if (remaining.delete(v)) group.push(v);
+      }
+      result.push(group);
+    }
+    for (const v of remaining) result.push([v]);
+    return result.sort((a,b)=>a[0]-b[0]);
+  }
+
+  function terms(raw,groups) {
+    const weights = new Map(raw);
+    const result = [];
+    for (const group of groups) {
+      const c = weights.get(group[0]);
+      if (!c || !group.every(v => weights.get(v) === c)) continue;
+      result.push({coefficient:c,cells:group});
+      for (const v of group) weights.delete(v);
+    }
+    for (const [v,c] of weights) if (c) result.push({coefficient:c,cells:[v]});
+    return result.sort((a,b) => a.cells[0]-b.cells[0]);
+  }
+
+  function conclusionGroups(raw,groups,w,h,visible) {
+    if (!raw.length || !raw.every(([,c])=>c===raw[0][1])) return groups;
+    const rectangles=regions(raw.map(([v])=>v),w,h,visible).filter(group=>group.length>1);
+    const merged=new Set(rectangles.flat());
+    return [...rectangles,...groups.map(group=>group.filter(v=>!merged.has(v))).filter(group=>group.length>1)];
+  }
+
+  const relation = (sign,rhs) => ({sign,constant:Math.abs(rhs),constantFirst:rhs<0});
+
+  function comparison(raw,sign,rhs,groups) {
+    const shown=relation(sign,rhs);
+    return {...shown,terms:terms(shown.constantFirst ? raw.map(([v,c])=>[v,-c]) : raw,groups)};
+  }
+
+  function referenceTerms(refs,resultReflected=false) {
+    const totals=new Map();
+    for (const {id,k,reflected} of refs) totals.set(id,(totals.get(id)??0)+k*(reflected?-1:1));
+    return [...totals].filter(([,k])=>k).map(([id,k])=>({id,k:resultReflected?-k:k}))
+      .sort((a,b)=>Number(b.k>0)-Number(a.k>0))
+      .map(({id,k},i)=>({id,operator:k<0?'−':i?'+':'',factor:Math.abs(k)===1?'':String(Math.abs(k))}));
+  }
+
+  function summands(node) {
+    // A rounded bound is a new premise, not another sum of clue regions.
+    return node.kind==='sum' ? [...summands(node.a),...summands(node.b)] : [node];
+  }
+
+  function cancellation(inputs,reflected=false) {
+    const covered=new Map();
+    for (const terms of inputs) for (const [cell,weight] of terms) {
+      if (!weight) continue;
+      const c=reflected?-weight:weight;
+      const area=covered.get(cell)??{net:0,both:0};
+      area.net+=c;
+      area.both|=c>0?1:2;
+      covered.set(cell,area);
+    }
+    const result={cancelled:[],positive:[],negative:[]};
+    for (const [cell,{net,both}] of covered) {
+      if (net>0) result.positive.push(cell);
+      else if (net<0) result.negative.push(cell);
+      else if (both===3) result.cancelled.push(cell);
+    }
+    return result;
+  }
+
+  function weightedBound(move,reflected,exact) {
+    const raw=move.inequality.terms;
+    if (!move.slack) {
+      // A same-sign equality at its extremum already fixes every term.
+      if (exact && raw.every(([,c])=>move.value ? c<0 : c>0)) return null;
+      return reflected
+        ? {terms:raw.map(([v,c])=>[v,-c]),sign:'≤',rhs:-move.min}
+        : {terms:raw,sign:'≥',rhs:move.min};
+    }
+    // All other terms can contribute no less than their combined minimum.
+    const targets=new Set(move.vs);
+    const terms=raw.filter(([v])=>targets.has(v)).map(([v,c])=>[v,Math.abs(c)]);
+    return move.value
+      ? {terms,sign:'≥',rhs:terms.reduce((area,[,c])=>area+c,0)-move.slack}
+      : {terms,sign:'≤',rhs:move.slack};
+  }
+
+  function extremumNotes({terms,sign,rhs},value) {
+    const upper=sign==='≤';
+    const positive=terms.reduce((sum,[,c])=>sum+Math.max(0,c),0);
+    const negative=terms.reduce((sum,[,c])=>sum+Math.max(0,-c),0);
+    const capacity=[positive?`加项最多 ${positive}`:'',negative?`减项最多 ${negative}`:''];
+    if (upper && negative) capacity[1]='减项最少 0';
+    if (!upper && positive) capacity[0]='加项最少 0';
+    const part=upper===Boolean(value)?'加项':'减项';
+    const violation=value?'有一格无雷':'有一格有雷';
+    const deduction=`达到${upper?'上':'下'}界；${part}若${violation}，算式就${upper?'小':'大'}于 ${rhs}`;
+    return {capacity:capacity.filter(Boolean).join('，'),deduction};
+  }
+
+  const rounding = reflected => reflected ? '向上取整' : '向下取整';
+
+  return {coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding};
+}
+
+if (typeof module !== 'undefined') module.exports = makeProofFormat();

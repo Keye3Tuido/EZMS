@@ -1,0 +1,235 @@
+function makeMarkHistory() {
+  const layers={red:new Map(),blue:new Map()}, past=[], future=[];
+  function write(change,undo=false) {
+    for(const [color,cell,before,after] of change) {
+      const value=undo?before:after;
+      if(value) layers[color].set(cell,value); else layers[color].delete(cell);
+    }
+  }
+  function edit(color,entries) {
+    const change=[];
+    for(const [cell,after] of entries) {
+      const before=layers[color].get(cell);
+      if(before?.symbol!==after?.symbol || before?.level!==after?.level) change.push([color,cell,before,after]);
+    }
+    if(!change.length) return false;
+    write(change); past.push(change); future.length=0; return true;
+  }
+  return {
+    layers,edit,
+    clear(color) {return edit(color,[...layers[color].keys()].map(i=>[i]));},
+    clearHighest() {
+      const advanced=[...layers.blue].filter(([,m])=>m.level>1);
+      const highest=advanced.reduce((n,[,m])=>Math.max(n,m.level),0);
+      return edit('blue',advanced.filter(([,m])=>m.level===highest && ['ʌ','//'].includes(m.symbol)).map(([i])=>[i]));
+    },
+    get canUndo() {return !!past.length;}, get canRedo() {return !!future.length;},
+    undo() {if(past.length) {const change=past.pop();write(change,true);future.push(change);}},
+    redo() {if(future.length) {const change=future.pop();write(change);past.push(change);}}
+  };
+}
+
+function makeManualBatch(state,flags,selectTargets) {
+  const targets=selectTargets(state,flags), marked=new Map();
+  return {
+    marked,
+    get total() {return targets.size;},
+    get done() {return targets.size>0 && marked.size===targets.size;},
+    record(cells,kind) {
+      const wrong=cells.find(i=>state[i]!==kind);
+      if(wrong!==undefined) return {wrong,state:state[wrong]};
+      for(const i of cells) if(targets.has(i)) marked.set(i,kind);
+      return {done:targets.size>0 && marked.size===targets.size,total:targets.size};
+    },
+    cells(kind) {return [...marked].filter(([,value])=>value===kind).map(([i])=>i).sort((a,b)=>a-b);}
+  };
+}
+
+function inkTrails(cells,width) {
+  const all=new Set([...cells].sort((a,b)=>a-b)), paths=[];
+  const neighbors=i=>[...(i%width?[i-1]:[]),...(i%width<width-1?[i+1]:[]),i-width,i+width].filter(v=>all.has(v));
+  const closes=trail=>trail.length>2 && neighbors(trail[0]).includes(trail.at(-1));
+  for(const start of all) {
+    const component=[start], seen=new Set(component);
+    for(const i of component) for(const v of neighbors(i)) if(!seen.has(v)) {seen.add(v);component.push(v);}
+    const edges=component.flatMap(i=>neighbors(i).filter(v=>i<v).map(v=>[i,v]));
+    edges.sort(([a,b],[c,d])=>neighbors(a).length+neighbors(b).length-neighbors(c).length-neighbors(d).length || a-c || b-d);
+    const links=new Map(component.map(i=>[i,[]]));
+    const wouldCycle=(a,b)=>{
+      let previous=-1;
+      while(a!==undefined) {
+        if(a===b) return true;
+        const next=links.get(a).find(i=>i!==previous);
+        previous=a; a=next;
+      }
+      return false;
+    };
+    const ends=(a,b)=>links.get(a).length<2 && links.get(b).length<2 && !wouldCycle(a,b);
+    const append=(a,b)=>{links.get(a).push(b);links.get(b).push(a);};
+    const take=()=>{
+      const used=new Set(), result=[];
+      for(const i of component) if(links.get(i).length<2 && !used.has(i)) {
+        const trail=[];
+        for(let v=i;v!==undefined;v=links.get(v).find(x=>!used.has(x))) {used.add(v);trail.push(v);}
+        result.push(trail);
+      }
+      return result.sort((a,b)=>b.length-a.length);
+    };
+    const better=(a,b)=>{
+      if(a.length!==b.length) return a.length<b.length;
+      const first=a.findIndex((path,i)=>path.length!==b[i].length);
+      return first>=0 ? a[first].length>b[first].length : a.filter(closes).length>b.filter(closes).length;
+    };
+    let best=component.map(i=>[i]);
+    for(const order of [edges,[...edges].sort(([a,b],[c,d])=>Number(a+1!==b)-Number(c+1!==d)),
+      [...edges].sort(([a,b],[c,d])=>Number(a+1===b)-Number(c+1===d)),[...edges].reverse()]) {
+      for(const i of component) links.get(i).length=0;
+      for(const [a,b] of order) if(ends(a,b)) append(a,b);
+      const result=take(); if(better(result,best)) best=result;
+      if(best.length===1 && closes(best[0])) break;
+    }
+    // Large components use bounded search so ink stays responsive during play.
+    if(best.length>1) {
+      for(const i of component) links.get(i).length=0;
+      let remaining=component.length<=18?100000:4000;
+      const improve=(at,count)=>{
+        if(--remaining<0 || best.length===1 || count+edges.length-at<=component.length-best.length) return;
+        if(count>component.length-best.length) best=take();
+        if(at===edges.length || best.length===1) return;
+        const [a,b]=edges[at];
+        if(ends(a,b)) {append(a,b);improve(at+1,count+1);links.get(a).pop();links.get(b).pop();}
+        improve(at+1,count);
+      };
+      improve(0,0);
+    }
+    for(const cells of best) paths.push({cells,closed:closes(cells)});
+    for(const i of component) all.delete(i);
+  }
+  return paths;
+}
+
+function inkPath(points,tile,offset=0,closed=false) {
+  const unit=([x,y],[u,v])=>[Math.sign(u-x),Math.sign(v-y)];
+  const move=([x,y],[u,v],distance)=>[x+u*distance,y+v*distance];
+  const parallel=(p,[x,y])=>move(p,[-y,x],offset);
+  const extent=tile*.33;
+  if(points.length===1) {
+    const [x,y]=points[0];
+    return `M${x-extent},${y+offset}H${x+extent}`;
+  }
+  const sides=points.slice(1).map((p,i)=>unit(points[i],p));
+  if(closed) sides.push(unit(points.at(-1),points[0]));
+  const start=sides[0],last=sides.at(-1);
+  const radius=tile*.27;
+  let d=`M${move(parallel(points[0],start),start,closed?radius:-extent)}`;
+  for(let i=1;i<(closed?points.length+1:points.length-1);i++) {
+    const at=i%points.length, before=sides[i-1], after=sides[at];
+    if(before[0]===after[0] && before[1]===after[1]) continue;
+    const p=points[at], corner=parallel(parallel(p,before),after);
+    const a=move(parallel(p,before),before,-radius), b=move(parallel(p,after),after,radius);
+    d+=`L${a}Q${corner} ${b}`;
+  }
+  return closed?d+'Z':d+`L${move(parallel(points.at(-1),last),last,extent)}`;
+}
+
+if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,inkTrails,inkPath});
+
+function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
+  const flower=$('markFlower'), launcher=$('markMenu');
+  const rows=[[['x','拟定为雷'],['o','拟推为雷'],['v','拟定为雷'],['ʌ','拟推为雷'],['+','提高层级']],
+    [['s','拟定安全'],['/','拟推安全'],['e','拟定安全'],['//','拟推安全'],['−','降低层级']]];
+  const advanced=s=>['v','ʌ','e','//'].includes(s), buttons=new Map();
+  let selected='',level=2,hold,suppress;
+  function history() {
+    const notes=getGame()?.notes;
+    $('markHistory').hidden=flower.inert && !selected;
+    $('undoMark').disabled=!notes?.canUndo;
+    $('redoMark').disabled=!notes?.canRedo;
+  }
+  function refresh() {
+    for(const [symbol,{button,label}] of buttons) {
+      const rank=advanced(symbol)?level:0;
+      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${symbol}${rank?`<sub>${rank}</sub>`:''}`;
+      button.title=button.ariaLabel=rank?`第 ${rank} 层：${label}`:label;
+      if(!['+','−','cursor'].includes(symbol)) button.setAttribute('aria-pressed',String(selected===symbol));
+    }
+    $('board').classList.toggle('writing-ink',!!selected);
+    history();
+  }
+  function close() {selected='';menu('mark',false);refresh();}
+  function bindHold(button,action,click) {
+    function cancel() {
+      if(hold?.button!==button) return;
+      clearTimeout(hold.timer); hold=undefined; button.classList.remove('holding');
+    }
+    button.onpointerdown=e=>{
+      if(e.button!==0 || !e.isPrimary || !canAct()) return;
+      suppress=undefined;
+      const timer=setTimeout(()=>{
+        suppress=button; button.classList.remove('holding'); if(canAct()) action();
+      },650);
+      hold={button,timer,id:e.pointerId,x:e.clientX,y:e.clientY};
+      button.classList.add('holding');button.setPointerCapture(e.pointerId);
+    };
+    button.onpointermove=e=>{
+      if(hold?.button===button && hold.id===e.pointerId && Math.hypot(e.clientX-hold.x,e.clientY-hold.y)>9) {suppress=button;cancel();}
+    };
+    button.onpointerup=button.onpointercancel=button.onlostpointercapture=cancel;
+    button.oncontextmenu=e=>e.preventDefault();
+    button.onclick=e=>{
+      const blocked=e.detail!==0 && suppress===button;
+      suppress=undefined;
+      if(!blocked) click();
+    };
+  }
+  function add(symbol,label,root,arc) {
+    const button=document.createElement('button');
+    button.type='button'; button.className=arc?'orb mark-option':'orb black center'; button.dataset.ink=symbol;
+    if(arc) for(const [name,value] of Object.entries(arc)) button.style.setProperty(`--${name}`,value);
+    buttons.set(symbol,{button,label}); root.append(button);
+    const activate=()=>{
+      if(symbol==='cursor') {close();say('');launcher.focus({preventScroll:true}); return;}
+      if(!canAct()) return;
+      if(symbol==='+' || symbol==='−') {level=Math.min(99,Math.max(2,level+(symbol==='+'?1:-1)));say(`拟定层级 ${level}`);}
+      else {
+        selected=symbol;say(button.title);
+        menu('mark',false);
+        const board=$('board');
+        board.querySelector('[tabindex="0"]')?.focus({preventScroll:true});
+      }
+      refresh();
+    };
+    if(symbol==='−') bindHold(button,()=>{if(getGame().notes.clearHighest()) changed();history();},activate);
+    else button.onclick=activate;
+  }
+  add('cursor','返回游玩',flower);
+  const points=[[42,-103],[84,-74],[109,-27],[109,27],[84,74]];
+  for(const [side,row] of rows.entries()) for(const [i,[symbol,label]] of row.entries()) {
+    const [x,y]=points[i];
+    add(symbol,label,flower,{x:`${side?x:-x}px`,y:`${y}px`,i:i+1});
+  }
+  bindHold(launcher,()=>{
+    if(getGame().notes.clear('blue')) {changed();say('已清空蓝色记号。');}
+    history();
+  },()=>{
+    if(!canAct()) return;
+    if(!flower.inert) {close();return;}
+    closeReason();
+    menu('mark',true);refresh();buttons.get('x').button.focus({preventScroll:true});
+  });
+  function stamp(i,erase=false) {
+    if(!selected && (flower.inert || !erase)) return false;
+    if(canAct()) {
+      const g=getGame(), notes=g.notes;
+      g.focus=i;
+      const existing=notes.layers.blue.get(i), levelForMark=advanced(selected)?level:0;
+      const mark=erase || existing?.symbol===selected && existing?.level===levelForMark?undefined:{symbol:selected,level:levelForMark};
+      notes.edit('blue',[[i,mark]]);changed();history();
+    }
+    return true;
+  }
+  $('undoMark').onclick=()=>{if(canAct()) {getGame().notes.undo();changed();history();}};
+  $('redoMark').onclick=()=>{if(canAct()) {getGame().notes.redo();changed();history();}};
+  refresh();
+  return {close,reset:()=>{level=2;close();},stamp,erase:i=>stamp(i,true),get writing(){return !!selected;}};
+}
