@@ -1,11 +1,17 @@
 function makeProofFormat() {
-  const coordinate = (v,w) => `${String.fromCharCode(65 + v % w)}${Math.floor(v / w) + 1}`;
+  function column(n) {
+    let label='';
+    for(n++;n>0;n=Math.floor((n-1)/26)) label=String.fromCharCode(65+(n-1)%26)+label;
+    return label;
+  }
+  const coordinate = (v,w) => `${column(v%w)}${Math.floor(v/w)+1}`;
 
   function label(cells,w,h,visible) {
     const vs = [...cells].sort((a,b) => a-b);
     if (vs.length <= 1) return vs.length ? coordinate(vs[0],w) : '';
-    const x = vs.map(v => v%w), y = vs.map(v => Math.floor(v/w));
-    const left = Math.min(...x), right = Math.max(...x), top = Math.min(...y), bottom = Math.max(...y);
+    let left=w,right=0;
+    const top=Math.floor(vs[0]/w), bottom=Math.floor(vs.at(-1)/w);
+    for(const v of vs) {left=Math.min(left,v%w);right=Math.max(right,v%w);}
     const targets = new Set(vs);
     for (let r=top; r<=bottom; r++) for (let c=left; c<=right; c++) {
       const v=r*w+c;
@@ -13,7 +19,7 @@ function makeProofFormat() {
     }
     if (left === 0 && right === w-1 && top === 0 && bottom === h-1) return '全盘';
     if (left === 0 && right === w-1 && top === bottom) return `第${top+1}行`;
-    if (top === 0 && bottom === h-1 && left === right) return `${String.fromCharCode(65+left)}列`;
+    if (top === 0 && bottom === h-1 && left === right) return `${column(left)}列`;
     return `${coordinate(top*w+left,w)}:${coordinate(bottom*w+right,w)}`;
   }
 
@@ -154,7 +160,7 @@ function makeProofFormat() {
 
   const rounding = reflected => reflected ? '向上取整' : '向下取整';
 
-  return {coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding};
+  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding};
 }
 
 if (typeof module !== 'undefined') module.exports = makeProofFormat();

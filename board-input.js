@@ -45,6 +45,11 @@ function makeManualBatch(state,flags,selectTargets) {
   };
 }
 
+// A staged step has exactly two UI phases: collect every red mark, then commit the complete batch.
+function manualStepAction(batch) {
+  return batch?.done ? 'commit' : 'stage';
+}
+
 function inkTrails(cells,width) {
   const all=new Set([...cells].sort((a,b)=>a-b)), paths=[];
   const neighbors=i=>[...(i%width?[i-1]:[]),...(i%width<width-1?[i+1]:[]),i-width,i+width].filter(v=>all.has(v));
@@ -75,8 +80,22 @@ function inkTrails(cells,width) {
       }
       return result.sort((a,b)=>b.length-a.length);
     };
+    const direction=(a,b)=>[Math.sign(b%width-a%width),Math.sign(Math.floor(b/width)-Math.floor(a/width))];
+    const turns=(trail,closed)=>{
+      if(trail.length<3) return 0;
+      const edges=trail.slice(1).map((v,i)=>direction(trail[i],v));
+      if(closed) edges.push(direction(trail.at(-1),trail[0]));
+      let count=0;
+      for(let i=1;i<edges.length;i++) if(edges[i][0]!==edges[i-1][0] || edges[i][1]!==edges[i-1][1]) count++;
+      if(closed && edges.length>1 && (edges[0][0]!==edges.at(-1)[0] || edges[0][1]!==edges.at(-1)[1])) count++;
+      return count;
+    };
     const better=(a,b)=>{
       if(a.length!==b.length) return a.length<b.length;
+      const ac=a.filter(closes), bc=b.filter(closes);
+      if(ac.length!==bc.length) return ac.length>bc.length;
+      const at=ac.reduce((sum,path)=>sum+turns(path,true),0), bt=bc.reduce((sum,path)=>sum+turns(path,true),0);
+      if(at!==bt) return at<bt;
       const first=a.findIndex((path,i)=>path.length!==b[i].length);
       return first>=0 ? a[first].length>b[first].length : a.filter(closes).length>b.filter(closes).length;
     };
@@ -86,16 +105,19 @@ function inkTrails(cells,width) {
       for(const i of component) links.get(i).length=0;
       for(const [a,b] of order) if(ends(a,b)) append(a,b);
       const result=take(); if(better(result,best)) best=result;
-      if(best.length===1 && closes(best[0])) break;
     }
     // Large components use bounded search so ink stays responsive during play.
-    if(best.length>1) {
+    if(component.length<=18 || best.length>1) {
       for(const i of component) links.get(i).length=0;
-      let remaining=component.length<=18?100000:4000;
+      let remaining=component.length<=18?120000:4000;
       const improve=(at,count)=>{
-        if(--remaining<0 || best.length===1 || count+edges.length-at<=component.length-best.length) return;
-        if(count>component.length-best.length) best=take();
-        if(at===edges.length || best.length===1) return;
+        if(--remaining<0) return;
+        if(count>=component.length-best.length) {
+          const result=take();
+          if(better(result,best)) best=result;
+        }
+        if(at===edges.length) return;
+        if(count+edges.length-at<component.length-best.length) return;
         const [a,b]=edges[at];
         if(ends(a,b)) {append(a,b);improve(at+1,count+1);links.get(a).pop();links.get(b).pop();}
         improve(at+1,count);
@@ -132,7 +154,7 @@ function inkPath(points,tile,offset=0,closed=false) {
   return closed?d+'Z':d+`L${move(parallel(points.at(-1),last),last,extent)}`;
 }
 
-if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,inkTrails,inkPath});
+if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,manualStepAction,inkTrails,inkPath});
 
 function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   const flower=$('markFlower'), launcher=$('markMenu');
@@ -193,9 +215,6 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
       if(symbol==='+' || symbol==='−') {level=Math.min(99,Math.max(2,level+(symbol==='+'?1:-1)));say(`拟定层级 ${level}`);}
       else {
         selected=symbol;say(button.title);
-        menu('mark',false);
-        const board=$('board');
-        board.querySelector('[tabindex="0"]')?.focus({preventScroll:true});
       }
       refresh();
     };

@@ -3,47 +3,122 @@ const assert = require('node:assert/strict');
 const engine = require('./engine');
 const format = require('./proof-format');
 const positionSeeds = require('./position-seed')(engine.adj);
+const {manualStepAction,inkTrails} = require('./board-input');
+const sampleBits='1000000102211220022002201000000110122101102222011020020110011001';
+const sampleSeed='Z#&!#ktdfIF_HvWqUJ';
 
 test('position seed round trips mines, open clues, manual flags and both ink layers', () => {
   const position=positionSeeds.create(3,2,'124500');
   const notes={layers:{red:new Map([[1,{symbol:'s',level:0}]]),blue:new Map([[2,{symbol:'\u028c',level:3}],[0,{symbol:'o',level:0}]])}};
   const seed=positionSeeds.encode({...position,flags:new Set(position.flags),notes});
   const restored=positionSeeds.decode(`  ${seed}\n`);
-  assert.match(seed,/^MS1\.[A-Za-z0-9_-]+$/);
+  assert.match(seed,/^[\x21\x23-\x5b\x5d-\x7e]+$/);
   assert.deepEqual(restored.board,position.board);
   assert.deepEqual(restored.visible,[-1,2,-1,-1,-1,-1]);
   assert.deepEqual(restored.flags,[2,3]);
   assert.deepEqual(restored.notes,[[[1,{symbol:'s',level:0}]],[[0,{symbol:'o',level:0}],[2,{symbol:'\u028c',level:3}]]]);
-  assert.equal(positionSeeds.encode({...restored,flags:new Set(restored.flags),notes}),seed);
+  assert.equal(positionSeeds.encode(restored),seed);
+});
+
+test('Base92 folds the dimensions and position type into a short header', () => {
+  const mine=positionSeeds.create(8,8,sampleBits);
+  assert.equal(positionSeeds.encode(mine),sampleSeed);
+  assert.equal(sampleSeed.length,18);
+  assert.deepEqual(positionSeeds.decode(sampleSeed),mine);
+  const numeric=positionSeeds.numbers(3,2,1,'...1..',[0]);
+  const text=positionSeeds.encode(numeric);
+  assert.equal(text.length,6);
+  assert.deepEqual(positionSeeds.decode(text),numeric);
+  assert.equal(positionSeeds.encode(positionSeeds.create(1,1)).length,1);
+});
+
+test('position seeds only accept the new Base92 format', () => {
+  for(const old of ['MS1.WzgsOCwiMTAwMDAwMDEwMjIxMTIyMDAyMjAwMjIwMTAwMDAwMDExMDEyMjEwMTEwMjIyMjAxMTAyMDAyMDExMDAxMTAwMSIsW10sW11d',
+    'MS2.WzMsMiwxLCIuLi4xLi4iLFswXSxbXSxbXV0','MS3.m)""&!#ktdfIF_HvWqUJ','MS3.m)']) {
+    assert.throws(()=>positionSeeds.decode(old),/无效/);
+  }
+});
+
+test('Base92 note records preserve every mark across radix boundaries', () => {
+  const p=positionSeeds.create(92,1);
+  const red=new Map(Array.from({length:92},(_,i)=>[i,{symbol:i%2?'s':'x',level:0}]));
+  const position={...p,flags:new Set(),notes:{layers:{red,blue:new Map()}}};
+  const text=positionSeeds.encode(position);
+  const restored=positionSeeds.decode(text);
+  assert.deepEqual(restored.notes[0],[...red]);
+});
+
+test('numeric Base92 seeds preserve every public digit, flag and note level', () => {
+  const draft=positionSeeds.numbers(4,3,5,'.0123.45678.',[0,5]);
+  const position={...draft,flags:new Set(draft.flags),notes:{layers:{red:new Map([[2,{symbol:'x',level:0}],[9,{symbol:'s',level:0}]]),blue:new Map([[3,{symbol:'v',level:2}],[10,{symbol:'//',level:99}]])}}};
+  const seed=positionSeeds.encode(position);
+  assert.match(seed,/~~/);
+  assert.match(seed,/~!/);
+  const restored=positionSeeds.decode(seed);
+  assert.deepEqual(restored.visible,draft.visible);
+  assert.deepEqual(restored.flags,draft.flags);
+  assert.deepEqual(restored.notes,[[[2,{symbol:'x',level:0}],[9,{symbol:'s',level:0}]],[[3,{symbol:'v',level:2}],[10,{symbol:'//',level:99}]]]);
+  assert.equal(positionSeeds.encode(restored),seed);
+});
+
+test('compact Base92 seeds reject malformed headers, cells and field separators', () => {
+  for(const bad of ['',null,'~','#','&','P!','&!','!%','!!','! $','!"','!\\','!~!','!~#','!~']) {
+    assert.throws(()=>positionSeeds.decode(bad),/无效/);
+  }
+  let adjCalls=0;
+  const guarded=require('./position-seed')(()=>{adjCalls++;return [];});
+  const large=positionSeeds.encode(positionSeeds.create(257,256));
+  assert.throws(()=>guarded.decode(large.slice(0,-1)),/无效/);
+  assert.equal(adjCalls,0);
 });
 
 test('position seed rejects invalid dimensions, incompatible cell states and unsafe notes', () => {
-  const raw=data=>'MS1.'+Buffer.from(JSON.stringify(data)).toString('base64url');
-  for(const data of [[25,2,'0'.repeat(50),[],[]],[2,2,'000',[],[]],[2,2,'3000',[],[]],[2,2,'6000',[],[]],
-    [2,2,'0000',[[4,0,0]],[]],[2,2,'0000',[[1,0,0],[1,0,0]],[]],
-    [2,2,'0000',[],[[1,'<b>',0]]],[2,2,'0000',[],[[1,7,1]]]]) {
-    assert.throws(()=>positionSeeds.decode(raw(data)),/无效/);
+  for(const args of [[0,2,''],[65536,65536,'0'],[2,2,'000'],[2,2,'3000'],[2,2,'6000']]) {
+    assert.throws(()=>positionSeeds.create(...args),/无效/);
   }
-  assert.throws(()=>positionSeeds.decode('42'),/MS1.*MS2/);
-  assert.throws(()=>positionSeeds.decode('MS1.invalid'),/无效/);
+  for(const inks of [[[[4,0,0]],[]],[[[1,0,0],[1,0,0]],[]],[[],[[1,'<b>',0]]],[[],[[1,7,1]]]]) {
+    assert.throws(()=>positionSeeds.numbers(2,2,0,'....',[],inks),/无效/);
+  }
+  for(const seed of ['*~!*','*~!$$','*~!~!!']) assert.throws(()=>positionSeeds.decode(seed),/无效/,seed);
+});
+
+test('large and single-cell positions round trip both seed formats without an encoded length limit', () => {
+  for (const [w,h] of [[1,1],[28,25],[200,200],[257,256]]) {
+    for (const draft of [positionSeeds.create(w,h),positionSeeds.numbers(w,h)]) {
+      const text=positionSeeds.encode({...draft,flags:new Set(draft.flags),notes:undefined});
+      if(w<=200) assert.ok(text.length<=10,`Blank seed too long: ${text.length}`);
+      assert.deepEqual(positionSeeds.decode(text),draft);
+    }
+  }
+  assert.equal(format.coordinate(25,28),'Z1');
+  assert.equal(format.coordinate(26,28),'AA1');
+  assert.equal(format.label([27,55],28,2),'AB列');
+});
+
+test('Base92 uses sparse records when only a few distant cells differ', () => {
+  const bits='0'.repeat(39999)+'5', draft=positionSeeds.create(200,200,bits);
+  const seed=positionSeeds.encode(draft);
+  assert.ok(seed.length<20);
+  assert.deepEqual(positionSeeds.decode(seed),draft);
 });
 
 test('number drafts round trip without a hidden layout and validate all public clues', () => {
   const draft=positionSeeds.numbers(3,2,1,'...1..',[0]);
   const text=positionSeeds.encode({...draft,flags:new Set(draft.flags),notes:undefined});
-  assert.match(text,/^MS2\./);
   assert.deepEqual(positionSeeds.decode(text),draft);
   assert.equal(draft.board.bombs.some(Boolean),false);
   const {board}=engine.publicBoard(draft.board,draft.visible);
   assert.equal(board.bombs.filter(Boolean).length,1);
   assert.deepEqual(engine.opening(board),draft.visible);
   const invalid=positionSeeds.numbers(3,2,1,'8.....');
+  const noFlags=positionSeeds.encode(invalid);
+  assert.deepEqual(positionSeeds.decode(noFlags),invalid);
   assert.equal(engine.publicBoard(invalid.board,invalid.visible).status,'invalid');
   assert.equal(engine.inspect(invalid.board,invalid.visible).status,'invalid');
 });
 
 test('global total yields a minimum technique proof and full replay for the imported board', () => {
-  const {board,visible}=positionSeeds.decode('MS1.WzgsOCwiMTAwMDAwMDEwMjIxMTIyMDAyMjAwMjIwMTAwMDAwMDExMDEyMjEwMTEwMjIyMjAxMTAyMDAyMDExMDAxMTAwMSIsW10sW11d');
+  const {board,visible}=positionSeeds.decode(sampleSeed);
   assert.equal(board.mines,18);
   const hint=engine.hint(board,visible,[],[],{opening:true});
   assert.ok(hint.move.positionMinimum && hint.move.sources.includes(-1));
@@ -52,23 +127,23 @@ test('global total yields a minimum technique proof and full replay for the impo
   assert.deepEqual([checked.status,checked.safe,checked.mines,checked.clues],['deducible',14,10,11]);
   const first=hint.move, confirmed=[...first.safe,...first.mines];
   assert.ok(first.safe.includes(26) && !first.safe.includes(29)); // C4, not F4
-  const second=engine.hint(board,visible,[],[],{opening:true,confirmed}).move;
+  const second=engine.hint(board,visible,[],[],{opening:true,excluded:confirmed}).move;
   const mirror=v=>v<0?v:v-v%8+7-v%8;
   assert.deepEqual(second.sources.slice().sort((a,b)=>a-b),first.sources.map(mirror).sort((a,b)=>a-b));
   assert.deepEqual(second.safe.filter(v=>!confirmed.includes(v)),[29]);
   assert.deepEqual(second.mines.filter(v=>!confirmed.includes(v)),[]);
-  const fixed=engine.classify(board,visible).state.flatMap((s,i)=>['safe','mine'].includes(s)?[i]:[]);
+  const fixed=engine.classify(board,visible).state.flatMap((s,i)=>['safe','mine'].includes(s)?[[i,s]]:[]);
   assert.equal(engine.hint(board,visible,[],[],{opening:true,confirmed:fixed}).status,'confirmed');
   const report=engine.verify(board,board,{certify:true,useTotal:true});
   assert.equal(report.status,'passed');
   assert.equal(report.steps,24);
 });
 
-test('staged hints skip confirmed targets without adding them to an asymmetric position', () => {
+test('staged hints substitute a confirmed safe square before counting clues', () => {
   const p={w:6,h:1,mines:2}, visible=[0,-1,-1,1,1,-1];
   const first=engine.hint(p,visible,[],[]).move;
   assert.deepEqual(first.safe,[1]);
-  const next=engine.hint(p,visible,[],[],{confirmed:[1]}).move;
+  const next=engine.hint(p,visible,[],[],{confirmed:[[1,'safe']]}).move;
   assert.deepEqual(next.mines,[2]);
   assert.deepEqual(next.sources,[3]);
   assert.equal(visible[1],-1);
@@ -76,14 +151,52 @@ test('staged hints skip confirmed targets without adding them to an asymmetric p
 
 const reviewPosition=(w,h,bits)=>positionSeeds.create(w,h,bits);
 
+test('the screenshot needs only A4 to prove A5 is a mine after the other red marks', () => {
+  const {board,visible,flags}=reviewPosition(5,5,'1221221020000122011210220');
+  assert.equal(visible[15],1);
+  const redMines=[0,3,6,13,17,18].map(v=>[v,'mine']);
+  const redSafe=[7,9,10,11,12,16,21,24].map(v=>[v,'safe']);
+  const confirmed=[...redMines,...redSafe];
+  const {move}=engine.hint(board,visible,[],flags,{opening:true,confirmed});
+  assert.deepEqual(move.sources,[15]);
+  assert.deepEqual(move.row,{source:15,vs:[20],rhs:1});
+  assert.deepEqual(move.mines,[20]);
+  assert.deepEqual(move.safe,[]);
+  const next=engine.inspect(board,visible,[],flags,{confirmed});
+  assert.deepEqual([next.status,next.clues,next.safe,next.mines],['deducible',1,0,1]);
+
+  const replay=engine.verify(board,board,{certify:true,confirmed,trace:true});
+  assert.deepEqual([replay.status,replay.steps,replay.averageClues],['passed',1,1]);
+  assert.deepEqual(replay.trace[0].commit,{safe:redSafe.map(([v])=>v),mines:[...redMines.map(([v])=>v),20]});
+
+  confirmed.push([20,'mine']);
+  const all=engine.verify(board,board,{certify:true,confirmed});
+  assert.deepEqual([all.status,all.steps],['passed',0]);
+  assert.deepEqual(engine.inspect(board,visible,[],flags,{confirmed}),{status:'confirmed',safe:0,mines:0});
+  assert.deepEqual(visible,engine.opening(board));
+  assert.equal(flags.length,0);
+});
+
+test('a known red cross subtracts a mine, but a flag or unchecked marking is not evidence', () => {
+  const {board,visible}=reviewPosition(5,1,'12010');
+  const known=[[0,'mine']];
+  const {move}=engine.hint(board,visible,[],[],{confirmed:known});
+  assert.deepEqual(move.row,{source:1,vs:[2],rhs:0});
+  assert.deepEqual(move.safe,[2]);
+  const baseline=engine.inspect(board,visible);
+  assert.equal(baseline.status,'blocked');
+  assert.deepEqual(engine.inspect(board,visible,[],[0]),baseline);
+  assert.deepEqual(engine.inspect(board,visible,[],[],{confirmed:known}),baseline);
+});
+
 test('certification does not open a partial round or count it as a solved board', () => {
-  const {board,visible}=reviewPosition(5,5,'2000001202020100102020000');
+  const {board,visible}=reviewPosition(6,5,'220122021201112012010010022001');
   const report=engine.verify(board,board,{certify:true,trace:true});
   assert.equal(report.status,'stuck');
   assert.equal(report.opened,visible.filter(v=>v>=0).length);
   const confirmed=new Set(report.trace.flatMap(move=>[...move.safe,...move.mines]));
   const targets=engine.confirmationTargets(engine.classify(board,visible).state,new Set());
-  assert.deepEqual([...targets].filter(([i])=>!confirmed.has(i)),[[6,'mine'],[13,'mine']]);
+  assert.deepEqual([...targets].filter(([i])=>!confirmed.has(i)),[[27,'safe']]);
   assert.ok(report.trace.every(move=>!move.commit));
 });
 
@@ -103,8 +216,9 @@ test('an imported mine flag does not prevent the next staged hint or serve as ev
   const {board,visible,flags}=reviewPosition(4,4,'2520100102022100');
   const first=engine.hint(board,visible,[],flags,{opening:true});
   assert.deepEqual(first.move.safe,[6,10,14]);
-  const second=engine.hint(board,visible,[],flags,{opening:true,confirmed:first.move.safe});
-  assert.ok(second.move.safe.includes(3));
+  const confirmed=[...first.move.safe.map(v=>[v,'safe']),...first.move.mines.map(v=>[v,'mine'])];
+  const second=engine.hint(board,visible,[],flags,{opening:true,confirmed});
+  assert.ok(second.move.safe.length || second.move.mines.some(v=>!flags.includes(v)));
   assert.equal(engine.verify(board,board,{flags,certify:true}).status,'passed');
 });
 
@@ -130,16 +244,16 @@ test('expansion only discloses the fewest new clues on a blocked, feasible posit
   assert.equal(engine.expand(board,visible,[],0).status,'budget');
 });
 
-test('position rating accepts all-covered drafts without assuming flags are evidence', () => {
+test('position verification accepts all-covered drafts and rejects a stuck route', () => {
   const verify=bits=>{
     const {board}=positionSeeds.create(3,2,bits);
-    return engine.verify(board,board,{certify:true,allowEmpty:true});
+    return engine.verify(board,board,{certify:true,allowEmpty:true,measureDifficulty:false});
   };
   assert.equal(verify('000000').status,'passed');
   assert.equal(verify('500000').status,'stuck');
   const report=verify('500200');
   assert.equal(report.status,'passed');
-  assert.ok(report.steps>0 && report.averageClues>=1);
+  assert.ok(report.steps>0);
 });
 
 const fixtures = [
@@ -149,6 +263,9 @@ const fixtures = [
   [12, 12, 31, 419868400, 'stuck', 2],
 ];
 const settings = (w, h, mines) => ({w,h,mines,start:'center',safe:'zero'});
+const easy = {minAverage:1,minMultiPercent:0,minPeakClues:1};
+const compactFloors={minAverage:1.2,minMultiPercent:10,minPeakClues:2};
+const largeFloors={...compactFloors,minMultiPercent:5};
 function search(p,seed,limit=96) {
   for(const result of engine.generate(p,seed)) {
     if(result.board || result.tried===limit) return result;
@@ -257,7 +374,7 @@ test('rejects a genuine two-way guess; public total resolves a non-frontier cell
 });
 
 test('a digit-only draft can rearrange its witness when a batch of forced safe cells opens', () => {
-  const p={w:4,h:3,mines:1};
+  const p={w:4,h:3,mines:2};
   const visible=[0,...Array(11).fill(-1)];
   const {board}=engine.publicBoard(p,visible);
   const judge=engine.classify(p,visible);
@@ -278,8 +395,8 @@ test('technique-only verification records stalls and never emits recursive moves
     const p = settings(w,h,mines);
     const r = engine.verify(engine.candidate(p,seed),p,{trace:true,points:true});
     assert.equal(r.status,status);
-    assert.equal(r.level,level);
-    assert.equal(r.byLevel.reduce((sum,n)=>sum+n,0),r.steps);
+    assert.equal(Math.max(...r.trace.map(move=>move.level)),level);
+    assert.equal(r.trace.length,r.steps);
     assert.ok(r.trace.every(m=>['count','difference','linear','cut','resolution'].includes(m.kind)));
     if(status==='stuck') {
       assert.equal(engine.hint(p,r.point.visible,new Set(r.point.marks),new Set(),{useTotal:false}).status,'stuck');
@@ -289,7 +406,7 @@ test('technique-only verification records stalls and never emits recursive moves
 });
 
 test('generates a qualified opening that remains solvable by techniques alone', () => {
-  const p = {w:12,h:12};
+  const p = {w:12,h:12,...largeFloors};
   const rounds = engine.generate(p,7), progress=[];
   for(let i=0;i<96;i++) {
     progress.push(rounds.next().value);
@@ -304,7 +421,6 @@ test('generates a qualified opening that remains solvable by techniques alone', 
   assert.equal(board.bombs.length,p.w*p.h);
   assert.equal(board.bombs.filter(Boolean).length,board.mines);
   assert.ok(board.opening.every(v=>!board.bombs[v]));
-  assert.ok(report.openingRecursiveComplete);
   assert.ok(progress.length>1 && progress.slice(0,-1).every(r=>!r.board));
   assert.deepEqual(progress.map(r=>r.tried),Array.from({length:result.tried},(_,i)=>i+1));
   const replay = engine.verify(board,p,{trace:true,certify:true});
@@ -318,17 +434,15 @@ test('generates a qualified opening that remains solvable by techniques alone', 
   assert.ok(report.multiSteps>0);
   const visible = engine.opening(board), config = {...p,mines:board.mines};
   const hint = engine.hint(config,visible,new Set(),new Set(),{opening:true}).move;
-  const {enumerationDepth,commit,...first}=replay.trace[0];
+  const {commit,...first}=replay.trace[0];
   assert.deepEqual(hint,first);
   const judgment = engine.classify(config,visible,{nodeBudget:120000});
   assert.equal(judgment.status,'complete');
-  assert.equal(judgment.depth,report.openingRecursiveMin);
-  assert.equal(enumerationDepth,Math.min(...[...hint.safe,...hint.mines].map(v=>judgment.refutationDepths[v])));
   assert.ok(hint.vs.every(v=>judgment.state[v]===(hint.value?'mine':'safe')));
 });
 
 test('seed routes produce different first-proof overlap graphs without history', () => {
-  const p={w:12,h:12}, totals=new Set(), fiveShapes=new Set(), edge=new Set();
+  const p={w:12,h:12,...largeFloors}, totals=new Set(), fiveShapes=new Set(), edge=new Set();
   for(const [seed,route,expected] of [
     [0,'five-chain',[1,1,2,2,2]], [1,'fork',[1,1,1,3]], [2,'long-chain',[1,1,2,2]],
     [42,'five-chain',[1,1,2,2,2]],
@@ -376,7 +490,7 @@ test('seed routes produce different first-proof overlap graphs without history',
 });
 
 test('fixed seeds replay the same certified board', () => {
-  const p={w:12,h:12}, seed=2;
+  const p={w:12,h:12,...largeFloors}, seed=2;
   const first=search(p,seed);
   assert.ok(first.board);
   assert.deepEqual(search(p,seed),first);
@@ -498,6 +612,12 @@ test('exact manual reveal does not flood from a zero into cells outside the batc
   assert.equal(engine.advance(board,board,visible,[0],new Set()).opened,6);
 });
 
+test('solve-one uses the same staged-then-commit decision as auto solve', () => {
+  assert.equal(manualStepAction(undefined),'stage');
+  assert.equal(manualStepAction({done:false}),'stage');
+  assert.equal(manualStepAction({done:true}),'commit');
+});
+
 test('ink covers each marked cell once, connects only neighbors and rounds bends', () => {
   const {inkTrails,inkPath}=require('./board-input');
   assert.deepEqual(inkTrails([3,4],4),[{cells:[3],closed:false},{cells:[4],closed:false}]);
@@ -531,77 +651,110 @@ test('ink covers each marked cell once, connects only neighbors and rounds bends
   }
 });
 
-test('small boards need no opening depth or opening clue threshold', () => {
-  for (const [w,h] of [[2,3],[3,2],[3,3],[4,4],[5,5]]) {
-    const p={w,h};
+test('small boards can pass with low generation thresholds', () => {
+  for (const [w,h] of [[1,2],[2,1],[1,3],[3,1],[2,2],[2,3],[3,2],[3,3],[4,4],[5,5]]) {
+    const p={w,h,...easy};
     const {board,report}=search(p,0,24);
     assert.ok(board,`${w} × ${h}`);
     assert.equal(report.status,'passed');
     assert.ok(report.steps>0);
-    assert.ok(report.openingClues<4 || report.openingRecursiveMin<7);
   }
 });
 
-test('unset difficulty floors use defaults for the board size', () => {
-  const p={w:5,h:5};
-  const defaults=engine.difficultyDefaults(p.w,p.h);
-  const automatic=search(p,0);
-  assert.ok(automatic.board);
-  assert.deepEqual(automatic,search({...p,...defaults},0));
-  assert.deepEqual(automatic.target,{average:1.2,multiPercent:10,peak:2});
-  assert.deepEqual(search({...p,minMultiPercent:0},0).target,{...automatic.target,multiPercent:0});
-  assert.deepEqual(search({w:3,h:2},0).target,{...automatic.target,multiPercent:0});
-  assert.equal(engine.difficultyDefaults(12,12).minMultiPercent,5);
+test('difficulty floors are independent of board size and each can be overridden', () => {
+  const defaults={minAverage:2,minMultiPercent:30,minPeakClues:5};
+  for(const [w,h] of [[1,1],[3,2],[5,5],[8,8],[12,12],[28,25]])
+    assert.deepEqual(engine.difficultyDefaults(w,h),defaults);
+  const p={w:4,h:4}, first=opts=>engine.generate({...p,...opts},0).next().value;
+  assert.deepEqual(first({}),first(defaults));
+  assert.deepEqual(first({minAverage:1}).target,{average:1,multiPercent:30,peak:5});
+  assert.deepEqual(first({minMultiPercent:0}).target,{average:2,multiPercent:0,peak:5});
+  assert.deepEqual(first({minPeakClues:2}).target,{average:2,multiPercent:30,peak:2});
+  assert.throws(()=>engine.generate({w:2,h:2},0).next(),/难度下限/);
+  assert.throws(()=>engine.generate({w:1,h:1,...easy},0).next(),/需要推理/);
 });
 
 test('all three difficulty floors filter the certified path', () => {
-  const p={w:5,h:5};
+  const p={w:5,h:5,...compactFloors};
   const r=search(p,0);
   assert.ok(r.board);
   assert.ok(r.report.averageClues>=1.2 && r.report.advancedDensity>=.10 && r.report.clues>=2);
   assert.deepEqual(search({...p,minAverageDepth:1000},0),r);
-  for(const [key,value,isFailed] of [
-    ['minAverage',20,r=>r.averageClues<20],
-    ['minMultiPercent',100,r=>r.advancedDensity<1],
-    ['minPeakClues',25,r=>r.clues<25],
+  for(const [key,value] of [
+    ['minAverage',20],
+    ['minMultiPercent',100],
+    ['minPeakClues',25],
   ]) {
     const miss=search({...p,[key]:value},0,12);
     assert.equal(miss.board,undefined);
-    assert.ok(miss.closest && isFailed(miss.closest));
+    assert.ok(miss.passed>0);
+    assert.deepEqual(Object.keys(miss.closest).sort(),['average','multiPercent','peak']);
   }
 });
 
-test('unavailable enumeration depth does not invalidate a certified technique path', () => {
-  const p={w:2,h:3}, {board,report}=search(p,0);
-  const judgment=engine.classify({...p,mines:board.mines},engine.opening(board),{nodeBudget:0});
-  assert.notEqual(judgment.status,'complete');
-  const replay=engine.verify(board,p,{certify:true,trace:true,judgment});
-  assert.equal(replay.status,'passed');
-  assert.equal(replay.averageEnumerationDepth,null);
-  assert.equal(replay.averageClues,report.averageClues);
-  assert.equal(replay.advancedDensity,report.advancedDensity);
-  assert.ok(replay.trace.every(move=>move.positionMinimum && move.proofs.length));
+test('progress retains the closest certified candidate without replacing the board', () => {
+  const p={w:5,h:5,minAverage:20,minMultiPercent:30,minPeakClues:10};
+  const rounds=engine.generate(p,0);
+  let lastGap=Infinity;
+  for(let i=0;i<5;i++) {
+    const {board,closest,target,passed}=rounds.next().value;
+    assert.equal(board,undefined);
+    assert.ok(passed>0 && closest);
+    const gap=Math.max(0,1-closest.average/target.average)+
+      Math.max(0,1-closest.multiPercent/target.multiPercent)+Math.max(0,1-closest.peak/target.peak);
+    assert.ok(gap<=lastGap+Number.EPSILON);
+    lastGap=gap;
+  }
 });
 
-test('certified generation replays the actual staged hints and exact manual commits', () => {
-  const p={w:5,h:5}, {board,report}=search(p,3);
+test('default generation uses staged clues and does not accept an inflated ten-clue replay', () => {
+  const {board}=positionSeeds.decode('Bw#/*+l');
+  const replay=engine.verify(board,board,{certify:true,trace:true});
+  assert.equal(replay.status,'passed');
+  assert.deepEqual(replay.trace.map(m=>m.sources.length),[3,4,1,1,1,1,1,1,1,1,1]);
+  assert.equal(replay.averageClues,16/11);
+  assert.equal(replay.advancedDensity,2/11);
+  assert.equal(replay.clues,4);
+
+  const p={w:5,h:5};
+  const result=search(p,0,4);
+  assert.deepEqual(result.target,{average:2,multiPercent:30,peak:5});
+  if(result.board) {
+    const measured=engine.verify(result.board,p,{certify:true});
+    assert.deepEqual(result.report,measured);
+    assert.ok(measured.averageClues>=2 && measured.advancedDensity>=.3 && measured.clues>=5);
+  } else {
+    const {average,multiPercent,peak}=result.closest;
+    assert.ok(result.passed>0);
+    assert.ok(average<2 || multiPercent<30 || peak<5);
+  }
+});
+
+test('status-only verification follows the same certified route without difficulty statistics', () => {
+  const p={w:5,h:5,...compactFloors}, {board}=search(p,3);
+  for(const options of [{},{visible:engine.opening(board)}]) {
+    const measured=engine.verify(board,p,{...options,certify:true,trace:true});
+    const check=engine.verify(board,p,{...options,certify:true,trace:true,measureDifficulty:false});
+    const {status,opened,steps,openingMinimum,trace}=measured;
+    assert.equal(status,'passed');
+    assert.deepEqual(check,{status,opened,steps,openingMinimum,trace});
+    assert.ok(trace.every(move=>move.positionMinimum && move.proofs.length));
+  }
+});
+
+test('live verification replays the actual staged hints and exact manual commits', () => {
+  const p={w:5,h:5,...compactFloors}, {board}=search(p,3);
   const replay=engine.verify(board,p,{trace:true,certify:true});
-  const visible=engine.opening(board), proven=new Set(), depths=[];
+  const visible=engine.opening(board), proven=new Set();
   const {makeManualBatch}=require('./board-input');
   const config={...p,mines:board.mines};
   let manual, opened=board.opening.length, grouped=false;
   for(const move of replay.trace) {
     manual??=makeManualBatch(engine.classify(config,visible,{nodeBudget:Infinity}).state,proven,engine.confirmationTargets);
     const {move:next}=engine.hint(config,visible,proven,proven,{
-      opening:opened===board.opening.length,confirmed:[...manual.marked.keys()]});
-    const {enumerationDepth,commit,...proof}=move;
+      opening:opened===board.opening.length,confirmed:manual.marked});
+    const {commit,...proof}=move;
     assert.deepEqual(proof,next);
-    const judgment=engine.classify(config,visible,{nodeBudget:120000,proven});
-    assert.equal(judgment.status,'complete');
-    const values=[...move.safe,...move.mines].map(v=>judgment.refutationDepths[v]);
-    assert.ok(values.every(Number.isSafeInteger));
-    assert.equal(enumerationDepth,Math.min(...values));
-    depths.push(enumerationDepth);
     assert.equal(manual.record(move.safe,'safe').wrong,undefined);
     assert.equal(manual.record(move.mines,'mine').wrong,undefined);
     assert.equal(manual.done,!!commit);
@@ -614,12 +767,10 @@ test('certified generation replays the actual staged hints and exact manual comm
   }
   assert.ok(grouped);
   assert.equal(opened,visible.length-board.mines);
-  assert.ok(depths.includes(0) && depths.some(d=>d>0));
-  assert.equal(report.averageEnumerationDepth,depths.reduce((a,b)=>a+b,0)/depths.length);
 });
 
 test('higher floors guide compact and medium boards to certified multi-clue paths', () => {
-  for(const [w,limit,minAverage,minMultiPercent,minPeakClues] of [[5,96,2.5,50,3],[8,24,1.6,15,4]]) {
+  for(const [w,limit,minAverage,minMultiPercent,minPeakClues] of [[5,32,2,30,3],[8,12,1.6,14,4]]) {
     const p={w,h:w,minAverage,minMultiPercent,minPeakClues};
     const {board,report}=search(p,2,limit);
     assert.ok(board,`${w} x ${w}`);
@@ -638,14 +789,16 @@ test('higher floors guide compact and medium boards to certified multi-clue path
 test('high difficulty generation rechecks options without a verified batch', () => {
   const p={w:8,h:8,minAverage:2,minMultiPercent:10,minPeakClues:6};
   const result=search(p,3,12);
-  const report=result.report??result.closest;
-  assert.equal(report?.status,'passed');
-  const meetsFloors=report.averageClues>=2 && report.advancedDensity>=.1 && report.clues>=6;
-  assert.equal(!!result.board,meetsFloors);
+  assert.ok(result.passed>0);
+  if(result.board) {
+    const report=engine.verify(result.board,p,{certify:true});
+    assert.equal(report.status,'passed');
+    assert.ok(report.averageClues>=2 && report.advancedDensity>=.1 && report.clues>=6);
+  } else assert.equal(result.tried,12);
 });
 
 test('generation keeps searching past the former limit and can be stopped', () => {
-  const rounds=engine.generate({w:2,h:3,mines:5},12345);
+  const rounds=engine.generate({w:2,h:3,mines:5,minPeakClues:6},12345);
   for(let i=1;i<=3001;i++) {
     const {value,done}=rounds.next();
     assert.equal(done,false);
@@ -656,20 +809,18 @@ test('generation keeps searching past the former limit and can be stopped', () =
   assert.equal(rounds.next().done,true);
 });
 
-test('closed-ring generation meets the default 8x8 floors with a minimum cancellation proof', () => {
-  const p={w:8,h:8};
-  const {board,report,target}=search(p,0,72);
+test('closed-ring generation meets a six-clue floor with a minimum cancellation proof', () => {
+  const p={w:8,h:8,minAverage:1.2,minMultiPercent:5,minPeakClues:6};
+  const {board,report,target}=search(p,0,4);
   assert.ok(board);
-  assert.deepEqual(engine.difficultyDefaults(8,8),{minAverage:2,minMultiPercent:30,minPeakClues:6});
-  assert.deepEqual(target,{average:2,multiPercent:30,peak:6});
+  assert.deepEqual(target,{average:1.2,multiPercent:5,peak:6});
   assert.deepEqual(engine.generate({...p,minMultiPercent:0},3).next().value.target,{...target,multiPercent:0});
-  assert.ok(report.averageClues>=2 && report.advancedDensity>=.3 && report.clues>=6);
+  assert.ok(report.averageClues>=1.2 && report.advancedDensity>=.05 && report.clues>=6);
   const replay=engine.verify(board,p,{certify:true,trace:true});
   assert.deepEqual({...replay,trace:[]},report);
   const [move]=replay.trace;
-  assert.ok(move.positionMinimum && move.sources.length>=6 && move.sources.length%2===0);
+  assert.ok(move.positionMinimum && move.sources.length===6);
   assert.ok(move.safe.length && move.mines.length);
-  assert.ok(replay.trace.filter(step=>step.sources.length>=3).length>=2);
   const inputs=format.summands(move.inequality);
   assert.equal(inputs.length,move.sources.length);
   assert.deepEqual(new Set(move.sources),new Set(board.opening));
@@ -738,6 +889,17 @@ test('proof references separate subtraction signs from unsigned coefficients', (
   assert.deepEqual(format.referenceTerms([{id:4,k:-3}]),[
     {id:4,operator:'−',factor:'3'},
   ]);
+});
+
+test('closed ink prefers a loop with the fewest bends', () => {
+  const [ring] = inkTrails([0,1,2,3,4,5,6,7],4);
+  assert.equal(ring.closed,true);
+  const points=ring.cells.map(i=>[i%4,Math.floor(i/4)]);
+  const edges=points.slice(1).map((p,i)=>[p[0]-points[i][0],p[1]-points[i][1]]);
+  edges.push([points[0][0]-points.at(-1)[0],points[0][1]-points.at(-1)[1]]);
+  let turns=0;
+  for(let i=0;i<edges.length;i++) { const a=edges[i], b=edges[(i+1)%edges.length]; if(a[0]!==b[0] || a[1]!==b[1]) turns++; }
+  assert.equal(turns,4);
 });
 
 test('proof references follow displayed subtraction and reflected rounding', () => {

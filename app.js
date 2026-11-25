@@ -4,6 +4,15 @@
   const format = makeProofFormat();
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
+  const proofDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  proofDrawing.classList.add('board-proof');
+  proofDrawing.setAttribute('aria-hidden','true');
+  const proofPattern=document.createElementNS(proofDrawing.namespaceURI,'defs');
+  const hatch=document.createElementNS(proofDrawing.namespaceURI,'pattern');
+  for(const [name,value] of Object.entries({id:'proof-hatch',patternUnits:'userSpaceOnUse',width:6,height:6,patternTransform:'rotate(45)'})) hatch.setAttribute(name,value);
+  const hatchLine=document.createElementNS(proofDrawing.namespaceURI,'rect');
+  hatchLine.setAttribute('width','2'); hatchLine.setAttribute('height','6');
+  hatch.append(hatchLine); proofPattern.append(hatch);
   const inkDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
   inkDrawing.classList.add('board-ink');
   inkDrawing.setAttribute('aria-hidden','true');
@@ -13,9 +22,11 @@
   let editing=false, parkedGame, draft, editTool='mine';
   let digit=1, draftMinesValid=true;
   let playWorker, pending;
-  let ratingWorker, ratingTimer;
-  const proofAreaClasses = ['proof-cancelled','proof-positive','proof-negative'];
-  let clearAreaPreview;
+  let verificationWorker, verificationTimer;
+  const proofKinds=['cancelled','positive','negative','element'];
+  const proofTargets=new WeakMap(), proofRows=new WeakMap();
+  let hoveredProof, focusedProof, pinnedProof;
+  let activeAreaPreview = null;
 
   const say = (text, tone = '') => { $('status').textContent = text; $('status').dataset.tone = tone; };
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -29,7 +40,8 @@
     const locked = auto || !!pending;
     $('commitMarks').hidden = !live || !complete;
     $('commitMarks').disabled = locked;
-    $('apply').disabled = locked || !live || complete;
+    // 标齐后，求解一步直接提交这一批；未标齐时才执行下一条推导。
+    $('apply').disabled = locked || !live;
   }
 
   function controls() {
@@ -64,19 +76,35 @@
   }
 
   function showDifficultyDefaults() {
-    const sizes=['width','height'].map(id=>$(id).valueAsNumber);
-    const valid=sizes.every(n=>Number.isInteger(n) && n>=2 && n<=24) && sizes.some(n=>n>=3);
-    for (const [id,value] of Object.entries(engine.difficultyDefaults(...sizes))) {
-      $(id).placeholder=valid?`默认 ${value}${id==='minMultiPercent'?'%':''}`:'';
+    for (const [id,value] of Object.entries(engine.difficultyDefaults())) {
+      $(id).placeholder=`默认 ${value}${id==='minMultiPercent'?'%':''}`;
     }
   }
 
-  function readSettings() {
-    const integer = (id, lo, hi, name) => {
+  function generationProgress({tried,passed,closest,target},seed) {
+    const progress=`种子 ${seed} · 已搜索 ${tried} 轮 · ${passed} 局通过技巧验证`;
+    if(!closest) return progress;
+    const {average, multiPercent, peak}=closest;
+    const metrics=[['平均线索',average,target.average,''],['多线索步骤',multiPercent,target.multiPercent,'%'],
+      ['峰值线索',peak,target.peak,'']];
+    const display=(value,suffix)=>`${Number(value.toFixed(2))}${suffix}`;
+    const summary=metrics.map(([name,actual,,suffix])=>`${name} ${display(actual,suffix)}`).join('、');
+    const missing=metrics.filter(([,actual,goal])=>actual<goal).map(([name,,goal,suffix])=>`${name}需 ≥ ${goal}${suffix}`).join('、');
+    return `${progress}。最接近候选：${summary}。${missing ? `未达标：${missing}。` : ''}`;
+  }
+
+  function readDimensions(width,height) {
+    const integer = (id,name) => {
       const v = $(id).valueAsNumber;
-      if (!Number.isInteger(v) || v < lo || v > hi) { $(id).focus(); throw Error(`${name}须为 ${lo}–${hi} 的整数。`); }
+      if (!Number.isSafeInteger(v) || v < 1) { $(id).focus(); throw Error(`${name}须为正整数。`); }
       return v;
     };
+    const w=integer(width,'宽度'), h=integer(height,'高度');
+    if(!seeds.dimensionsOk(w,h)) throw Error('棋盘面积超出浏览器可表示的范围。');
+    return {w,h};
+  }
+
+  function readSettings() {
     const optional = (id, condition, error) => {
       const input = $(id), v = input.valueAsNumber;
       if (input.value === '' && !input.validity.badInput) return undefined;
@@ -84,8 +112,7 @@
       $('difficultySettings').open = true;
       input.focus(); throw Error(error);
     };
-    const w = integer('width', 2, 24, '宽度'), h = integer('height', 2, 24, '高度');
-    if (w===2 && h===2) throw Error('2 × 2 的每格都与其余三格相邻，有雷时无法推出下一格安全。请将至少一边设为 3 或更大。');
+    const {w,h}=readDimensions('width','height');
     const minAverage = optional('minAverage', v=>v>=1, '平均最少线索下限须至少为 1。');
     const minMultiPercent = optional('minMultiPercent', v=>v>=0 && v<=100, '多线索步骤占比须为 0–100%。');
     const minPeakClues = optional('minPeakClues', v=>Number.isSafeInteger(v) && v>=1, '峰值线索数下限须为正整数。');
@@ -117,11 +144,15 @@
     stopAuto();
     try { worker = background(`onmessage = ({data:{p,seed}}) => {
         try {
-          let updated = -Infinity;
+          let updated = -Infinity, reportedCandidate = false;
           for (const result of makeMinesEngine().generate(p,seed)) {
             if (result.board) { postMessage({result}); return; }
             const now = performance.now();
-            if (now - updated >= 200) { postMessage({progress:result}); updated = now; }
+            if (now - updated >= 200 || result.closest && !reportedCandidate) {
+              postMessage({progress:result});
+              updated = now;
+              reportedCandidate ||= !!result.closest;
+            }
           }
         }
         catch (error) { postMessage({error:error.message}); }
@@ -133,16 +164,16 @@
     worker.onmessage = ({data}) => {
       if (task !== worker) return;
       if (data.progress) {
-        const {tried,passed,closest}=data.progress;
-        const rating=closest ? ` · 最接近：平均 ${closest.averageClues.toFixed(2)} 条 / 多线索 ${stepShare(closest)} / 峰值 ${closest.clues} 条` : '';
-        say(`种子 ${job.seed} · 已搜索 ${tried} 轮 · ${passed} 局通过技巧验证${rating}`);
+        say(generationProgress(data.progress,job.seed));
         return;
       }
       finishWorker();
       if (data.error) { say(`本次生成中止：${data.error}`, 'error'); return; }
       const r = data.result;
       if (!r.report.openingMinimum) { say('没有通过首步最少线索验证，未发放该局。','error'); return; }
-      install(r.board, job.p, r.report, job.seed);
+      const position=positionGame({board:r.board},job.p,job.seed);
+      position.openingVerification=verificationSummary(r.report);
+      mount(position);
       say(`三项难度达标 · 技巧通关验证通过 · 搜索 ${r.tried} 轮`, 'success');
     };
     worker.onerror = () => {
@@ -152,20 +183,14 @@
     worker.postMessage(job);
   }
 
-  const stepShare=report=>`${(100*report.advancedDensity).toFixed(1)}%（${report.multiSteps}/${report.steps} 步）`;
-
-  function positionGame({board,visible=engine.opening(board),flags=[],notes=[[],[]],numbers=false},p={},report,seed) {
+  function positionGame({board,visible=engine.opening(board),flags=[],notes=[[],[]],numbers=false},p={},seed) {
     const opened=visible.filter(n=>n>=0).length;
     const history=makeMarkHistory();
     for (const [i,color] of ['red','blue'].entries()) history.layers[color]=new Map(notes[i]);
-    return {board,original:board,originalFlags:[...flags],originalNotes:notes,p:{...p,w:board.w,h:board.h,mines:board.mines},
+    return {board,original:board,originalVisible:visible,originalFlags:[...flags],originalNotes:notes,p:{...p,w:board.w,h:board.h,mines:board.mines},
       seed,numbers,visible,flags:new Set(flags),notes:history,proven:new Set(),opened,
       state:opened===visible.length-board.mines?'won':'playing',started:null,ended:null,highlight:null,focus:board.first,
-      judgment:null,answers:false,rating:report,ratingScope:'开局',initialRating:report};
-  }
-
-  function install(board,p,report,seed) {
-    mount(positionGame({board},p,report,seed));
+      judgment:null,answers:false};
   }
 
   function mount(position) {
@@ -176,11 +201,9 @@
     input.reset(); showReason(false);
     $('proof').textContent = '';
     $('proofPane').hidden = true;
-    $('routeRating').open = !!position?.rating;
     $('generationSeed').hidden = game?.seed==null || editing;
     $('generationSeedValue').textContent = game?.seed??'';
-    $('boardSeed').textContent = game?.seed==null || editing ? '' : `开局给出 ${game.original.opening.length} 格 · 评级 v${engine.version}`;
-    scheduleRating();
+    scheduleVerification();
     const root = $('board');
     $('emptyBoard').hidden = !!game;
     root.hidden = !game;
@@ -201,9 +224,14 @@
       label.setAttribute('aria-hidden','true'); label.textContent = text;
       return label;
     }
-    const grid = [axis(''),...Array.from({length:board.w},(_, i)=>axis(String.fromCharCode(65+i)))];
-    for (let y = 0; y < board.h; y++) grid.push(axis(y+1),...buttons.slice(y*board.w,(y+1)*board.w));
-    root.replaceChildren(...grid,inkDrawing);
+    const grid=document.createDocumentFragment();
+    grid.append(axis(''));
+    for(let x=0;x<board.w;x++) grid.append(axis(format.column(x)));
+    for(let y=0;y<board.h;y++) {
+      grid.append(axis(y+1));
+      for(let x=0;x<board.w;x++) grid.append(buttons[y*board.w+x]);
+    }
+    root.replaceChildren(grid,proofDrawing,inkDrawing);
     render(); controls();
   }
 
@@ -214,37 +242,35 @@
     $('size').append(total);
   }
 
-  function ratingStatus(report) {
-    if(report.status==='passed') return report.steps ? '无猜验证通过' : '所有安全格已开';
-    return ({stuck:'技巧推导卡住，未证实无猜可解','minimum-unavailable':'未能证实最少线索','batch-unavailable':'未能证实完整推导',
-      invalid:'局面无效', 'no-safe-cell':'局面至少需要一个安全格', error:'验证未完成'})[report.status]??'验证未完成';
+  function verificationSummary({status,steps,averageClues,clues,advancedDensity}) {
+    return {status,...(status==='passed' && steps>0 && Number.isFinite(averageClues)?
+      {averageClues,peakClues:clues,multiClueRatio:advancedDensity}:{})};
   }
 
-  function showRating() {
-    const report=game?.rating;
+  function showVerification() {
     const current=game?.current;
+    const verification=game?.verification;
+    const wholeGame=editing?verification:game?.openingVerification;
     const count=n=>n==null?'—':`${current.partial?'≥ ':''}${n}`;
     const texts={deducible:current?.clues?'有确定结论':'有确定结论，尚无可展示的最少线索推导',blocked:'无可解格',
       invalid:'数字与总雷数互相矛盾',budget:'尚未完成验证',finished:'所有安全格已开',error:'验证未完成',
+      confirmed:'本轮已标齐，可以开格并插旗',
       'invalid-total':'请输入有效的总雷数','no-safe-cell':'局面至少需要一个安全格'};
     $('currentStatus').textContent=game?(current?texts[current.status]:'正在验证当前线索…'):'暂无棋局';
-    $('rating').dataset.state=current?.status??'';
+    $('reasonStatus').dataset.state=current?.status??'';
     $('currentSafe').textContent=count(current?.safe);
     $('currentMines').textContent=count(current?.mines);
     $('currentClues').textContent=current?.clues??'—';
+    $('averageClues').textContent=verification?.averageClues?.toFixed(2)??'—';
+    $('peakClues').textContent=wholeGame?.peakClues??'—';
+    const ratio=wholeGame?.multiClueRatio;
+    $('multiClueRatio').textContent=ratio==null?'—':`${Number((ratio*100).toFixed(2))}%`;
     $('expandPosition').hidden=current?.status!=='blocked' || !!(game.numbers && !game.witness);
-    const rated=report?.steps>0;
-    const scope=editing?'当前局面':game?.ratingScope;
-    $('ratingStatus').textContent=game?`${scope} · ${report?ratingStatus(report):game.numbers?'按可行排雷布局预览':'正在验证剩余解法…'}`:'暂无棋局';
-    $('openingClues').textContent = rated && report.openingMinimum ? `${report.openingClues} 条` : '—';
-    $('openingDepth').textContent = rated ? report.openingDepth : '—';
-    $('openingRecursive').textContent = !rated ? '—' : !report.openingRecursiveComplete ? '未完成'
-      : report.openingRecursiveMin===report.openingRecursive ? report.openingRecursive : `${report.openingRecursiveMin}–${report.openingRecursive}`;
-    $('bottlenecks').textContent = rated ? report.bottlenecks : '—';
-    $('clueCount').textContent = rated ? report.clues : '—';
-    $('averageClues').textContent = rated && report.status==='passed' ? `${report.averageClues.toFixed(2)} 条` : '—';
-    $('averageEnumerationDepth').textContent = !rated || report.averageEnumerationDepth==null ? '—' : report.averageEnumerationDepth.toFixed(2);
-    $('multiDensity').textContent = rated && report.status==='passed' ? stepShare(report) : '—';
+    const check=$('verificationStatus');
+    check.hidden=!game || ['finished','invalid','invalid-total','no-safe-cell'].includes(current?.status);
+    check.textContent=verification?.status==='passed' ? (game.numbers?'可行雷图的无猜验证通过':'无猜验证通过') :
+      verification?.status==='stuck' ? '技巧推导卡住，未证实无猜可解' :
+      verification ? '未能证实无猜可解' : '正在验证无猜通关…';
   }
 
   function time() {
@@ -259,8 +285,8 @@
   function paintInk() {
     if(!game || !buttons.length) return;
     const {w}=game.board, root=$('board'), style=getComputedStyle(root);
-    const [axis,tile]=style.gridTemplateColumns.split(' ').map(parseFloat);
-    const [axisY,height]=style.gridTemplateRows.split(' ').map(parseFloat);
+    const [axis,tile]=style.gridTemplateColumns.split(' ',2).map(parseFloat);
+    const [axisY,height]=style.gridTemplateRows.split(' ',2).map(parseFloat);
     const dx=tile+parseFloat(style.columnGap),dy=height+parseFloat(style.rowGap);
     const left=axis+dx-tile/2, top=axisY+dy-height/2;
     if(!Number.isFinite(left+top)) return;
@@ -271,13 +297,13 @@
     if(key===paintedInk) return;
     paintedInk=key;
     const center=i=>[left+i%w*dx,top+Math.floor(i/w)*dy];
-    const paths=[];
+    const paths=document.createDocumentFragment();
     const draw=(color,d,weight)=>{
       const path=document.createElementNS(inkDrawing.namespaceURI,'path');
       path.setAttribute('class',color);
       path.setAttribute('d',d);
       path.setAttribute('stroke-width',weight);
-      paths.push(path);
+      paths.append(path);
     };
     const weight=Math.max(1.2,Math.min(3,tile*.067));
     for(const [color,ink] of layers) {
@@ -301,26 +327,121 @@
       }
     }
     inkDrawing.setAttribute('viewBox',`0 0 ${width} ${boardHeight}`);
-    inkDrawing.replaceChildren(...paths);
+    inkDrawing.replaceChildren(paths);
   }
-  new ResizeObserver(paintInk).observe($('board'));
+  function proofGeometry() {
+    const root=$('board'), style=getComputedStyle(root);
+    const columns=style.gridTemplateColumns.split(' ',2).map(parseFloat);
+    const rows=style.gridTemplateRows.split(' ',2).map(parseFloat);
+    if(columns.length<2 || rows.length<2) return null;
+    const tile=columns[1], height=rows[1];
+    const dx=tile+parseFloat(style.columnGap), dy=height+parseFloat(style.rowGap);
+    const left=columns[0]+dx-tile/2, top=rows[0]+dy-height/2;
+    const {width,height:boardHeight}=root.getBoundingClientRect();
+    return Number.isFinite(left+top+dx+dy) ? {root,width,boardHeight,tile,dx,dy,left,top} : null;
+  }
+
+  function paintProofAreas() {
+    if(!activeAreaPreview || !game || !buttons.length) { proofDrawing.replaceChildren(); return; }
+    const geo=proofGeometry();
+    if(!geo) return;
+    const {w,h}=game.board, {width,boardHeight,tile,dx,dy,left,top}=geo;
+    const gapX=Math.max(0,dx-tile), gapY=Math.max(0,dy-tile);
+    const originX=left-tile/2-gapX/2, originY=top-tile/2-gapY/2;
+    const point=([x,y])=>[originX+x*dx,originY+y*dy];
+    const edgeKey=(x,y)=>`${x},${y}`;
+    const boundaryLoops=cells=>{
+      const set=new Set(cells), edges=[];
+      for(const i of set) {
+        const x=i%w,y=Math.floor(i/w);
+        if(y===0 || !set.has(i-w)) edges.push({x,y,d:0});
+        if(x===w-1 || !set.has(i+1)) edges.push({x:x+1,y,d:1});
+        if(y===h-1 || !set.has(i+w)) edges.push({x:x+1,y:y+1,d:2});
+        if(x===0 || !set.has(i-1)) edges.push({x,y:y+1,d:3});
+      }
+      const outgoing=new Map();
+      edges.forEach((edge,index)=>{
+        const key=edgeKey(edge.x,edge.y), list=outgoing.get(key)??[];
+        list.push(index); outgoing.set(key,list);
+      });
+      const used=new Set(), loops=[];
+      for(let start=0;start<edges.length;start++) {
+        if(used.has(start)) continue;
+        const first=edges[start], ring=[[first.x,first.y]];
+        let edgeIndex=start, closed=false;
+        while(!used.has(edgeIndex)) {
+          used.add(edgeIndex);
+          const edge=edges[edgeIndex];
+          const x=edge.x+(edge.d===0?1:edge.d===2?-1:0);
+          const y=edge.y+(edge.d===1?1:edge.d===3?-1:0);
+          ring.push([x,y]);
+          const candidates=outgoing.get(edgeKey(x,y))??[];
+          if(!candidates.length) break;
+          // At a diagonal contact take the left turn, joining the two cells.
+          edgeIndex=candidates.find(i=>(edges[i].d-edge.d+4)%4===3)??candidates[0];
+          if(edgeIndex===start) {closed=true;break;}
+        }
+        if(closed && ring.length>=5) loops.push(ring);
+      }
+      return loops;
+    };
+    const roundedPath=ring=>{
+      const walk=ring.slice(0,-1);
+      const points=walk.filter(([x,y],i)=>{
+        const [px,py]=walk[(i+walk.length-1)%walk.length], [nx,ny]=walk[(i+1)%walk.length];
+        return x-px!==nx-x || y-py!==ny-y;
+      }).map(point);
+      if(points.length<4) return '';
+      const radius=tile*.18;
+      const toward=(p,q,d)=>{const length=Math.hypot(q[0]-p[0],q[1]-p[1])||1;return [p[0]+(q[0]-p[0])*d/length,p[1]+(q[1]-p[1])*d/length];};
+      const corners=points.map((p,i)=>({p,start:toward(p,points[(i+points.length-1)%points.length],radius),end:toward(p,points[(i+1)%points.length],radius)}));
+      let d=`M${corners[0].start[0]},${corners[0].start[1]}`;
+      for(let i=0;i<corners.length;i++) {
+        const corner=corners[i], next=corners[(i+1)%corners.length];
+        d+=`Q${corner.p[0]},${corner.p[1]} ${corner.end[0]},${corner.end[1]}L${next.start[0]},${next.start[1]}`;
+      }
+      return d+'Z';
+    };
+    const paths=document.createDocumentFragment();
+    for(const [i,kind] of proofKinds.entries()) {
+      const cells=activeAreaPreview.areas[i];
+      if(!cells?.size) continue;
+      const rings=boundaryLoops(cells).map(roundedPath).filter(Boolean);
+      const path=(cls,d)=>{
+        const outline=document.createElementNS(proofDrawing.namespaceURI,'path');
+        outline.setAttribute('class',cls);
+        outline.setAttribute('d',d);
+        outline.setAttribute('fill-rule','evenodd');
+        paths.append(outline);
+      };
+      path(kind,rings.join(''));
+      if(kind==='element') path('element-hatch',rings.join(''));
+      for(const d of rings) path(`${kind} boundary`,d);
+    }
+    proofDrawing.setAttribute('viewBox',`0 0 ${width} ${boardHeight}`);
+    proofDrawing.replaceChildren(proofPattern,paths);
+  }
+
+  new ResizeObserver(()=>{paintInk();paintProofAreas();}).observe($('board'));
 
   function render() {
     const {board,visible,flags,highlight,state,focus} = game;
+    const first=new Set(board.opening), proofClues=new Set(highlight?.sources);
+    const proofSafe=new Set(highlight?.safe), proofMines=new Set(highlight?.mines);
     batchControls();
     for (const [i,b] of buttons.entries()) {
       const n = visible[i], mine=editing && !game.numbers && board.bombs[i];
       const marked = flags.has(i) || (!editing && state === 'won' && n < 0);
       const label = mine ? (marked?'雷，有旗':'雷') : n >= 0 ? (n || '空白') : marked ? '旗' : '未开';
       const marks = ['cell', n >= 0 ? 'open' : 'covered'];
-      if (board.opening.includes(i)) marks.push('first');
+      if (first.has(i)) marks.push('first');
       if (n > 0) marks.push(`n${n}`);
       if (marked) marks.push('flagged');
       if (mine) marks.push('edit-mine');
-      if (highlight?.sources.includes(i)) marks.push('clue');
+      if (proofClues.has(i)) marks.push('clue');
       const answer=game.answers && game.judgment?.state[i];
-      if (highlight?.safe.includes(i) || answer==='safe') marks.push('target-safe');
-      if (highlight?.mines.includes(i) || answer==='mine') marks.push('target-mine');
+      if (proofSafe.has(i) || answer==='safe') marks.push('target-safe');
+      if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
       let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? String(n) : '';
       const confirmed=game.manual?.marked.get(i);
       const red=confirmedInk(game,i);
@@ -329,8 +450,7 @@
         if(m && !['x','/','//'].includes(m.symbol)) body+=`<span class="cell-note ${color}">${m.symbol}</span>`;
         if(m?.level>1) body+=`<sub class="ink-rank">${m.level}</sub>`;
       }
-      if (b.classList.contains('proof-hover')) marks.push('proof-hover');
-      for (const cls of proofAreaClasses) if (b.classList.contains(cls)) marks.push(cls);
+      if (b.classList.contains('proof-preview')) marks.push('proof-preview');
       const opening=b.classList.contains('covered') && n>=0;
       const flagPlaced=b.classList.contains('cell') && marked && !b.classList.contains('flagged');
       if (b.className !== marks.join(' ')) b.className = marks.join(' ');
@@ -338,7 +458,7 @@
       if (b.dataset.body !== body) { b.innerHTML = body; b.dataset.body = body; }
       if(flagPlaced && !mine) animate(b.querySelector('.icon'),[{scale:.75,opacity:.6},{scale:1.1,opacity:1,offset:.72},{scale:1,opacity:1}],{duration:170,easing:'ease-out'});
       b.tabIndex = i === focus ? 0 : -1;
-      b.setAttribute('aria-label',`${coord(i)} ${label}${board.opening.includes(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}`);
+      b.setAttribute('aria-label',`${coord(i)} ${label}${first.has(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}`);
     }
     $('remaining').textContent = !editing && state === 'won' ? '0' : board.mines-flags.size;
     $('totalMines').classList.toggle('clue-total', !!highlight?.sources.includes(-1));
@@ -346,10 +466,44 @@
     time();
   }
 
-  function clearProofHover() {
-    clearAreaPreview?.();
-    for (const node of document.querySelectorAll('.proof-hover')) node.classList.remove('proof-hover');
+  function updateProofPreview() {
+    const next=hoveredProof??focusedProof??(pinnedProof && proofTargets.get(pinnedProof))??null;
+    if(next===activeAreaPreview) return;
+    for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
+    activeAreaPreview=next;
+    for(const v of next?.cells??[]) buttons[v]?.classList.add('proof-preview');
+    $('totalMines')?.classList.toggle('proof-hover',!!next?.total);
+    paintProofAreas();
   }
+
+  function clearProofHover() {
+    pinnedProof?.setAttribute('aria-pressed','false');
+    hoveredProof=focusedProof=pinnedProof=undefined;
+    updateProofPreview();
+  }
+
+  function proofPreview(areas,total=false) {
+    return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total};
+  }
+
+  const proofPanel=$('proof');
+  function proofAt(target,includeRow) {
+    if(!proofPanel.contains(target)) return;
+    const token=proofTargets.get(target?.closest?.('.proof-cell'));
+    return token??(includeRow ? proofRows.get(target?.closest?.('.proof-line')) : undefined);
+  }
+  function hoverProof(e,target) {
+    if(e.pointerType==='touch') return;
+    hoveredProof=proofAt(target,true);
+    updateProofPreview();
+  }
+  proofPanel.addEventListener('pointerover',e=>hoverProof(e,e.target));
+  proofPanel.addEventListener('pointerout',e=>hoverProof(e,e.relatedTarget));
+  proofPanel.addEventListener('focusin',e=>{
+    focusedProof=e.target.matches(':focus-visible')?proofAt(e.target,false):undefined;
+    updateProofPreview();
+  });
+  proofPanel.addEventListener('focusout',()=>{focusedProof=undefined;updateProofPreview();});
 
   function clearHint() { game.highlight = null; clearProofHover(); $('proof').replaceChildren(); }
   function ready() { return !editing && game?.state === 'playing' && !worker; }
@@ -381,7 +535,7 @@
 
   function removeFlag(g,i) {
     g.flags.delete(i);
-    g.current=g.rating=undefined;g.ratingScope='当前局面';scheduleRating();
+    g.verification=undefined;
     if(!g.manual) return;
     const updated=makeManualBatch(g.judgment.state,g.flags,engine.confirmationTargets);
     for(const kind of ['mine','safe']) updated.record(g.manual.cells(kind),kind);
@@ -414,6 +568,7 @@
   function showMarks(g) {
     g.started??=Date.now();
     markProgress(g);
+    g.current=g.verification=undefined; scheduleVerification();
     render();
   }
 
@@ -437,7 +592,7 @@
     g.proven=proven;
     g.flags=flags;
     g.manual=null;
-    g.current=g.rating=undefined;g.ratingScope='当前局面';scheduleRating();
+    g.current=g.verification=undefined; scheduleVerification();
     if(g.opened===g.visible.length-g.board.mines) finish();
     else say(`本轮已打开 ${safe.length} 格，插旗 ${mines.length} 格。`,'success');
     render();
@@ -459,6 +614,7 @@
       if(action) void recordManual(g,action.cells,action.kind==='flag'?'mine':'safe');
     } else if(marking && g.flags.has(i)) {
       removeFlag(g,i);
+      g.current=undefined; scheduleVerification();
       say(`已撤销 ${coord(i)} 的旗子。`);
     } else void recordManual(g,[i],marking?'mine':'safe');
     render();
@@ -495,7 +651,7 @@
   function next() {
     const {p,visible,proven,flags} = game;
     return ask('hint',{p,visible,proven:[...proven].filter(v=>flags.has(v)),flags,opening:game.opened===game.original.opening.length,
-      confirmed:game.manual ? [...game.manual.marked.keys()] : undefined});
+      confirmed:game.manual ? [...game.manual.marked] : undefined});
   }
 
   function element(tag, className, text) {
@@ -513,13 +669,7 @@
     button.type = 'button';
     if (clueRegion) button.classList.add('clue-region');
     const total = vs[0] === -1;
-    const highlighted = total ? [$('totalMines')] : vs.map(v => buttons[v]);
-    let hovered = false, focused = false;
-    const glow = () => { for (const node of highlighted) node.classList.toggle('proof-hover',hovered || focused); };
-    button.onpointerenter = () => { hovered = true; glow(); };
-    button.onpointerleave = () => { hovered = false; glow(); };
-    button.onfocus = () => { focused = true; glow(); };
-    button.onblur = () => { focused = false; glow(); };
+    proofTargets.set(button,proofPreview([[],[],[],total?[]:vs],total));
     if (description) {
       button.title = description;
       button.setAttribute('aria-label',description);
@@ -547,36 +697,16 @@
     if (!cancelled.length) return '';
     const preview=element('button','proof-cell cancellation-chip','相消');
     preview.type='button';
-    preview.title=`灰纹：相消 ${cancelled.length} 格；蓝：正项 ${positive.length} 格；橙：负项 ${negative.length} 格`;
+    preview.title=`灰纹：相消 ${cancelled.length} 格；紫：正项 ${positive.length} 格；黄：负项 ${negative.length} 格`;
     preview.setAttribute('aria-label',preview.title);
-    const areas=[cancelled,positive,negative].map((vs,i)=>[vs.map(v=>buttons[v]),proofAreaClasses[i]]);
-    let pinned=false;
-    const paint=show=>{
-      for (const [nodes,cls] of areas) for (const node of nodes) node.classList.toggle(cls,show);
-    };
-    const hide=()=>{
-      if(clearAreaPreview!==hide) return;
-      paint(false);
-      pinned=false;
-      preview.setAttribute('aria-pressed','false');
-      clearAreaPreview=null;
-    };
-    const show=()=>{
-      if(clearAreaPreview===hide) return;
-      clearAreaPreview?.();
-      clearAreaPreview=hide;
-      paint(true);
-    };
-    preview.onpointerenter=show;
-    preview.onpointerleave=()=>{if(!pinned&&!preview.matches(':focus-visible')) hide();};
-    preview.onfocus=()=>{if(preview.matches(':focus-visible')) show();};
-    preview.onblur=()=>{if(pinned||!preview.matches(':hover')) hide();};
+    proofTargets.set(preview,proofPreview([cancelled,positive,negative]));
     preview.setAttribute('aria-pressed','false');
     preview.onclick=()=>{
-      if(pinned) { hide(); return; }
-      show();
-      pinned=true;
-      preview.setAttribute('aria-pressed','true');
+      const pin=pinnedProof!==preview;
+      pinnedProof?.setAttribute('aria-pressed','false');
+      pinnedProof=pin?preview:undefined;
+      preview.setAttribute('aria-pressed',String(pin));
+      updateProofPreview();
     };
     return preview;
   }
@@ -641,6 +771,12 @@
         }
         if (!constantFirst) formula.append(element('span','operator',`${comparison} ${constant}`));
       }
+      const displayedAreas = [
+        [],
+        terms.filter(term=>term.coefficient>0).flatMap(term=>term.cells),
+        terms.filter(term=>term.coefficient<0).flatMap(term=>term.cells)
+      ];
+      proofRows.set(line,proofPreview(displayedAreas));
       line.append(marker,formula);
       if (note) {
         const small = element('small','proof-note');
@@ -656,6 +792,8 @@
       const shown = row.source < 0 ? game.board.mines : game.visible[row.source];
       const clue = chip(row.source,`${source(row.source)} · ${shown}`);
       const note = [clue,shown === row.rhs ? '' : ` − ${shown-row.rhs} 雷`];
+      if ([...game.manual?.marked??[]].some(([v,kind])=>kind==='safe' &&
+        (row.source<0 || game.board.ns[row.source].includes(v)))) note.push('，已确认安全格计 0');
       rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,note,null,row).id);
     }
     for(const m of batch.proofs) {
@@ -713,7 +851,7 @@
           ref={...add(r.terms,sign,r.rhs,note,r===m.inequality?conclusion:null),k:1};
         } else {
           const a=visit(r.a), reflected=format.relation('≤',r.rhs).constantFirst;
-          const note=[...arithmetic([a],reflected),` ÷ 2，${format.rounding(reflected)}`];
+          const note=['式 ',...arithmetic([a],reflected),` 除以 2，${format.rounding(reflected)}`];
           ref={...add(r.terms,'≤',r.rhs,note,r===m.inequality?conclusion:null),k:1};
         }
         labels.set(r,ref);
@@ -891,19 +1029,26 @@
 
   function switchMode(next) {
     if(editing===next || worker || pending || auto) return;
-    setMode(next);
-    if(editing) {
+    if(next) {
+      let position=draft;
+      if(!position) try {
+        const w=$('width').valueAsNumber, h=$('height').valueAsNumber;
+        position=positionGame(game ? copyPosition(game) : seeds.dimensionsOk(w,h) ? seeds.create(w,h) :
+          seeds.create(Number($('width').defaultValue),Number($('height').defaultValue)));
+      } catch(error) {say(error instanceof RangeError?'浏览器无法分配此棋盘，请缩小尺寸。':error.message,'error');return;}
       parkedGame=game;
-      const w=$('width').valueAsNumber, h=$('height').valueAsNumber;
-      mountDraft(draft??positionGame(game ? copyPosition(game) : seeds.create(
-        seeds.sizeOk(w)?w:Number($('width').defaultValue),seeds.sizeOk(h)?h:Number($('height').defaultValue))));
-    } else {draftMinesValid=true; mount(parkedGame);}
+      setMode(next); mountDraft(position);
+    } else {setMode(next);draftMinesValid=true;mount(parkedGame);}
     say('');
   }
 
   function resizeDraft(blank) {
-    if(!editing || pending || !$('editorSettings').reportValidity()) return;
-    const w=$('editWidth').valueAsNumber, h=$('editHeight').valueAsNumber;
+    if(!editing || pending) return;
+    try { resizeDraftTo(readDimensions('editWidth','editHeight'),blank); }
+    catch(error) {say(error instanceof RangeError?'浏览器无法分配此棋盘，请缩小尺寸。':error.message,'error');}
+  }
+
+  function resizeDraftTo({w,h},blank) {
     const old=game.board, translate=i=>{
       const x=i%old.w, y=Math.floor(i/old.w);
       return x<w && y<h ? y*w+x : -1;
@@ -939,7 +1084,7 @@
     if(tool==='flag') {
       if(n>=0) return;
       if(!g.flags.delete(i)) g.flags.add(i);
-      g.current=g.rating=undefined; scheduleRating();
+      g.current=g.verification=undefined; scheduleVerification();
       render(); return;
     }
     if(tool==='number') {
@@ -964,8 +1109,8 @@
     b.opening=g.visible.flatMap((v,at)=>v>=0?[at]:[]);
     b.first=b.opening[0]??0;
     g.opened=b.opening.length;
-    g.rating=g.current=g.witness=undefined;
-    scheduleRating(); render(); say('');
+    g.verification=g.current=g.witness=undefined;
+    scheduleVerification(); render(); say('');
   }
 
   async function acceptPosition(position) {
@@ -983,54 +1128,64 @@
     say('已导入局面。','success');
   }
 
-  function scheduleRating() {
-    clearTimeout(ratingTimer);
-    ratingWorker?.terminate();
-    ratingWorker=null;
+  function scheduleVerification() {
+    clearTimeout(verificationTimer);
+    verificationWorker?.terminate();
+    verificationWorker=null;
     const g=game;
-    if(!g || g.current && g.rating) {showRating();return;}
+    const needsOpeningVerification=g && !editing && !g.openingVerification;
+    if(!g || g.current && g.verification && !needsOpeningVerification) {showVerification();return;}
     if(editing && g.numbers && !draftMinesValid) {
-      g.current={status:'invalid-total'}; showRating(); controls(); return;
+      g.current={status:'invalid-total'}; showVerification(); controls(); return;
     }
     if(g.board.mines===g.visible.length && (!g.numbers || !g.opened)) {
-      g.current=g.rating={status:'no-safe-cell'}; showRating(); controls(); return;
+      g.current={status:'no-safe-cell'}; showVerification(); controls(); return;
     }
-    showRating();
-    ratingTimer=setTimeout(()=>{
+    showVerification();
+    verificationTimer=setTimeout(()=>{
       try {
-        const task=ratingWorker=background(`const engine = makeMinesEngine();
-          onmessage = ({data:{board,p,visible,proven,flags,numbers,hasRating,opening}}) => {
+        const task=verificationWorker=background(`const engine = makeMinesEngine();
+          const summarize=(${verificationSummary.toString()});
+          onmessage = ({data:{board,p,visible,proven,flags,numbers,hasVerification,opening,confirmed,original,sameAsOpening}}) => {
             try {
-              const current=engine.inspect(p,visible,proven,flags,{opening});
+              const current=engine.inspect(p,visible,proven,flags,{opening,confirmed});
               const witness=numbers && current.status!=='invalid'?engine.publicBoard(p,visible).board:null;
               postMessage({current,witness});
-              if(!hasRating) {
-                const model=numbers?witness:board;
+              if(!hasVerification) {
+                const model=current.status==='invalid' || current.status==='finished'?null:numbers?witness:board;
                 const snapshot=model && {...model,opening:visible.flatMap((v,i)=>v>=0?[i]:[])};
-                postMessage({report:snapshot?engine.verify(snapshot,p,{marks:proven,flags,certify:true,allowEmpty:true,
-                  ...(opening?{}:{visible,rate:false})}):{status:current.status}});
+                const report=snapshot?engine.verify(snapshot,p,{marks:proven,flags,certify:true,confirmed,allowEmpty:true,
+                  ...(opening?{}:{visible})}):{status:current.status};
+                const verification=summarize(report);
+                postMessage({verification,...(sameAsOpening?{openingVerification:verification}:{})});
+              }
+              if(original) {
+                const report=engine.verify(original.board,p,{flags:original.flags,certify:true,allowEmpty:true});
+                postMessage({openingVerification:summarize(report)});
               }
               postMessage({done:true});
             } catch {postMessage({error:true,done:true});}
           };`);
-        const receive=({current,witness,report,error,done})=>{
-          if(task!==ratingWorker || g!==game) return;
-          if(done) {task.terminate(); ratingWorker=null;}
+        const receive=({current,witness,verification,openingVerification,error,done})=>{
+          if(task!==verificationWorker || g!==game) return;
+          if(done) {task.terminate(); verificationWorker=null;}
           if(current) {g.current=current;g.witness=witness;}
-          if(report) {
-            g.rating=report;
-            if(!editing && g.ratingScope==='开局') g.initialRating=report;
-          }
-          if(error) {g.current??={status:'error'};g.rating??={status:'error'};}
-          showRating(); controls();
+          if(verification) g.verification=verification;
+          if(openingVerification) g.openingVerification=openingVerification;
+          if(error) {g.current??={status:'error'};g.verification??={status:'error'};}
+          showVerification(); controls();
         };
         task.onmessage=({data})=>receive(data);
         task.onerror=()=>receive({error:true,done:true});
+        const confirmed=g.manual?[...g.manual.marked]:[];
+        const sameAsOpening=needsOpeningVerification && !g.verification && g.visible===g.originalVisible && !g.proven.size && !confirmed.length &&
+          g.flags.size===g.originalFlags.length && g.originalFlags.every(v=>g.flags.has(v));
         task.postMessage({p:g.p,board:g.board,visible:g.visible,proven:[...g.proven],flags:[...g.flags],numbers:g.numbers,
-          hasRating:!!g.rating,opening:editing || g.opened===g.original.opening.length});
+          hasVerification:!!g.verification,opening:editing || g.opened===g.original.opening.length,confirmed,sameAsOpening,
+          original:needsOpeningVerification && !sameAsOpening?{board:g.original,flags:g.originalFlags}:null});
       } catch {
-        ratingWorker?.terminate(); ratingWorker=null;
-        g.current??={status:'error'}; g.rating??={status:'error'}; showRating(); controls();
+        verificationWorker?.terminate(); verificationWorker=null;
+        g.current??={status:'error'}; g.verification??={status:'error'}; showVerification(); controls();
       }
     },160);
   }
@@ -1089,8 +1244,8 @@
     const value=$('draftMines').valueAsNumber;
     draftMinesValid=Number.isInteger(value) && value>=0 && value<=game.visible.length;
     if(draftMinesValid) game.board.mines=game.p.mines=value;
-    game.witness=game.current=game.rating=undefined;
-    boardSize(); render(); scheduleRating(); controls();
+    game.witness=game.current=game.verification=undefined;
+    boardSize(); render(); scheduleVerification(); controls();
   };
   function chooseDigit(value) {
     digit=value;
@@ -1108,10 +1263,9 @@
     const position=copyPosition(game);
     if(position.numbers) {position.board=game.witness;position.numbers=false;}
     if(position.board.mines===position.visible.length) {say('游戏局面至少需要一个安全格。','error');return;}
-    const report=game.rating?.status==='error'?undefined:game.rating;
     setMode(false);
     parkedGame=undefined;
-    mount(positionGame(position,{},report));
+    mount(positionGame(position));
     say('已将编辑局面载入游戏。','success');
   };
   $('expandPosition').onclick=async()=>{
@@ -1133,8 +1287,8 @@
       g.started??=Date.now();
       if(g.opened===g.visible.length-g.board.mines) finish();
     }
-    g.rating=g.current=g.judgment=g.witness=undefined; g.ratingScope='当前局面';
-    scheduleRating(); render();
+    g.verification=g.current=g.judgment=g.witness=undefined;
+    scheduleVerification(); render();
     say(`已开扩 ${result.cells.length} 格 · ${result.cells.map(coord).join('、')}`,'success');
     if(g.answers && ready()) void judge(g);
   };
@@ -1161,18 +1315,21 @@
   const input = makeBoardInput({$,icon,say,canAct:()=>ready()&&!pending&&!auto,getGame:()=>game,changed:()=>{if(game) render();},
     menu:setRadial,closeReason:()=>showReason(false)});
   $('settings').addEventListener('submit',generate);
-  for (const id of ['width','height']) $(id).addEventListener('input',showDifficultyDefaults);
   showDifficultyDefaults();
   $('cancel').onclick = () => { finishWorker(); say(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
   $('restart').onclick = () => {
     if (!game || worker) return;
-    const {original,p,initialRating,seed,originalFlags,originalNotes}=game;
-    mount(positionGame({board:original,flags:originalFlags,notes:originalNotes},p,initialRating,seed));
+    const {original,p,seed,originalFlags,originalNotes}=game;
+    mount(positionGame({board:original,flags:originalFlags,notes:originalNotes},p,seed));
     say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
   };
   $('focus').onclick = () => requestHint(a=>display(a,true));
   $('hint').onclick = () => requestHint(a=>display(a,false));
-  $('apply').onclick = () => requestHint(stageStep);
+  $('apply').onclick = () => {
+    if (!ready() || auto || pending) return;
+    if (manualStepAction(game?.manual)==='commit') void commitBatch(game);
+    else void requestHint(stageStep);
+  };
   $('commitMarks').onclick = () => {if(!auto) void commitBatch(game);};
   $('solve').onclick = solve;
   $('answers').onclick = toggleAnswers;

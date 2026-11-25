@@ -297,7 +297,7 @@ function makeMinesEngine() {
     return null;
   }
 
-  function constraints(p,visible,marks,ns) {
+  function constraints(p,visible,marks,ns,knownSafe) {
     const n=ns.length;
     const rows=[], local=[], unknown=[], frontier=new Set(), seen=new Map();
     let invalid=false;
@@ -314,9 +314,9 @@ function makeMinesEngine() {
       if(visible[i]>=0) {
         let rhs=visible[i];
         const vs=[];
-        for(const v of ns[i]) if(marks.has(v)) rhs--; else if(visible[v]<0) vs.push(v);
+        for(const v of ns[i]) if(marks.has(v)) rhs--; else if(visible[v]<0 && !knownSafe?.has(v)) vs.push(v);
         add(vs,rhs,i);
-      } else if(!marks.has(i)) unknown.push(i);
+      } else if(!marks.has(i) && !knownSafe?.has(i)) unknown.push(i);
     }
     add(unknown,p.mines-marks.size,-1);
     return {rows,local,unknown,frontier,invalid};
@@ -441,7 +441,7 @@ function makeMinesEngine() {
 
   function analyze(p,visible,marks,options={}) {
     const ns=options.ns??adj(p.w,p.h);
-    const {rows,local,frontier,invalid}=constraints(p,visible,marks,ns);
+    const {rows,local,frontier,invalid}=constraints(p,visible,marks,ns,options.knownSafe);
     const result=(status,move=null)=>({status,move,frontier:frontier.size});
     const step=(vs,value,level,proof)=>vs.some(v=>!options.skip?.has(v)) ? result('move',{vs,value,level,...proof}) : null;
     if(invalid) return result('invalid');
@@ -453,8 +453,8 @@ function makeMinesEngine() {
   // Verify the support of an already established conclusion. An opposing
   // witness must violate at least one clue in every possible proof of it.
   function minimumProof(p,visible,marks,move,{ns=adj(p.w,p.h),budget=120000,
-    target=move.vs[0],value=move.value,alternative=false}={}) {
-    const {rows,unknown,frontier}=constraints(p,visible,marks,ns);
+    target=move.vs[0],value=move.value,alternative=false,knownSafe}={}) {
+    const {rows,unknown,frontier}=constraints(p,visible,marks,ns,knownSafe);
     if(!alternative && move.sources.length===1) return {...move,minimum:true};
     let left=budget;
     const bits=rows.map((_,i)=>1n<<BigInt(i));
@@ -584,12 +584,12 @@ function makeMinesEngine() {
       weightedProof(rows,step) || totalProof(rows,step,target) || resolution(rows,step,{target,budget:120000});
   }
 
-  function minimizeMove(p,visible,marks,move,ns,judgment,{minimumBudget=120000,skip}={}) {
+  function minimizeMove(p,visible,marks,move,ns,judgment,{minimumBudget=120000,skip,knownSafe}={}) {
     // The elementary pass checks every one- and two-row deduction first.
     if(move.level<=1) return {...move,minimum:true,positionMinimum:true};
-    let best=minimumProof(p,visible,marks,move,{ns,budget:minimumBudget,target:move.vs.find(v=>!skip?.has(v))});
+    let best=minimumProof(p,visible,marks,move,{ns,budget:minimumBudget,target:move.vs.find(v=>!skip?.has(v)),knownSafe});
     if(best.minimum && best.sources.length<=2) return {...best,positionMinimum:true};
-    const context=constraints(p,visible,marks,ns);
+    const context=constraints(p,visible,marks,ns,knownSafe);
     judgment??=classifyRows(visible,context,minimumBudget,true);
     let minimum=best.minimum && judgment.status==='complete';
     const {rows,unknown}=context;
@@ -604,7 +604,7 @@ function makeMinesEngine() {
       if(v===undefined) continue;
       const state=judgment.state[v];
       if(state!=='safe' && state!=='mine') continue;
-      const check=minimumProof(p,visible,marks,best,{ns,target:v,value:Number(state==='mine'),alternative:true,budget:minimumBudget});
+      const check=minimumProof(p,visible,marks,best,{ns,target:v,value:Number(state==='mine'),alternative:true,budget:minimumBudget,knownSafe});
       minimum &&= check.minimum;
       if(check.sources.length<best.sources.length) best=check;
     }
@@ -613,12 +613,11 @@ function makeMinesEngine() {
 
   function openingProof(p,visible,move,ns,judgment=classify(p,visible,{nodeBudget:120000}),options) {
     const best=minimizeMove(p,visible,new Set(),move,ns,judgment,options);
-    return {...best,recursiveDepth:judgment.maxDepth,recursiveMin:judgment.depth,
-      recursiveComplete:judgment.status==='complete',openingMinimum:best.positionMinimum};
+    return {...best,openingMinimum:best.positionMinimum};
   }
 
-  function batchMove(p,visible,marks,move,ns,budget=120000) {
-    const context=constraints(p,visible,marks,ns);
+  function batchMove(p,visible,marks,move,ns,budget=120000,knownSafe) {
+    const context=constraints(p,visible,marks,ns,knownSafe);
     const rows=context.rows.filter(r=>move.sources.includes(r.source));
     const local=rows.filter(r=>r.source!==-1), frontier=new Set(local.flatMap(r=>r.vs));
     const {unknown}=context;
@@ -676,9 +675,9 @@ function makeMinesEngine() {
 
   function classifyRows(visible,{rows,local,unknown,frontier,invalid},nodeBudget,grouped=false,witnessOnly=false) {
     const n=visible.length, total=rows.find(row=>row.source===-1);
-    const state=visible.map(x=>x<0?'unknown':'open'), refutationDepths=Array(n).fill(null);
+    const state=visible.map(x=>x<0?'unknown':'open');
     let nodes=0, branchDepth=0, depth=Infinity, maxDepth=0;
-    const result=status=>({status,state,nodes,depth:Number.isFinite(depth)?depth:0,maxDepth,refutationDepths});
+    const result=status=>({status,state,nodes,depth:Number.isFinite(depth)?depth:0,maxDepth});
     if(invalid) return result('invalid');
     const values=new Int8Array(n).fill(-1), trail=[];
     const degree=new Int16Array(n);
@@ -770,7 +769,7 @@ function makeMinesEngine() {
         depth=Math.min(depth,branchDepth);
         maxDepth=Math.max(maxDepth,branchDepth);
         const kind=base[v]?'mine':'safe';
-        for(const i of group) {state[i]=kind;refutationDepths[i]=branchDepth;}
+        for(const i of group) state[i]=kind;
       }
       if(found===null) {exhausted=true;break;}
     }
@@ -850,107 +849,93 @@ function makeMinesEngine() {
     p={...p,mines:board.mines};
     const visible=options.visible?.slice()??opening(board), marks=new Set(options.marks), {ns}=board;
     const flags=new Set(options.flags??marks);
-    const report={steps:0,openingClues:0,openingDepth:0,openingRecursive:0,openingRecursiveMin:0,openingRecursiveComplete:false,
-      openingMinimum:true,firstSafeClues:0,level:0,frontier:0,bottlenecks:0,advanced:0,clues:0,byLevel:[0,0,0,0],trace:[],
-      averageClues:0,averageEnumerationDepth:null,advancedDensity:0,multiSteps:0,longestShallowRun:0,sections:[]};
+    const report={steps:0,openingMinimum:true,trace:[]};
+    const measureDifficulty=options.measureDifficulty!==false;
+    if(measureDifficulty) Object.assign(report,{openingClues:0,openingDepth:0,clues:0,
+      averageClues:0,advancedDensity:0,multiSteps:0,longestShallowRun:0,sections:[]});
     let opened=visible.filter(v=>v>=0).length;
-    report.firstOpened=opened;
+    const firstOpened=opened;
+    if(measureDifficulty) report.firstOpened=firstOpened;
     if(!opened && !options.allowEmpty) return {...report,status:'invalid'};
-    let inBottleneck=false, point, openingPoint, shallowRun=0;
+    let point, openingPoint, shallowRun=0, peak=0;
     const supports=[];
-    const rateDepth=options.certify && !options.visible && options.rate!==false;
-    let depthSum=0, depthSteps=0;
     const checkpoint=(cells)=>({visible:visible.slice(),marks:[...marks],cells});
     let round;
+    const initialConfirmed=new Map(options.confirmed);
+    const commitRound=()=>{
+      const cells=kind=>[...round.targets].filter(([,state])=>state===kind).map(([v])=>v);
+      const commit={safe:cells('safe'),mines:cells('mine')};
+      for(const v of commit.mines) {marks.add(v);flags.add(v);}
+      for(const v of commit.safe) {visible[v]=board.clues[v];flags.delete(v);opened++;}
+      round=undefined;
+      return commit;
+    };
     while(opened<visible.length-p.mines) {
       if(options.certify && !round) {
         const publicState=classifyRows(visible,constraints(p,visible,new Set(),ns),120000,true);
         if(publicState.status!=='complete') return {...report,status:publicState.status,opened};
-        round={targets:confirmationTargets(publicState.state,flags),confirmed:new Set()};
+        const targets=confirmationTargets(publicState.state,flags);
+        const confirmed=new Map([...initialConfirmed].filter(([v,kind])=>targets.get(v)===kind));
+        initialConfirmed.clear();
+        round={targets,confirmed};
+        if(confirmed.size && confirmed.size===targets.size) {commitRound();continue;}
       }
       const a=options.certify ? hint(p,visible,[...marks].filter(v=>flags.has(v)),flags,{
-        opening:!options.visible && opened===report.firstOpened && options.rate!==false,
-        useTotal:options.useTotal,confirmed:round.confirmed}) : analyze(p,visible,marks,{ns,useTotal:options.useTotal});
-      report.frontier=Math.max(report.frontier,a.frontier);
+        opening:!options.visible && opened===firstOpened,
+        useTotal:options.useTotal,
+        confirmed:round.confirmed}) : analyze(p,visible,marks,{ns,useTotal:options.useTotal});
       if(!a.move) {
         const {frontier,unknown}=constraints(p,visible,marks,ns);
         if(options.points) point=checkpoint(frontier.size?[...frontier]:unknown);
         return {...report,status:a.status,opened,...(point?{point}:{}),...(openingPoint?{openingPoint}:{})};
       }
-      let m=a.move, judgment;
+      let m=a.move;
       const used=options.certify?new Set(a.marks):marks;
-      if(rateDepth && depthSteps===report.steps) {
-        judgment=(!report.steps && !used.size && options.judgment) || classifyRows(visible,constraints(p,visible,used,ns),120000);
-      }
       if(!report.steps) {
-        if(!options.certify && !options.visible && options.rate!==false) {
+        if(!options.certify && !options.visible) {
           m=openingProof(p,visible,m,ns);
         }
         if(options.certify && !m.positionMinimum) return {...report,status:'minimum-unavailable',opened};
-        report.openingClues=m.sources.length;
-        report.openingDepth=proofDepth(m);
-        report.openingRecursive=m.recursiveDepth??0;
-        report.openingRecursiveMin=m.recursiveMin??0;
-        report.openingRecursiveComplete=m.recursiveComplete??false;
+        if(measureDifficulty) {
+          report.openingClues=m.sources.length;
+          report.openingDepth=proofDepth(m);
+        }
         report.openingMinimum=m.openingMinimum??m.sources.length<=2;
         if(options.points && m.level>=2) openingPoint=checkpoint([...constraints(p,visible,marks,ns).frontier]);
       }
       const safe=m.safe??(m.value?[]:m.vs), mines=m.mines??(m.value?m.vs:[]);
-      if(safe.length && !report.firstSafeClues) report.firstSafeClues=m.sources.length;
       if(safe.some(v=>visible[v]>=0||used.has(v)||board.bombs[v]) ||
         mines.some(v=>visible[v]>=0||used.has(v)||!board.bombs[v]) ||
         (a.prior??[]).some(move=>move.mines.some(v=>!board.bombs[v]))) return {...report,status:'invalid',opened};
-      let enumerationDepth;
-      if(rateDepth && judgment?.status==='complete') {
-        const depths=[...safe,...mines].map(v=>judgment.refutationDepths[v]);
-        if(depths.length && depths.every(depth=>depth!=null)) {
-          enumerationDepth=Math.min(...depths);
-          depthSum+=enumerationDepth;
-          depthSteps++;
-        }
-      }
       report.steps++;
-      report.clues=Math.max(report.clues,m.sources.length);
-      if(options.certify) {
+      if(measureDifficulty || options.points) peak=Math.max(peak,m.sources.length);
+      if(measureDifficulty) report.clues=peak;
+      if(measureDifficulty && options.certify) {
         const count=m.sources.length;
         supports.push(count);
         report.multiSteps+=Number(count>=3);
         shallowRun=count>=3?0:shallowRun+1;
         report.longestShallowRun=Math.max(report.longestShallowRun,shallowRun);
       }
-      report.byLevel[m.level]++;
-      report.level=Math.max(report.level,m.level);
-      if(m.level>=2) {
-        if(!inBottleneck) report.bottlenecks++;
-        report.advanced++;
-        if(options.points && (!point || m.sources.length>=report.clues)) {
-          point=checkpoint([...new Set(m.sources.flatMap(s=>s<0?m.vs:ns[s]).filter(v=>visible[v]<0 && !marks.has(v)))]);
-        }
+      if(m.level>=2 && options.points && (!point || m.sources.length>=peak)) {
+        point=checkpoint([...new Set(m.sources.flatMap(s=>s<0?m.vs:ns[s]).filter(v=>visible[v]<0 && !marks.has(v)))]);
       }
-      inBottleneck=m.level>=2;
       let commit;
       if(round) {
         if(safe.some(v=>round.targets.get(v)!=='safe') ||
           mines.some(v=>!flags.has(v) && round.targets.get(v)!=='mine')) return {...report,status:'invalid',opened};
         const fresh=[...safe,...mines].filter(v=>round.targets.has(v) && !round.confirmed.has(v));
         if(!fresh.length) return {...report,status:'batch-unavailable',opened};
-        for(const v of fresh) round.confirmed.add(v);
-        if(round.confirmed.size===round.targets.size) {
-          const cells=kind=>[...round.targets].filter(([,state])=>state===kind).map(([v])=>v);
-          commit={safe:cells('safe'),mines:cells('mine')};
-          for(const v of commit.mines) {marks.add(v);flags.add(v);}
-          for(const v of commit.safe) {visible[v]=board.clues[v];flags.delete(v);opened++;}
-          round=undefined;
-        }
+        for(const v of fresh) round.confirmed.set(v,round.targets.get(v));
+        if(round.confirmed.size===round.targets.size) commit=commitRound();
       } else {
         for(const v of mines) marks.add(v);
         for(const v of safe) opened+=reveal(board,visible,v);
       }
-      if(options.trace) report.trace.push({...m,...(enumerationDepth==null?{}:{enumerationDepth}),...(commit?{commit}:{})});
+      if(options.trace) report.trace.push({...m,...(commit?{commit}:{})});
     }
     if(supports.length) {
       report.averageClues=supports.reduce((sum,count)=>sum+count,0)/supports.length;
-      if(depthSteps===supports.length) report.averageEnumerationDepth=depthSum/supports.length;
       report.advancedDensity=report.multiSteps/supports.length;
       report.sections=range(3).map(i=>{
         const steps=supports.slice(Math.ceil(i*supports.length/3),Math.ceil((i+1)*supports.length/3));
@@ -960,13 +945,13 @@ function makeMinesEngine() {
     return {...report,status:'passed',opened,...(point?{point}:{}),...(openingPoint?{openingPoint}:{})};
   }
 
-  function hint(p,visible,proven,flags,{opening=false,minimumBudget=120000,useTotal=true,confirmed}={}) {
+  function hint(p,visible,proven,flags,{opening=false,minimumBudget=120000,useTotal=true,confirmed,excluded}={}) {
     flags=flags instanceof Set?flags:new Set(flags);
     const ns=adj(p.w,p.h), used=new Set(proven), prior=[];
-    if(confirmed?.length || confirmed?.size) {
+    const skip=new Set(excluded);
+    if(skip.size) {
       const base=hint(p,visible,proven,flags,{opening,minimumBudget,useTotal});
       if(!base.move) return base;
-      const skip=new Set(confirmed);
       const fresh=m=>m.safe.some(v=>!skip.has(v)) || m.mines.some(v=>!skip.has(v) && !flags.has(v));
       if(fresh(base.move)) return base;
       const marks=new Set(base.marks);
@@ -988,13 +973,30 @@ function makeMinesEngine() {
       const batch=batchMove(p,visible,marks,best,ns);
       return batch && fresh(batch) ? {...base,move:batch} : {...base,move:null,status:'batch-unavailable'};
     }
+    const knownSafe=new Set();
+    for(const [v,kind] of confirmed??[]) {
+      if(kind==='mine') used.add(v);
+      if(kind==='safe') knownSafe.add(v);
+    }
     while(true) {
-      const a=analyze(p,visible,used,{ns,useTotal});
+      const a=analyze(p,visible,used,{ns,useTotal,knownSafe});
+      let judgment;
+      if(!a.move && a.status!=='invalid' && (confirmed?.size || confirmed?.length)) {
+        const context=constraints(p,visible,used,ns,knownSafe);
+        judgment=classifyRows(visible,context,minimumBudget,true);
+        const fixed=context.unknown.filter(v=>['safe','mine'].includes(judgment.state[v]));
+        if(!fixed.length && judgment.status==='complete') return {...a,status:'confirmed'};
+        for(const target of fixed) {
+          a.move=targetProof(context.rows,target,Number(judgment.state[target]==='mine'));
+          if(a.move) break;
+        }
+      }
       if(!a.move) return a;
-      const options={minimumBudget};
-      const m=opening && used.size===0 ? openingProof(p,visible,a.move,ns,undefined,options) : minimizeMove(p,visible,used,a.move,ns,undefined,options);
+      const options={minimumBudget,knownSafe};
+      const m=opening && !used.size && !knownSafe.size ? openingProof(p,visible,a.move,ns,undefined,options) :
+        minimizeMove(p,visible,used,a.move,ns,judgment,options);
       if(!m.positionMinimum) return {...a,move:null,status:'minimum-unavailable'};
-      const batch=batchMove(p,visible,used,m,ns);
+      const batch=batchMove(p,visible,used,m,ns,minimumBudget,knownSafe);
       if(!batch) return {...a,move:null,status:'batch-unavailable'};
       a.move=batch;
       if(batch.safe.length || batch.mines.some(v=>!flags.has(v))) return {...a,marks:[...used],prior};
@@ -1013,16 +1015,19 @@ function makeMinesEngine() {
     return {status:'complete',board:{w:p.w,h:p.h,mines:p.mines,ns,bombs,clues,opening,first:opening[0]??0,seed:0}};
   }
 
-  function inspect(p,visible,proven=[],flags=proven,{opening=true}={}) {
+  function inspect(p,visible,proven=[],flags=proven,{opening=true,confirmed=[]}={}) {
     flags=new Set(flags);
     const ns=adj(p.w,p.h), context=constraints(p,visible,new Set(),ns);
     const judged=classifyRows(visible,context,150000,true);
     if(judged.status==='invalid') return {status:'invalid'};
-    const fixed=[...confirmationTargets(judged.state,flags).keys()];
+    const targets=confirmationTargets(judged.state,flags);
+    const known=new Map([...confirmed].filter(([v,kind])=>targets.get(v)===kind));
+    const fixed=[...targets.keys()].filter(v=>!known.has(v));
     if(visible.filter(v=>v>=0).length===visible.length-p.mines) return {status:'finished'};
-    if(!fixed.length) return judged.status==='complete'?{status:'blocked',safe:0,mines:0}:{status:'budget'};
+    if(!fixed.length) return judged.status==='complete'?
+      {status:targets.size?'confirmed':'blocked',safe:0,mines:0}:{status:'budget'};
     const marks=[...proven].filter(v=>flags.has(v));
-    const a=hint(p,visible,marks,flags,{opening});
+    const a=hint(p,visible,marks,flags,{opening,confirmed:known});
     return {status:'deducible',safe:fixed.filter(v=>judged.state[v]==='safe').length, mines:fixed.filter(v=>judged.state[v]==='mine').length,
       clues:a.move?.sources.length,depth:a.move?proofDepth(a.move):undefined,proofStatus:a.status,partial:judged.status!=='complete'};
   }
@@ -1222,7 +1227,7 @@ function makeMinesEngine() {
   function seedCompact(p,ns,seed,mines) {
     const n=ns.length, r=random(seed), config={...p,mines}, marks=new Set();
     const map=new Int8Array(n).fill(-1), view=Array(n).fill(-1), givens=[];
-    const largest=Math.max(...ns.map(row=>row.length));
+    const largest=ns.reduce((max,row)=>Math.max(max,row.length),0);
     const centers=range(n).filter(v=>ns[v].length>=largest-2);
     // Keep old clues fixed and assign only the newly exposed neighborhood.
     while(givens.length<Math.min(7,n-mines-1)) {
@@ -1547,7 +1552,7 @@ function makeMinesEngine() {
       const point=checkpoints[r(Math.min(5,checkpoints.length))];
       const candidate=construct(p,r(4294967296),ns,mines,{...start,seed},point,hard);
       if(!candidate || duplicate(candidate)) continue;
-      const next=verify(candidate,p,{judgment:start.judgment,certify:true,trace:true});
+      const next=verify(candidate,p,{certify:true,trace:true});
       if(next.status==='passed' && compare(next,best.report)<0) best={board:candidate,report:next};
     }
     return best;
@@ -1558,18 +1563,84 @@ function makeMinesEngine() {
     return {minAverage:1.2,minMultiPercent,minPeakClues:2};
   }
 
-  function difficultyDefaults(w,h) {
-    return w===8 && h===8 ? {minAverage:2,minMultiPercent:30,minPeakClues:6} : standardDifficulty(w,h);
+  // A signed stencil fixes only the cells that survive cancellation.
+  // The second shape leaves one extra clue open to constrain later marks.
+  const compactStencils=[
+    {total:1, weights:[[3,-1],[4,1],[5,-1],[10,1],[14,-1],[16,-1],[20,-1],[22,1],[23,-1]], anchors:[[12,1],[13,0],[18,0]]},
+    {total:2, weights:[[1,0],[3,-2],[5,-2],[10,2],[14,-1],[16,-2],[19,-1],[20,-2],[22,2],[23,-2]], anchors:[[12,1],[18,0]]},
+  ];
+
+  function* compactCancellation(ns,seed,mines,round,shape) {
+    const r=random(seed);
+    const rotation=r(4), mirror=r(2);
+    const transform=v=>{
+      let x=v%5,y=Math.floor(v/5);
+      if(mirror) x=4-x;
+      for(let i=0;i<rotation;i++) [x,y]=[4-y,x];
+      return x+5*y;
+    };
+    // On a 5x5 board the total can cancel overlapping clues that do not
+    // fit the disjoint two-cell joints of the even-ring construction.
+    const pattern=compactStencils[shape], stencil=pattern.weights.slice();
+    if(round%3===0) {
+      const i=r(stencil.length), [v,k]=stencil[i];
+      const neighbors=ns[v].filter(u=>!stencil.some(([s])=>s===u));
+      if(neighbors.length) stencil[i]=[neighbors[r(neighbors.length)],k];
+    }
+    const givens=stencil.map(([v])=>transform(v)), revealed=new Set(givens);
+    const unknown=range(ns.length).filter(v=>!revealed.has(v));
+    const coefficients=new Int8Array(ns.length).fill(pattern.total);
+    for(const [i,v] of givens.entries()) for(const u of ns[v]) coefficients[u]+=stencil[i][1];
+    const cancelled=unknown.filter(v=>!coefficients[v]);
+    const forced=unknown.filter(v=>coefficients[v]);
+    if(!forced.length || cancelled.length<5) return;
+    const anchors=new Map(pattern.anchors.map(([v,value])=>[transform(v),value])), seen=new Set();
+    for(let trial=0;trial<96;trial++) {
+      const bombs=Array(ns.length).fill(false), flip=r(2);
+      for(const v of forced) bombs[v]=Boolean(Number(coefficients[v]<0)^flip);
+      // The overlapping three-clue region gives the batch a first move;
+      // the total and surrounding clues are needed for other cells.
+      for(const v of cancelled) {
+        bombs[v]=Boolean((round%3===0 ? r(2) : anchors.get(v)??r(2))^flip);
+      }
+      const count=bombs.filter(Boolean).length;
+      if(mines!=null && count!==mines || count<2 || count>=unknown.length-1) continue;
+      const key=bombs.map(Number).join('');
+      if(seen.has(key)) continue;
+      seen.add(key);
+      const clues=ns.map(row=>row.reduce((sum,v)=>sum+Number(bombs[v]),0));
+      const visible=clues.map((clue,v)=>revealed.has(v)?clue:-1);
+      const {rows}=constraints({mines:count},visible,new Set(),ns);
+      if(rows.length<10 || elementary(rows,()=>true)) continue;
+      yield {w:5,h:5,ns,mines:count,seed,first:givens[0],opening:givens,bombs,clues};
+    }
+  }
+
+  function difficultyDefaults() {
+    return {minAverage:2,minMultiPercent:30,minPeakClues:5};
   }
 
   function* generate(p,seed) {
+    const defaults=difficultyDefaults();
+    const target={average:p.minAverage??defaults.minAverage,multiPercent:p.minMultiPercent??defaults.minMultiPercent,
+      peak:p.minPeakClues??defaults.minPeakClues};
+    const area=p.w*p.h, tiny=area===2 || p.w===2 && p.h===2;
+    const required=Math.max(target.peak,Math.ceil(target.average),target.multiPercent>0?3:1);
+    // Besides opened digits, only the total mine count can add a clue.
+    if(area===1 || required>area || tiny && (required>1 || p.mines>0))
+      throw Error('该尺寸和难度下限无法构造需要推理的棋局。请调低难度或增大棋盘。');
     const ns=adj(p.w,p.h), r=random(seed), seen=new Set();
+    if(tiny) {
+      const board=candidate({...p,mines:0},seed,ns);
+      board.opening=[board.first];
+      const report=verify(board,{...p,mines:0},{certify:true});
+      if(report.status!=='passed' || !report.steps) throw Error('未能验证最小棋盘的推理路线。');
+      yield {board,report,target,tried:1,passed:1,constructed:1,route:'compact'};
+      return;
+    }
     const near=ns.map((row,i)=>[...new Set(row.flatMap(v=>ns[v]))].filter(v=>v!==i));
     const plan=openingPlans[(seed>>>0)%openingPlans.length];
     const compact=ns.length<=64 || Math.min(p.w,p.h)<5;
-    const defaults=difficultyDefaults(p.w,p.h);
-    const target={average:p.minAverage??defaults.minAverage,multiPercent:p.minMultiPercent??defaults.minMultiPercent,
-      peak:p.minPeakClues??defaults.minPeakClues};
     const multi=target.multiPercent/100;
     const fits=report=>report.averageClues>=target.average && report.advancedDensity>=multi && report.clues>=target.peak;
     const standard=standardDifficulty(p.w,p.h);
@@ -1580,7 +1651,7 @@ function makeMinesEngine() {
       Math.max(0,1-r.clues/Math.max(1,target.peak));
     const compare=(a,b)=>Number(fits(b))-Number(fits(a)) || deficit(a)-deficit(b) || compareOpening(a,b);
     const min=Math.max(1,Math.ceil(ns.length*.16)), max=Math.max(min,Math.floor(ns.length*.28));
-    let closest, passed=0, constructed=0;
+    let passed=0, constructed=0, closest;
     function duplicate(board) {
       const key=board.opening.slice().sort((a,b)=>a-b)+':'+board.bombs.map(Number).join('');
       if(seen.has(key)) return true;
@@ -1588,8 +1659,26 @@ function makeMinesEngine() {
       seen.add(key);
       return false;
     }
+    function record(report) {
+      if(!closest || compare(report,closest)<0) closest={...report,trace:[]};
+    }
     for(let k=1;;k++) {
       const id=r(4294967296), natural=min+r(max-min+1);
+      if(p.w===5 && p.h===5 && target.peak>=10 && target.peak<=11 && k%4!==0) {
+        const shape=((seed>>>0)+k-1)%compactStencils.length;
+        for(const board of compactCancellation(ns,id,p.mines,k,shape)) {
+          constructed++;
+          if(duplicate(board)) continue;
+          const report=verify(board,p,{certify:true});
+          if(report.status!=='passed' || !report.steps) continue;
+          passed++;
+          if(fits(report)) {
+            yield {board,report,target,tried:k,passed,constructed,route:'compact-cancellation'};
+            return;
+          }
+          record(report);
+        }
+      }
       const dense=random(id^0xd3ab);
       const denseRound=hard && k%4!==0 && k%3!==0;
       const cycleRound=denseRound && target.peak>=6 && Math.min(p.w,p.h)>=5;
@@ -1613,19 +1702,19 @@ function makeMinesEngine() {
         if(!board) continue;
         constructed++;
         if(duplicate(board) || start.givens.some(v=>start.view[v]!==board.clues[v])) continue;
-        const report=verify(board,p,{judgment:start.judgment,certify:true,trace:true});
+        const report=verify(board,p,{certify:true,trace:true});
         if(report.status==='passed' && report.steps) {
           passed++;
           const candidate=fits(report)?{board,report}:refine(p,board,report,start,compare,fits,directed,duplicate);
-          const summary={...candidate.report,trace:[]};
-          if(!closest || compare(summary,closest)<0) closest=summary;
-          if(fits(summary)) {
-            yield {board:candidate.board,report:summary,target,tried:k,passed,constructed,route:compact?'compact':route.kind};
+          if(fits(candidate.report)) {
+            yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,route:compact?'compact':route.kind};
             return;
           }
+          record(candidate.report);
         }
       }
-      yield {closest,target,tried:k,passed,constructed};
+      const summary=closest && {average:closest.averageClues,multiPercent:closest.advancedDensity*100,peak:closest.clues};
+      yield {target,tried:k,passed,constructed,closest:summary};
     }
   }
 

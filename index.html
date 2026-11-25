@@ -3,13 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷</title>
-  <link rel="stylesheet" href="styles.css">
-  <script defer src="engine.js"></script>
-  <script defer src="proof-format.js"></script>
-  <script defer src="board-input.js"></script>
-  <script defer src="position-seed.js"></script>
-  <script defer src="app.js"></script>
+  <link rel="stylesheet" href="styles.css?v=20261125-16">
+  <script defer src="engine.js?v=20261125-15"></script>
+  <script defer src="proof-format.js?v=20261125-8"></script>
+  <script defer src="board-input.js?v=20261125-8"></script>
+  <script defer src="position-seed.js?v=20261125-11"></script>
+  <script defer src="app.js?v=20261125-16"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -40,8 +41,8 @@
     </header>
 
     <form id="settings" class="settings" novalidate aria-label="棋局设置">
-      <label>宽度<input id="width" type="number" min="2" max="24" value="8" required></label>
-      <label>高度<input id="height" type="number" min="2" max="24" value="8" required></label>
+      <label>宽度<input id="width" type="number" min="1" value="5" required></label>
+      <label>高度<input id="height" type="number" min="1" value="5" required></label>
       <div class="form-actions"><button id="generate" class="primary" type="submit">生成棋局</button><button id="cancel" type="button" hidden>取消</button></div>
       <details class="advanced" id="difficultySettings">
         <summary>难度设置</summary>
@@ -53,8 +54,8 @@
       </details>
     </form>
     <form id="editorSettings" class="settings editor-settings" aria-label="编辑器尺寸" hidden>
-      <label>宽度<input id="editWidth" type="number" min="2" max="24" value="8" required></label>
-      <label>高度<input id="editHeight" type="number" min="2" max="24" value="8" required></label>
+      <label>宽度<input id="editWidth" type="number" min="1" value="5" required></label>
+      <label>高度<input id="editHeight" type="number" min="1" value="5" required></label>
       <div class="form-actions"><button type="submit">调整尺寸</button><button id="blankPosition" type="button">新建空白</button><button id="copyGamePosition" type="button">从游戏复制</button></div>
     </form>
 
@@ -102,29 +103,18 @@
           <div class="panel-head"><h2 id="proof-title">推导</h2><button type="button" id="closeProof" class="icon-button" title="关闭推导" aria-label="关闭推导"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></div>
           <div id="proof" class="proof" aria-live="polite"></div>
         </section>
-        <section id="rating" class="rating" aria-labelledby="metrics-title">
-          <div class="rating-head"><h2 id="metrics-title">当前推理</h2><button id="expandPosition" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#eye"/></svg>开扩</button></div>
+        <section id="reasonStatus" class="reason-status" aria-labelledby="reason-status-title">
+          <div class="reason-status-head"><h2 id="reason-status-title">当前推理</h2><button id="expandPosition" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#eye"/></svg>开扩</button></div>
           <p id="currentStatus" class="status" role="status">暂无棋局</p>
           <dl class="metrics current-metrics">
             <div><dt>必安全</dt><dd id="currentSafe">—</dd></div>
             <div><dt>必雷</dt><dd id="currentMines">—</dd></div>
-            <div><dt>最少线索</dt><dd id="currentClues">—</dd></div>
+            <div><dt title="代入已确认红标后，下一步需要的最少线索数">本步最少线索</dt><dd id="currentClues">—</dd></div>
+            <div><dt title="从当前盘面和已确认红标出发，各剩余推导步骤最少线索数的平均值">余局平均线索</dt><dd id="averageClues">—</dd></div>
+            <div><dt title="从初始盘面无猜通关的回放中，各步最少线索数的最大值">本局峰值最少线索数</dt><dd id="peakClues">—</dd></div>
+            <div><dt title="从初始盘面无猜通关的回放中，最少需要 3 条或更多线索的步骤占比">本局多线索推理占比</dt><dd id="multiClueRatio">—</dd></div>
           </dl>
-          <details id="routeRating">
-          <summary>解法评级</summary>
-          <p id="ratingStatus" class="muted" role="status">暂无棋局</p>
-          <dl class="metrics">
-            <div><dt title="从首开后的局面推出任意可走一步所需的最少线索">首步最少线索</dt><dd id="openingClues">—</dd></div>
-            <div><dt title="从原始线索逐步推出第一步结论所经过的最长推导链">首步推导深度</dt><dd id="openingDepth">—</dd></div>
-            <div><dt title="对每个必雷或必安全格记录反证搜索所到的最深层；这里显示这些数值的最小值和最大值">反证递归深度</dt><dd id="openingRecursive">—</dd></div>
-            <div><dt title="数数与双区减法都无步可走的连续阶段">高级卡点</dt><dd id="bottlenecks">—</dd></div>
-            <div><dt title="整局各步最少线索数中的最大值">峰值线索数</dt><dd id="clueCount">—</dd></div>
-            <div><dt title="逐步核验的最少线索数，在整条解法上的平均值">平均最少线索</dt><dd id="averageClues">—</dd></div>
-            <div><dt title="每步最浅反证深度的平均值，仅供诊断，不参与难度达标">平均枚举深度</dt><dd id="averageEnumerationDepth">—</dd></div>
-            <div><dt title="最少需要三条或更多线索的步骤，占整条解法的比例">多线索步骤占比</dt><dd id="multiDensity">—</dd></div>
-          </dl>
-          <p id="boardSeed" class="muted"></p>
-          </details>
+          <p id="verificationStatus" class="muted" role="status" hidden></p>
         </section>
       </aside>
     </div>
@@ -132,7 +122,7 @@
   <dialog id="seedDialog" aria-labelledby="seedDialogTitle">
     <div class="dialog-head"><h2 id="seedDialogTitle"></h2><form method="dialog"><button class="icon-button" title="关闭" aria-label="关闭种子窗口"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></form></div>
     <form id="seedForm">
-      <label>局面种子<textarea id="positionSeedText" rows="4" maxlength="50020" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
+      <label>局面种子<textarea id="positionSeedText" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
       <p id="seedFeedback" class="status" role="status"></p>
       <div class="dialog-actions"><button type="button" id="copyPosition">复制种子</button><button type="submit" class="primary" id="confirmImport">导入</button></div>
     </form>
@@ -142,7 +132,7 @@
     <button type="button" id="reasonMenu" class="orb launcher" title="推理工具" aria-label="推理工具" aria-expanded="false" aria-controls="reasonFlower"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg></button>
   </nav>
   <div id="reasonFlower" class="radial flower" role="group" aria-label="推理工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc"><stop stop-color="#177e72"/><stop offset="1" stop-color="#95b257"/></linearGradient></defs><path stroke="url(#reasonArc)" d="M -89 -8 A 89 86 0 0 1 89 -8"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc"><stop stop-color="#177e72"/><stop offset="1" stop-color="#95b257"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -89 -8 A 89 86 0 0 1 89 -8"/></svg>
     <button type="button" id="closeReason" class="orb black center" title="返回" aria-label="折叠推理工具"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button>
     <button type="button" id="focus" class="orb petal" style="--x:-89px;--y:-8px;--i:1"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
     <button type="button" id="hint" class="orb petal" style="--x:-66px;--y:-66px;--i:2"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
@@ -151,7 +141,7 @@
     <button type="button" id="solve" class="orb petal" style="--x:89px;--y:-8px;--i:5"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#91b9f1"/><stop offset="1" stop-color="#205ba7"/></linearGradient></defs><path stroke="url(#inkArc)" d="M -42 -103 A 112 112 0 0 0 -51 99 M 42 -103 A 112 112 0 0 1 51 99"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#91b9f1"/><stop offset="1" stop-color="#205ba7"/></linearGradient></defs><path pathLength="1" stroke="url(#inkArc)" d="M -42 -103 A 112 112 0 0 0 -51 99 M 42 -103 A 112 112 0 0 1 51 99"/></svg>
   </div>
 </body>
 </html>
