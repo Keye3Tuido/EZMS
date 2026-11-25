@@ -160,7 +160,39 @@ function makeProofFormat() {
 
   const rounding = reflected => reflected ? '向上取整' : '向下取整';
 
-  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding};
+  function simplifyInequality(node) {
+    if (node.row) return node;
+    const a=simplifyInequality(node.a);
+    if (node.kind==='sum') {
+      const b=simplifyInequality(node.b);
+      return a===node.a && b===node.b ? node : {...node,a,b,rhs:a.rhs+b.rhs};
+    }
+    const rhs=Math.floor(a.rhs/2);
+    // Keep the stronger premise when rounding cannot tighten the same sum.
+    if (a.rhs<=rhs && node.terms.length===a.terms.length &&
+        node.terms.every(([v,c],i)=>v===a.terms[i][0] && c===a.terms[i][1])) return a;
+    return a===node.a ? node : {...node,a,rhs};
+  }
+
+  function lineIdentity(raw,sign,rhs) {
+    const ordered=raw.slice().sort(([a],[b])=>a-b);
+    const flipped=sign==='≥' || (sign==='=' && ordered[0]?.[1]<0);
+    return {flipped,key:JSON.stringify([
+      flipped?ordered.map(([v,c])=>[v,-c]):ordered,sign==='='?'=':'≤',flipped?-rhs:rhs
+    ])};
+  }
+
+  function usedLines(lines) {
+    const needed=new Set();
+    for (let i=lines.length-1;i>=0;i--) {
+      if (!lines[i].keep && !needed.has(i+1)) continue;
+      needed.add(i+1);
+      for (const id of lines[i].refs) needed.add(id);
+    }
+    return [...needed].sort((a,b)=>a-b);
+  }
+
+  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding,simplifyInequality,lineIdentity,usedLines};
 }
 
 if (typeof module !== 'undefined') module.exports = makeProofFormat();

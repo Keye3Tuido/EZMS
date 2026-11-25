@@ -18,10 +18,10 @@ function makeMarkHistory() {
   return {
     layers,edit,
     clear(color) {return edit(color,[...layers[color].keys()].map(i=>[i]));},
-    clearHighest() {
+    clearDeductions(level) {
       const advanced=[...layers.blue].filter(([,m])=>m.level>1);
-      const highest=advanced.reduce((n,[,m])=>Math.max(n,m.level),0);
-      return edit('blue',advanced.filter(([,m])=>m.level===highest && ['ʌ','//'].includes(m.symbol)).map(([i])=>[i]));
+      const rank=level??advanced.reduce((n,[,m])=>Math.max(n,m.level),0);
+      return edit('blue',advanced.filter(([,m])=>m.level===rank && ['ʌ','//'].includes(m.symbol)).map(([i])=>[i]));
     },
     get canUndo() {return !!past.length;}, get canRedo() {return !!future.length;},
     undo() {if(past.length) {const change=past.pop();write(change,true);future.push(change);}},
@@ -164,15 +164,19 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   let selected='',level=2,hold,suppress;
   function history() {
     const notes=getGame()?.notes;
-    $('markHistory').hidden=flower.inert && !selected;
+    const visible=!(flower.inert && !selected);
+    $('markHistory').classList.toggle('is-inactive',!visible);
+    $('markHistory').setAttribute('aria-hidden',String(!visible));
+    $('markHistory').inert=!visible;
     $('undoMark').disabled=!notes?.canUndo;
     $('redoMark').disabled=!notes?.canRedo;
   }
   function refresh() {
     for(const [symbol,{button,label}] of buttons) {
       const rank=advanced(symbol)?level:0;
-      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${symbol}${rank?`<sub>${rank}</sub>`:''}`;
+      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${symbol}${rank>2?`<sub>${rank}</sub>`:''}`;
       button.title=button.ariaLabel=rank?`第 ${rank} 层：${label}`:label;
+      if(symbol==='−') button.title+=level===2?'（长按清除第二层拟推）':'（长按清除最高层拟推）';
       if(!['+','−','cursor'].includes(symbol)) button.setAttribute('aria-pressed',String(selected===symbol));
     }
     $('board').classList.toggle('writing-ink',!!selected);
@@ -218,14 +222,18 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
       }
       refresh();
     };
-    if(symbol==='−') bindHold(button,()=>{if(getGame().notes.clearHighest()) changed();history();},activate);
+    if(symbol==='−') bindHold(button,()=>{if(getGame().notes.clearDeductions(level===2?level:undefined)) changed();history();},activate);
     else button.onclick=activate;
   }
   add('cursor','返回游玩',flower);
   const points=[[42,-103],[84,-74],[109,-27],[109,27],[84,74]];
+  // The options share a circle of radius 112; use their locations as arc endpoints.
+  for(const [side,id] of [[-1,'inkTrackLeft'],[1,'inkTrackRight']]) {
+    $(id).setAttribute('d',`M ${side*points[0][0]} ${points[0][1]} ${points.slice(1).map(([x,y])=>`A 112 112 0 0 ${side>0?1:0} ${side*x} ${y}`).join(' ')}`);
+  }
   for(const [side,row] of rows.entries()) for(const [i,[symbol,label]] of row.entries()) {
     const [x,y]=points[i];
-    add(symbol,label,flower,{x:`${side?x:-x}px`,y:`${y}px`,i:i+1});
+    add(symbol,label,flower,{x:`${side?x:-x}px`,y:`${y}px`});
   }
   bindHold(launcher,()=>{
     if(getGame().notes.clear('blue')) {changed();say('已清空蓝色记号。');}
@@ -243,7 +251,8 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
       g.focus=i;
       const existing=notes.layers.blue.get(i), levelForMark=advanced(selected)?level:0;
       const mark=erase || existing?.symbol===selected && existing?.level===levelForMark?undefined:{symbol:selected,level:levelForMark};
-      notes.edit('blue',[[i,mark]]);changed();history();
+      if(notes.edit('blue',[[i,mark]])) changed(i);
+      history();
     }
     return true;
   }

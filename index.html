@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷</title>
-  <link rel="stylesheet" href="styles.css?v=20261125-16">
+  <link rel="stylesheet" href="styles.css?v=20261126-4">
+  <link rel="stylesheet" href="game-motion.css?v=20261126-3">
   <script defer src="engine.js?v=20261125-15"></script>
-  <script defer src="proof-format.js?v=20261125-8"></script>
-  <script defer src="board-input.js?v=20261125-8"></script>
+  <script defer src="proof-format.js?v=20261126-5"></script>
+  <script defer src="board-input.js?v=20261126-2"></script>
   <script defer src="position-seed.js?v=20261125-11"></script>
-  <script defer src="app.js?v=20261125-16"></script>
+  <script defer src="game-feedback.js?v=20261126-4"></script>
+  <script defer src="app.js?v=20261126-6"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -30,20 +32,28 @@
     <symbol id="cursorIcon" viewBox="0 0 24 24"><path d="m4 4 7.07 17 2.51-7.39L21 11.07 4 4Z"/><path d="m13.5 13.5 6 6"/></symbol>
     <symbol id="importIcon" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M5 15v5h14v-5"/></symbol>
     <symbol id="exportIcon" viewBox="0 0 24 24"><path d="M12 15V3m-4 4 4-4 4 4M5 15v5h14v-5"/></symbol>
+    <symbol id="volumeOff" viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4zM16 9l5 6m0-6-5 6"/></symbol>
+    <symbol id="volumeOn" viewBox="0 0 24 24"><path d="m11 5-6 4H2v6h3l6 4zm5 4a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/></symbol>
+    <symbol id="motionIcon" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/><circle cx="3" cy="12" r="1"/><circle cx="21" cy="12" r="1"/></symbol>
   </svg>
   <main>
     <header>
-      <h1><svg class="icon" aria-hidden="true"><use href="#mine"/></svg> 无猜扫雷</h1>
-      <div class="mode-switch" role="group" aria-label="棋盘模式">
-        <button id="gameMode" type="button" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>游戏</button>
-        <button id="editMode" type="button" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg>局面编辑器</button>
+      <h1><span class="game-emblem"><svg class="icon" aria-hidden="true"><use href="#mine"/></svg></span>无猜扫雷</h1>
+      <div class="header-tools">
+        <div class="mode-switch" role="group" aria-label="棋盘模式">
+          <button id="gameMode" type="button" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>游戏</button>
+          <button id="editMode" type="button" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg>局面编辑器</button>
+        </div>
+        <button id="motionToggle" class="icon-button" type="button" aria-label="动画效果" aria-pressed="true" title="关闭动画效果"><svg class="icon" aria-hidden="true"><use href="#motionIcon"/></svg></button>
+        <button id="soundToggle" class="icon-button" type="button" aria-label="反馈音效" aria-pressed="false" title="开启反馈音效"><svg class="icon" aria-hidden="true"><use href="#volumeOff"/></svg></button>
       </div>
     </header>
 
+    <div class="setup-bar">
     <form id="settings" class="settings" novalidate aria-label="棋局设置">
       <label>宽度<input id="width" type="number" min="1" value="5" required></label>
       <label>高度<input id="height" type="number" min="1" value="5" required></label>
-      <div class="form-actions"><button id="generate" class="primary" type="submit">生成棋局</button><button id="cancel" type="button" hidden>取消</button></div>
+      <div class="form-actions"><button id="generate" class="primary" type="submit">生成棋局</button><button id="cancel" type="button" class="is-inactive" aria-hidden="true" disabled>取消</button></div>
       <details class="advanced" id="difficultySettings">
         <summary>难度设置</summary>
         <div>
@@ -65,20 +75,19 @@
       <button type="button" id="playPosition" hidden><svg class="icon" aria-hidden="true"><use href="#play"/></svg>载入游戏</button>
     </div>
 
-    <p id="status" class="status" role="status">可先调整参数，然后点击“生成棋局”。</p>
+    </div>
     <div class="layout">
       <section class="game" aria-label="扫雷棋盘">
         <div class="board-head">
-          <strong id="size">—</strong>
+          <div class="board-title"><span>棋盘</span><strong id="size">—</strong></div>
           <span class="counter" title="总雷数减去旗数"><svg class="icon" aria-hidden="true"><use href="#flag"/></svg><b id="remaining" aria-label="剩余雷数">—</b></span>
           <span id="gameTime" class="counter" title="用时（秒）"><svg class="icon" aria-hidden="true"><use href="#clock"/></svg><b id="time" aria-label="用时（秒）">0</b></span>
-          <div id="markHistory" class="mark-history" hidden>
+          <div id="markHistory" class="mark-history is-inactive" aria-hidden="true">
             <button type="button" id="undoMark" class="icon-button undo" title="撤销记号" aria-label="撤销记号"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
             <button type="button" id="redoMark" class="icon-button" title="重做记号" aria-label="重做记号"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
           </div>
           <button type="button" id="restart" class="icon-button" title="重开本局" aria-label="重开本局"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
-          <button type="button" id="commitMarks" class="primary" hidden>开格并插旗</button>
-          <span id="generationSeed" class="seed-badge" hidden>生成种子 <code id="generationSeedValue"></code></span>
+          <span id="generationSeed" class="seed-badge is-inactive" aria-hidden="true">生成种子 <code id="generationSeedValue"></code></span>
           <div id="editTools" class="edit-tools" role="group" aria-label="编辑格子" hidden>
             <div class="mode-switch" role="group" aria-label="摆局方式">
               <button type="button" data-draft="mine" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#mine"/></svg>标雷</button>
@@ -95,14 +104,23 @@
             </div>
           </div>
         </div>
-        <div class="board-scroll"><p id="emptyBoard" class="empty-board">生成后显示棋盘</p><div id="board" class="board" aria-label="棋盘格子" hidden></div></div>
+        <div class="board-scroll">
+          <div id="emptyBoard" class="empty-board">
+            <div class="empty-grid" aria-hidden="true"><span></span><span></span><span class="empty-number">1</span><span></span><span class="empty-flag"><svg class="icon"><use href="#flag"/></svg></span><span class="empty-number">2</span><span></span><span></span><span></span></div>
+            <p>暂无棋局</p>
+          </div>
+          <div id="board" class="board" aria-label="棋盘格子" hidden></div>
+        </div>
+        <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
+          <div class="round-feedback">
+            <p id="status" class="status" role="status">等待生成或导入棋局</p>
+            <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
+          </div>
+          <button type="button" id="commitMarks" class="primary is-inactive" aria-hidden="true" disabled>开格并插旗</button>
+        </footer>
       </section>
 
-      <aside>
-        <section id="proofPane" class="proof-pane" aria-labelledby="proof-title" hidden>
-          <div class="panel-head"><h2 id="proof-title">推导</h2><button type="button" id="closeProof" class="icon-button" title="关闭推导" aria-label="关闭推导"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></div>
-          <div id="proof" class="proof" aria-live="polite"></div>
-        </section>
+      <aside class="reason-slot">
         <section id="reasonStatus" class="reason-status" aria-labelledby="reason-status-title">
           <div class="reason-status-head"><h2 id="reason-status-title">当前推理</h2><button id="expandPosition" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#eye"/></svg>开扩</button></div>
           <p id="currentStatus" class="status" role="status">暂无棋局</p>
@@ -114,7 +132,11 @@
             <div><dt title="从初始盘面无猜通关的回放中，各步最少线索数的最大值">本局峰值最少线索数</dt><dd id="peakClues">—</dd></div>
             <div><dt title="从初始盘面无猜通关的回放中，最少需要 3 条或更多线索的步骤占比">本局多线索推理占比</dt><dd id="multiClueRatio">—</dd></div>
           </dl>
-          <p id="verificationStatus" class="muted" role="status" hidden></p>
+          <p id="verificationStatus" class="muted" role="status"></p>
+        </section>
+        <section id="proofPane" class="proof-pane" aria-labelledby="proof-title" hidden>
+          <div class="panel-head"><h2 id="proof-title">推导</h2><button type="button" id="closeProof" class="icon-button" title="关闭推导" aria-label="关闭推导"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></div>
+          <div id="proof" class="proof" aria-live="polite"></div>
         </section>
       </aside>
     </div>
@@ -132,16 +154,16 @@
     <button type="button" id="reasonMenu" class="orb launcher" title="推理工具" aria-label="推理工具" aria-expanded="false" aria-controls="reasonFlower"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg></button>
   </nav>
   <div id="reasonFlower" class="radial flower" role="group" aria-label="推理工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc"><stop stop-color="#177e72"/><stop offset="1" stop-color="#95b257"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -89 -8 A 89 86 0 0 1 89 -8"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-89" y1="-8" x2="89" y2="-84"><stop stop-color="#4d78ec"/><stop offset=".52" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -89 -8 C -89 -56 -47 -94 0 -94 S 89 -56 89 -8"/></svg>
     <button type="button" id="closeReason" class="orb black center" title="返回" aria-label="折叠推理工具"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button>
-    <button type="button" id="focus" class="orb petal" style="--x:-89px;--y:-8px;--i:1"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
-    <button type="button" id="hint" class="orb petal" style="--x:-66px;--y:-66px;--i:2"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
-    <button type="button" id="answers" class="orb petal" style="--y:-94px;--i:3" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
-    <button type="button" id="apply" class="orb petal" style="--x:66px;--y:-66px;--i:4"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
-    <button type="button" id="solve" class="orb petal" style="--x:89px;--y:-8px;--i:5"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
+    <button type="button" id="focus" class="orb petal" style="--x:-89px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
+    <button type="button" id="hint" class="orb petal" style="--x:-66px;--y:-66px"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
+    <button type="button" id="answers" class="orb petal" style="--y:-94px" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
+    <button type="button" id="apply" class="orb petal" style="--x:66px;--y:-66px"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
+    <button type="button" id="solve" class="orb petal" style="--x:89px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#91b9f1"/><stop offset="1" stop-color="#205ba7"/></linearGradient></defs><path pathLength="1" stroke="url(#inkArc)" d="M -42 -103 A 112 112 0 0 0 -51 99 M 42 -103 A 112 112 0 0 1 51 99"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-103" x2="0" y2="74"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/></svg>
   </div>
 </body>
 </html>

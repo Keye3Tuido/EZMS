@@ -8,3 +8,4 @@ forest:
     - ".git"
     - "node_modules"
     - ".venv"
+    - "lucid-workflow"

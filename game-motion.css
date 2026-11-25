@@ -1,0 +1,55 @@
+:root {
+  --glide: cubic-bezier(.18,.78,.26,1);
+  --control-time: 155ms;
+  --fan-time: 350ms;
+}
+
+button {
+  transition: scale var(--control-time) var(--glide), background-color var(--control-time) ease,
+    border-color var(--control-time) ease, color var(--control-time) ease, opacity var(--control-time) ease;
+}
+button:active:not(:disabled) { scale: var(--press,.96); }
+summary { transition: background-color var(--control-time) ease, scale var(--control-time) var(--glide); }
+summary:active { scale: .98; }
+input, select { transition: border-color var(--control-time) ease, background-color var(--control-time) ease; }
+
+/* Position is reversible; press feedback never changes the opening path. */
+.radial .orb {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%,-50%) translate(var(--from-x),var(--from-y)) scale(.46);
+  transition: transform 235ms var(--glide), opacity 155ms ease, scale var(--control-time) var(--glide),
+    background-color var(--control-time) ease, border-color var(--control-time) ease, color var(--control-time) ease;
+}
+.radial.expanded .orb {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%,-50%) translate(var(--x,0px),var(--y,0px)) scale(1);
+  transition-duration: var(--fan-time), 240ms, var(--control-time), var(--control-time), var(--control-time), var(--control-time);
+}
+.radial.expanded .orb:disabled { opacity: .52; }
+.radial-track {
+  opacity: 0;
+  transform: translate(calc(var(--from-x) * .28),calc(var(--from-y) * .28)) scale(.77);
+  transition: transform 270ms var(--glide), opacity 240ms ease;
+}
+.radial.expanded .radial-track { opacity: .76; transform: translate(0,0) scale(1); }
+.radial-track path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 310ms var(--glide); }
+.radial.expanded .radial-track path { stroke-dashoffset: 0; transition-duration: 430ms; }
+
+#commitMarks:not(.is-inactive) { animation: commit-in 230ms var(--glide) both; }
+@keyframes commit-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+
+dialog[open] { animation: dialog-in 210ms var(--glide) both; }
+@keyframes dialog-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
+
+/* Hold progress conveys the time remaining even when decorative motion is off. */
+.holding::after { animation: hold-ring 650ms linear forwards; }
+@property --hold-progress { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes hold-ring { from { --hold-progress: 0deg; } to { --hold-progress: 360deg; } }
+
+:root[data-motion-mode='reduced'] :is(button, summary, input, select,
+  .radial .orb, .radial.expanded .orb, .radial-track,
+  .radial-track path, .radial.expanded .radial-track path) { transition: none; }
+:root[data-motion-mode='reduced'] :is(button:active:not(:disabled), summary:active) { scale: none; }
+:root[data-motion-mode='reduced'] :is(dialog[open], #commitMarks:not(.is-inactive)) { animation: none; }

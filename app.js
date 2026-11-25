@@ -4,6 +4,7 @@
   const format = makeProofFormat();
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
+  const feedback = makeGameFeedback($('soundToggle'),$('motionToggle'));
   const proofDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
   proofDrawing.classList.add('board-proof');
   proofDrawing.setAttribute('aria-hidden','true');
@@ -30,16 +31,25 @@
 
   const say = (text, tone = '') => { $('status').textContent = text; $('status').dataset.tone = tone; };
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
-  const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
-  const animate=(node,frames,options)=>{if(!reducedMotion.matches) node.animate(frames,options);};
   const coord = i => format.coordinate(i,game.board.w);
   const source = s => s === -1 ? '总雷数' : coord(s);
 
   function batchControls() {
-    const complete = !!game?.manual?.done, live = ready();
+    const batch=game?.manual, complete=!!batch?.done, live=ready();
     const locked = auto || !!pending;
-    $('commitMarks').hidden = !live || !complete;
-    $('commitMarks').disabled = locked;
+    const commit=$('commitMarks');
+    const canCommit=live && complete;
+    if(!canCommit && document.activeElement===commit) commit.parentElement.focus({preventScroll:true});
+    commit.classList.toggle('is-inactive',!canCommit);
+    commit.setAttribute('aria-hidden',String(!canCommit));
+    commit.disabled=locked || !canCommit;
+    const progress=$('roundProgress');
+    const showProgress=live && !!batch?.marked.size;
+    progress.classList.toggle('is-inactive',!showProgress);
+    progress.setAttribute('aria-hidden',String(!showProgress));
+    progress.max=batch?.total || 1;
+    progress.value=batch?.marked.size || 0;
+    progress.toggleAttribute('data-complete',complete);
     // 标齐后，求解一步直接提交这一批；未标齐时才执行下一条推导。
     $('apply').disabled = locked || !live;
   }
@@ -48,7 +58,10 @@
     const live = game?.state === 'playing', locked = !!worker || auto || !!pending;
     for (const id of fields) $(id).disabled = !!worker;
     $('generate').disabled = !!worker;
-    $('cancel').hidden = !worker;
+    const cancel=$('cancel'), canCancel=!!worker;
+    cancel.classList.toggle('is-inactive',!canCancel);
+    cancel.setAttribute('aria-hidden',String(!canCancel));
+    cancel.disabled=!canCancel;
     for (const id of ['gameMode','editMode','importPosition']) $(id).disabled = locked;
     $('exportPosition').disabled = locked || !game;
     $('playPosition').disabled = locked || !game || game.board.mines===game.visible.length || !!(game.numbers && !game.witness);
@@ -121,6 +134,7 @@
   }
 
   function stopAuto() {
+    if (auto && proofPanel.querySelector('.proof-pending')) clearHint();
     auto = false; run++;
     if (pending) {
       playWorker.terminate(); playWorker = null;
@@ -195,13 +209,12 @@
 
   function mount(position) {
     stopAuto();
-    clearProofHover();
     game=position;
-    if(game) game.highlight=null;
     input.reset(); showReason(false);
-    $('proof').textContent = '';
-    $('proofPane').hidden = true;
-    $('generationSeed').hidden = game?.seed==null || editing;
+    clearHint();
+    const hasSeed=game?.seed!=null && !editing;
+    $('generationSeed').classList.toggle('is-inactive',!hasSeed);
+    $('generationSeed').setAttribute('aria-hidden',String(!hasSeed));
     $('generationSeedValue').textContent = game?.seed??'';
     scheduleVerification();
     const root = $('board');
@@ -233,6 +246,7 @@
     }
     root.replaceChildren(grid,proofDrawing,inkDrawing);
     render(); controls();
+    feedback.visual('board',root);
   }
 
   function boardSize() {
@@ -267,8 +281,8 @@
     $('multiClueRatio').textContent=ratio==null?'—':`${Number((ratio*100).toFixed(2))}%`;
     $('expandPosition').hidden=current?.status!=='blocked' || !!(game.numbers && !game.witness);
     const check=$('verificationStatus');
-    check.hidden=!game || ['finished','invalid','invalid-total','no-safe-cell'].includes(current?.status);
-    check.textContent=verification?.status==='passed' ? (game.numbers?'可行雷图的无猜验证通过':'无猜验证通过') :
+    const showCheck=game && !['finished','invalid','invalid-total','no-safe-cell'].includes(current?.status);
+    check.textContent=!showCheck?'':verification?.status==='passed' ? (game.numbers?'可行雷图的无猜验证通过':'无猜验证通过') :
       verification?.status==='stuck' ? '技巧推导卡住，未证实无猜可解' :
       verification ? '未能证实无猜可解' : '正在验证无猜通关…';
   }
@@ -428,6 +442,7 @@
     const {board,visible,flags,highlight,state,focus} = game;
     const first=new Set(board.opening), proofClues=new Set(highlight?.sources);
     const proofSafe=new Set(highlight?.safe), proofMines=new Set(highlight?.mines);
+    let revealed=0;
     batchControls();
     for (const [i,b] of buttons.entries()) {
       const n = visible[i], mine=editing && !game.numbers && board.bombs[i];
@@ -442,21 +457,21 @@
       const answer=game.answers && game.judgment?.state[i];
       if (proofSafe.has(i) || answer==='safe') marks.push('target-safe');
       if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
-      let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? String(n) : '';
+      let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? `<span class="cell-number">${n}</span>` : '';
       const confirmed=game.manual?.marked.get(i);
       const red=confirmedInk(game,i);
       const blue=game.notes.layers.blue.get(i);
       for(const [color,m] of [['red',red],['blue',blue]]) {
         if(m && !['x','/','//'].includes(m.symbol)) body+=`<span class="cell-note ${color}">${m.symbol}</span>`;
-        if(m?.level>1) body+=`<sub class="ink-rank">${m.level}</sub>`;
+        if(m?.level>2) body+=`<sub class="ink-rank">${m.level}</sub>`;
       }
       if (b.classList.contains('proof-preview')) marks.push('proof-preview');
       const opening=b.classList.contains('covered') && n>=0;
       const flagPlaced=b.classList.contains('cell') && marked && !b.classList.contains('flagged');
       if (b.className !== marks.join(' ')) b.className = marks.join(' ');
-      if(opening) animate(b,[{scale:.87,opacity:.64},{scale:1.025,opacity:1,offset:.72},{scale:1,opacity:1}],{duration:190,easing:'ease-out'});
       if (b.dataset.body !== body) { b.innerHTML = body; b.dataset.body = body; }
-      if(flagPlaced && !mine) animate(b.querySelector('.icon'),[{scale:.75,opacity:.6},{scale:1.1,opacity:1,offset:.72},{scale:1,opacity:1}],{duration:170,easing:'ease-out'});
+      if(opening) feedback.tile('open',b,Math.min(revealed++*11,99));
+      if(flagPlaced && !mine) feedback.visual('flag',b.querySelector('.icon'),65);
       b.tabIndex = i === focus ? 0 : -1;
       b.setAttribute('aria-label',`${coord(i)} ${label}${first.has(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}`);
     }
@@ -505,7 +520,17 @@
   });
   proofPanel.addEventListener('focusout',()=>{focusedProof=undefined;updateProofPreview();});
 
-  function clearHint() { game.highlight = null; clearProofHover(); $('proof').replaceChildren(); }
+  function clearHint(keepProof=false) {
+    if(game) game.highlight = null;
+    clearProofHover();
+    setProofVisible(keepProof);
+    proofPanel.replaceChildren();
+    if(keepProof) showPendingProof();
+  }
+
+  function showPendingProof() {
+    proofPanel.replaceChildren(element('p','proof-pending','正在推理…'));
+  }
   function ready() { return !editing && game?.state === 'playing' && !worker; }
 
   async function judge(g) {
@@ -531,6 +556,7 @@
     game.state = 'won'; game.ended = Date.now();
     stopAuto();
     say('通关 · 所有安全格已打开','success');
+    feedback.sound('won');
   }
 
   function removeFlag(g,i) {
@@ -551,13 +577,17 @@
       say(judgment?.status==='invalid'?'当前线索互相矛盾。':'未能核对当前局面。','error'); return;
     }
     const batch=g.manual??makeManualBatch(judgment.state,g.flags,engine.confirmationTargets);
+    const added=cells.filter(i=>!batch.marked.has(i));
+    const wasDone=batch.done;
     const result=batch.record(cells,kind);
     if(result.wrong!==undefined) {
+      feedback.tile('rejected',buttons[result.wrong]);
+      feedback.sound('rejected');
       say(`标错了：${coord(result.wrong)} 在当前线索下可能${kind==='mine'?'安全':'有雷'}。`,'error'); return;
     }
     g.manual=batch;
     if(from!==undefined) removeFlag(g,from);
-    showMarks(g);
+    showMarks(g,added.filter(i=>batch.marked.has(i)),wasDone);
   }
 
   function markProgress(g) {
@@ -565,11 +595,13 @@
     say(done?(auto?'本轮已标齐，即将开格并插旗。':'本轮已标齐，可以开格并插旗。'): `本轮已确认 ${marked.size} / ${total} 格`);
   }
 
-  function showMarks(g) {
+  function showMarks(g,added,wasDone) {
     g.started??=Date.now();
     markProgress(g);
     g.current=g.verification=undefined; scheduleVerification();
     render();
+    for(const i of added) feedback.tile('ink',buttons[i]);
+    if(added.length) feedback.sound(!wasDone && g.manual.done?'ready':'ink');
   }
 
   async function commitBatch(g) {
@@ -589,12 +621,18 @@
       }
       Object.assign(g,{board:result.board,visible:result.visible,opened:g.opened+result.opened,judgment:null});
     }
+    feedback.handoff(inkDrawing);
     g.proven=proven;
     g.flags=flags;
     g.manual=null;
     g.current=g.verification=undefined; scheduleVerification();
-    if(g.opened===g.visible.length-g.board.mines) finish();
-    else say(`本轮已打开 ${safe.length} 格，插旗 ${mines.length} 格。`,'success');
+    const won=g.opened===g.visible.length-g.board.mines;
+    clearHint(auto && !won && !$('proofPane').hidden);
+    if(won) finish();
+    else {
+      say(`本轮已打开 ${safe.length} 格，插旗 ${mines.length} 格。`,'success');
+      feedback.sound(safe.length?'commit':'flag');
+    }
     render();
     if(safe.length && g.answers && ready()) {
       const result=await judge(g);
@@ -712,7 +750,7 @@
   }
 
   function steps(batch) {
-    const list = element('ol','proof-steps'), rows = new Map(), emitted = new Map();
+    const list = element('ol','proof-steps'), rows = new Map(), emitted = new Map(), lines = [];
     const visited = new Set();
     const gather = node => {
       if (visited.has(node)) return;
@@ -729,7 +767,11 @@
     const groups = engine.equivalentGroups([...rows.values()]);
     const ones = vs => vs.map(v => [v,1]);
     const rowNumbers = new Map();
-    const equationNumber = id => element('span','equation-number',String(id));
+    function equationNumber(id) {
+      const number=element('span','equation-number',String(id));
+      number.dataset.equation=String(id);
+      return number;
+    }
     function arithmetic(refs, reflected=false) {
       return format.referenceTerms(refs,reflected).flatMap(({id,operator,factor},i)=>{
         const term=element('span','equation-ref');
@@ -742,11 +784,14 @@
       const {w,h}=game.board;
       const grouping=conclusion ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
       const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
-      const key=JSON.stringify([raw.slice().sort(([a],[b])=>a-b),comparison,constant,constantFirst]);
+      const {key,flipped}=format.lineIdentity(raw,sign,rhs);
       if(emitted.has(key)) {
         const ref=emitted.get(key);
-        if(conclusion) list.children[ref.id-1].classList.add(`conclusion-${conclusion}`);
-        return ref;
+        if(conclusion) {
+          list.children[ref.id-1].classList.add(`conclusion-${conclusion}`);
+          if(sign==='=') lines[ref.id-1].keep=true;
+        }
+        return {...ref,reflected:ref.reflected!==(ref.flipped!==flipped)};
       }
       const line = element('li','proof-line'), formula = element('div','formula');
       const id=list.children.length+1;
@@ -784,7 +829,9 @@
         line.append(small);
       }
       list.append(line);
-      const ref={id,reflected:constantFirst,exact:comparison==='='};
+      lines.push({keep:Boolean(conclusion && sign==='='),refs:[...line.querySelectorAll('.proof-note [data-equation]')]
+        .map(number=>Number(number.dataset.equation))});
+      const ref={id,reflected:constantFirst,exact:comparison==='=',flipped};
       emitted.set(key,ref);
       return ref;
     }
@@ -799,7 +846,9 @@
     for(const m of batch.proofs) {
     const conclusion=m.value?'mine':'safe';
     if(m.kind==='count') {
-      list.children[rowNumbers.get(m.row.source)-1].classList.add(`conclusion-${conclusion}`);
+      const id=rowNumbers.get(m.row.source);
+      list.children[id-1].classList.add(`conclusion-${conclusion}`);
+      lines[id-1].keep=true;
     } else if (m.kind === 'difference') {
       const shared = new Set(m.shared);
       const capacity = row => row.vs.filter(v => !shared.has(v)).length;
@@ -830,13 +879,19 @@
       const numbers = [];
       for (const n of m.nodes) {
         const terms = [...ones(n.positive),...n.negative.map(v => [v,-1])];
+        const rhs=1-n.negative.length;
+        if (n.row && terms.length===n.row.vs.length && (n.positive.length?n.row.rhs:-n.row.rhs)===rhs) {
+          numbers.push(rowNumbers.get(n.row.source));
+          continue;
+        }
         const note = n.row ? [equationNumber(rowNumbers.get(n.row.source)),`，取区外${n.positive.length?'上':'下'}界`]
           : [equationNumber(numbers[n.from[0]]),'、',equationNumber(numbers[n.from[1]]),' 取整消去 ',chip(n.pivot)];
-        numbers.push(add(terms,'≥',1-n.negative.length,note,n===m.nodes.at(-1)?conclusion:null).id);
+        numbers.push(add(terms,'≥',rhs,note,n===m.nodes.at(-1)?conclusion:null).id);
       }
       add(ones(m.vs),'=',m.value ? m.vs.length : 0,
         [equationNumber(numbers.at(-1)),m.value?'，二元上界':'，二元下界'],conclusion);
     } else if (m.inequality) {
+      const inequality=format.simplifyInequality(m.inequality);
       const labels = new Map();
       const visit = r => {
         if (labels.has(r)) return labels.get(r);
@@ -848,25 +903,30 @@
           const sign=refs.every(ref=>ref.exact)?'=':'≤';
           const reflected=format.relation(sign,r.rhs).constantFirst;
           const note=[...arithmetic(refs,reflected),' ',cancellationChip(parts.map(part=>part.terms),reflected)];
-          ref={...add(r.terms,sign,r.rhs,note,r===m.inequality?conclusion:null),k:1};
+          ref={...add(r.terms,sign,r.rhs,note,r===inequality?conclusion:null),k:1};
         } else {
           const a=visit(r.a), reflected=format.relation('≤',r.rhs).constantFirst;
-          const note=['式 ',...arithmetic([a],reflected),` 除以 2，${format.rounding(reflected)}`];
-          ref={...add(r.terms,'≤',r.rhs,note,r===m.inequality?conclusion:null),k:1};
+          const note=[...arithmetic([a],reflected),` ÷ 2，系数与常数${format.rounding(reflected)}`];
+          ref={...add(r.terms,'≤',r.rhs,note,r===inequality?conclusion:null),k:1};
         }
         labels.set(r,ref);
         return ref;
       };
-      const {id:final,reflected,exact}=visit(m.inequality);
-      const bound=format.weightedBound(m,reflected,exact);
+      const {id:final,exact}=visit(inequality);
+      const reflected=inequality.rhs<0;
+      const slack=inequality.rhs-m.min;
+      const bound=format.weightedBound({...m,inequality,slack},reflected,exact);
       if (bound) {
         const extremum=reflected?'上界':'下界';
-        const notes=m.slack?null:format.extremumNotes(bound,m.value);
+        const notes=slack?null:format.extremumNotes(bound,m.value);
         const basis=notes?notes.capacity:[equationNumber(final),`，其余项取${extremum}`];
         const limit=add(bound.terms,bound.sign,bound.rhs,basis);
         const deduction=notes?`，${notes.deduction}`:'，每格权重超过余量';
         add(ones(m.vs),'=',m.value ? m.vs.length : 0,
-          [...(m.slack?[]:[equationNumber(final),'、']),equationNumber(limit.id),deduction],conclusion);
+          [...(!slack && final!==limit.id?[equationNumber(final),'、']:[]),equationNumber(limit.id),deduction],conclusion);
+      } else {
+        list.children[final-1].classList.add(`conclusion-${conclusion}`);
+        lines[final-1].keep=true;
       }
     }
     if(m.symmetric.some(v=>!m.vs.includes(v))) {
@@ -874,10 +934,18 @@
       add(ones(group),'=',m.value?group.length:0,['与 ',chip(m.vs),' 等价'],conclusion);
     }
     }
+    const numbering=new Map(format.usedLines(lines).map((id,i)=>[id,i+1]));
+    for(const [i,line] of [...list.children].entries()) {
+      if(!numbering.has(i+1)) line.remove();
+      else for(const number of line.querySelectorAll('[data-equation]')) {
+        number.textContent=String(numbering.get(Number(number.dataset.equation)));
+      }
+    }
     return list;
   }
 
   function display(a, weak) {
+    if($('proofPane').hidden) return;
     const panel=$('proof'), m=a.move;
     clearProofHover();
     panel.replaceChildren();
@@ -940,10 +1008,12 @@
       say('推导未通过核对，红色标记未改变。','error');return false;
     }
     g.manual??=makeManualBatch(judgment.state,g.flags,engine.confirmationTargets);
-    const before=g.manual.marked.size;
+    const added=[...safe,...mines].filter(i=>!g.manual.marked.has(i));
+    const wasDone=g.manual.done;
     g.manual.record(safe,'safe'); g.manual.record(mines,'mine');
-    if(g.manual.marked.size===before) return false;
-    showMarks(g);
+    const confirmed=added.filter(i=>g.manual.marked.has(i));
+    if(!confirmed.length) return false;
+    showMarks(g,confirmed,wasDone);
     return true;
   }
 
@@ -958,7 +1028,10 @@
     if (!ready() || pending) return;
     auto = true;
     const task=++run, g=game;
-    showProof();
+    if($('proofPane').hidden) {
+      showPendingProof();
+      setProofVisible(true);
+    }
     controls();
     try {
       while (task === run && ready()) {
@@ -977,9 +1050,9 @@
   async function requestHint(show) {
     if (!ready() || auto || pending) return;
     const task = run;
-    showProof();
     clearHint(); render();
-    $('proof').textContent = '正在推理…';
+    setProofVisible(true);
+    showPendingProof();
     const a = await next();
     if (task === run && ready() && a) show(a);
   }
@@ -997,11 +1070,17 @@
     launcher.setAttribute('aria-expanded',String(open));
   }
 
-  function showProof() {
-    const wasHidden=$('proofPane').hidden;
-    $('proofPane').hidden=false;
-    if(wasHidden) animate($('proofPane'),[{opacity:0,translate:'0 6px'},{opacity:1,translate:'0 0'}],{duration:180,easing:'ease-out'});
-    document.querySelector('.layout').scrollIntoView({block:'nearest'});
+  function setProofVisible(visible) {
+    const pane=$('proofPane'), wasHidden=pane.hidden;
+    if(!visible && pane.contains(document.activeElement)) $('reasonMenu').focus({preventScroll:true});
+    $('reasonStatus').inert=visible;
+    pane.hidden=!visible;
+    if(visible && wasHidden) feedback.visual('proof',proofPanel);
+  }
+
+  function closeProof() {
+    clearHint(); render();
+    $('reasonMenu').focus({preventScroll:true});
   }
 
   function setMode(next) {
@@ -1312,10 +1391,16 @@
     seedFeedback('已复制。','success');
   };
 
-  const input = makeBoardInput({$,icon,say,canAct:()=>ready()&&!pending&&!auto,getGame:()=>game,changed:()=>{if(game) render();},
+  const input = makeBoardInput({$,icon,say,canAct:()=>ready()&&!pending&&!auto,getGame:()=>game,changed:i=>{
+    if(game) {render();feedback.tile('blue',buttons[i]);feedback.sound('ink');}
+  },
     menu:setRadial,closeReason:()=>showReason(false)});
   $('settings').addEventListener('submit',generate);
   showDifficultyDefaults();
+  const difficulty=$('difficultySettings');
+  document.addEventListener('pointerdown',e=>{
+    if(difficulty.open && !difficulty.contains(e.target)) difficulty.open=false;
+  });
   $('cancel').onclick = () => { finishWorker(); say(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
   $('restart').onclick = () => {
     if (!game || worker) return;
@@ -1335,10 +1420,12 @@
   $('answers').onclick = toggleAnswers;
   $('reasonMenu').onclick = ()=>{if(auto) pauseSolve();else showReason($('reasonFlower').inert,true);};
   $('closeReason').onclick = ()=>showReason(false,true);
-  $('closeProof').onclick = ()=>{clearHint();$('proofPane').hidden=true;render();$('reasonMenu').focus({preventScroll:true});};
+  $('closeProof').onclick = closeProof;
   document.addEventListener('keydown',e=>{
-    if(e.key!=='Escape') return;
-    if(!$('reasonFlower').inert) showReason(false,true);
+    if(e.key!=='Escape' || e.defaultPrevented || $('seedDialog').open) return;
+    if(!$('proofPane').hidden) closeProof();
+    else if(difficulty.open) {difficulty.open=false; difficulty.querySelector('summary').focus({preventScroll:true});}
+    else if(!$('reasonFlower').inert) showReason(false,true);
     else if(!$('markFlower').inert || input.writing) {input.close();$('markMenu').focus({preventScroll:true});}
   });
 

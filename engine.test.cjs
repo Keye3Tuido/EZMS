@@ -576,7 +576,7 @@ test('mark history keeps colors separate and treats clears as one action', () =>
   const mark=(symbol,level=0)=>({symbol,level});
   h.edit('red',[[0,mark('x')]]);
   h.edit('blue',[[0,mark('v',3)],[1,mark('//',3)],[2,mark('ʌ',2)],[3,mark('ʌ',3)]]);
-  h.clearHighest();
+  h.clearDeductions();
   assert.deepEqual([...h.layers.blue.keys()],[0,2]);
   h.undo(); assert.equal(h.layers.blue.size,4);
   h.redo(); assert.equal(h.layers.blue.size,2);
@@ -587,6 +587,18 @@ test('mark history keeps colors separate and treats clears as one action', () =>
   h.edit('red',[[0]]); assert.equal(h.layers.red.size,0);
   h.undo(); assert.equal(h.layers.red.size,1);
   assert.equal(h.layers.blue.get(0).symbol,'v');
+});
+
+test('clearing second-level deductions preserves assumptions and other layers', () => {
+  const h=require('./board-input.js')();
+  const original=[['v',2],['e',2],['ʌ',2],['//',2],['ʌ',3],['//',4],['/',0]]
+    .map(([symbol,level],i)=>[i,{symbol,level}]);
+  h.edit('blue',original);
+  assert.equal(h.clearDeductions(2),true);
+  assert.deepEqual([...h.layers.blue.keys()],[0,1,4,5,6]);
+  assert.equal(h.clearDeductions(2),false);
+  h.undo(); assert.deepEqual([...h.layers.blue].sort(([a],[b])=>a-b),original);
+  h.redo(); assert.deepEqual([...h.layers.blue.keys()],[0,1,4,5,6]);
 });
 
 test('manual confirmations wait for all forced cells and reject incorrect batches atomically', () => {
@@ -1062,6 +1074,38 @@ test('small residual positions agree with every valid layout', () => {
     }
   }
   for(const kind of ['count','difference','linear']) assert.ok(checked.get(kind)>0,kind);
+});
+
+test('proof display replaces unchanged and weaker cuts while preserving useful cuts', () => {
+  const row=(terms,rhs)=>({row:{},terms,rhs});
+  const floor=a=>({kind:'floor',a,terms:a.terms.map(([v,c])=>[v,Math.floor(c/2)]).filter(([,c])=>c),rhs:Math.floor(a.rhs/2)});
+  const same=row([[4,-1],[9,-1]],-1);
+  assert.equal(format.simplifyInequality(floor(same)),same);
+  const stronger=row([[4,-1],[9,-1],[10,-1]],-3);
+  const weak=floor(stronger), b=row([[4,1]],1);
+  const sum={kind:'sum',a:weak,b,terms:[[9,-1],[10,-1]],rhs:-1};
+  const compact=format.simplifyInequality(sum);
+  assert.equal(compact.a,stronger);
+  assert.equal(compact.rhs,-2);
+  assert.equal(sum.rhs,-1);
+  const useful=floor(row([[4,-2],[9,1]],1));
+  assert.equal(format.simplifyInequality(useful),useful);
+});
+
+test('proof display shares equivalent written bounds without conflating opposite bounds', () => {
+  const raw=[[4,-1],[9,2]], reverse=[[9,-2],[4,1]];
+  const upper=format.lineIdentity(raw,'≤',-1);
+  const lower=format.lineIdentity(reverse,'≥',1);
+  assert.equal(upper.key,lower.key);
+  assert.notEqual(upper.flipped,lower.flipped);
+  assert.notEqual(upper.key,format.lineIdentity(raw,'≥',-1).key);
+  assert.notEqual(upper.key,format.lineIdentity(raw,'=',-1).key);
+  assert.equal(format.lineIdentity(raw,'=',-1).key,format.lineIdentity(reverse,'=',1).key);
+});
+
+test('proof display retains only conclusions and their transitive dependencies', () => {
+  const lines=[{refs:[]},{refs:[1]},{refs:[1]},{refs:[3],keep:true},{refs:[2]},{refs:[],keep:true}];
+  assert.deepEqual(format.usedLines(lines),[1,3,4,6]);
 });
 
 test('integer cut rounds negative coefficients down and preserves the bound', () => {
