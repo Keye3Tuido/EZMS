@@ -28,15 +28,17 @@ function makeGameFeedback(toggle, motionToggle) {
     open: [{opacity:1,scale:1},{opacity:.9,scale:.84,offset:.34},{opacity:0,scale:.68}],
     flag: [{opacity:0,translate:'0 -9px',scale:.72},{opacity:1,translate:'0 1px',scale:1.12,offset:.66},{opacity:1,translate:'0 0',scale:1}],
     proof: [{opacity:.45,translate:'0 5px'},{opacity:1,translate:'0 0'}],
-    rejected: [{translate:'0 0',opacity:1},{translate:'-3px 0',offset:.16},{translate:'2px 0',opacity:.9,offset:.38},{translate:'0 0',opacity:.8,offset:.57},{translate:'0 0',opacity:0}],
+    rejected: [{opacity:1},{opacity:1,offset:.72,easing:ease},{opacity:0}],
     ink: [{opacity:.85,scale:.72},{opacity:1,scale:1,offset:.25},{opacity:0,scale:1}],
     handoff: [{opacity:1},{opacity:.8,offset:.23},{opacity:0}]
   };
-  const durations={board:255,open:330,flag:310,proof:190,rejected:550,ink:350,handoff:218};
+  const durations={board:255,open:330,flag:310,proof:190,rejected:1800,ink:350,handoff:218};
   function visual(kind,node,delay=0) {
     if (!node?.animate || motionReduced()) return;
     playing.get(node)?.cancel();
-    const animation=node.animate(frames[kind],{delay,duration:durations[kind],easing:ease,fill:'backwards'});
+    const rejected=kind==='rejected';
+    const animation=node.animate(frames[kind],{delay,duration:durations[kind],
+      easing:rejected?'linear':ease,fill:rejected?'both':'backwards'});
     playing.set(node,animation);
     activeAnimations.add(animation);
     const release=()=>{
@@ -48,14 +50,32 @@ function makeGameFeedback(toggle, motionToggle) {
   }
 
   const effects=new WeakMap();
+  function clearRejection(cell) {
+    const effect=effects.get(cell);
+    if(effect?.kind==='rejected') effect.remove();
+  }
   function tile(kind,cell,delay=0) {
-    if (!cell?.animate || motionReduced()) return;
+    const rejected=kind==='rejected';
+    if (!cell || (!rejected && (!cell.animate || motionReduced()))) return;
     effects.get(cell)?.remove();
     const effect=document.createElement('span');
     effect.className='tile-effect'; effect.dataset.effect=kind;
     effect.setAttribute('aria-hidden','true');
-    cell.append(effect); effects.set(cell,effect);
-    visual(kind==='blue'?'ink':kind,effect,delay).finished.then(()=>effect.remove(),()=>effect.remove());
+    cell.append(effect);
+    const animation=visual(kind==='blue'?'ink':kind,effect,delay);
+    let timer;
+    const entry={kind,remove};
+    effects.set(cell,entry);
+    function remove() {
+      clearTimeout(timer);
+      if(animation && animation.playState!=='finished') animation.cancel();
+      effect.remove();
+      if(effects.get(cell)===entry) effects.delete(cell);
+    }
+    // Keep the warning visible even if motion is disabled while it is shown.
+    if(rejected) timer=setTimeout(remove,durations.rejected);
+    else if(animation) animation.finished.then(remove,remove);
+    else remove();
   }
 
   function handoff(ink) {
@@ -118,5 +138,5 @@ function makeGameFeedback(toggle, motionToggle) {
       reflect();
     }
   });
-  return {visual,tile,handoff,sound};
+  return {visual,tile,clearRejection,handoff,sound};
 }

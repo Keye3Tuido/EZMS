@@ -27,6 +27,7 @@
   const proofKinds=['cancelled','positive','negative','element'];
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   let hoveredProof, focusedProof, pinnedProof;
+  let activeProofRow;
   let activeAreaPreview = null;
 
   const say = (text, tone = '') => { $('status').textContent = text; $('status').dataset.tone = tone; };
@@ -218,7 +219,7 @@
     $('generationSeedValue').textContent = game?.seed??'';
     scheduleVerification();
     const root = $('board');
-    $('emptyBoard').hidden = !!game;
+    root.parentElement.hidden = !game;
     root.hidden = !game;
     if(!game) {
       $('size').textContent='—'; $('remaining').textContent='—'; time();
@@ -482,7 +483,14 @@
   }
 
   function updateProofPreview() {
-    const next=hoveredProof??focusedProof??(pinnedProof && proofTargets.get(pinnedProof))??null;
+    const target=hoveredProof??focusedProof??pinnedProof;
+    const row=target?.closest('.proof-line');
+    if(row!==activeProofRow) {
+      activeProofRow?.classList.remove('proof-active');
+      row?.classList.add('proof-active');
+      activeProofRow=row;
+    }
+    const next=(proofTargets.get(target)??proofRows.get(target))??null;
     if(next===activeAreaPreview) return;
     for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
@@ -502,13 +510,16 @@
   }
 
   const proofPanel=$('proof');
+  let touchProof=false;
   function proofAt(target,includeRow) {
     if(!proofPanel.contains(target)) return;
-    const token=proofTargets.get(target?.closest?.('.proof-cell'));
-    return token??(includeRow ? proofRows.get(target?.closest?.('.proof-line')) : undefined);
+    const token=target?.closest?.('.proof-cell');
+    if(proofTargets.has(token)) return token;
+    const row=includeRow && target?.closest?.('.proof-line');
+    if(proofRows.has(row)) return row;
   }
   function hoverProof(e,target) {
-    if(e.pointerType==='touch') return;
+    if(e.pointerType!=='mouse') return;
     hoveredProof=proofAt(target,true);
     updateProofPreview();
   }
@@ -519,6 +530,26 @@
     updateProofPreview();
   });
   proofPanel.addEventListener('focusout',()=>{focusedProof=undefined;updateProofPreview();});
+  document.addEventListener('pointerdown',e=>{
+    touchProof=e.pointerType==='touch' || e.pointerType==='pen';
+  });
+  document.addEventListener('click',e=>{
+    if(pinnedProof && !proofAt(e.target,true)) clearProofHover();
+  },true);
+  proofPanel.addEventListener('click',e=>{
+    const direct=e.detail!==0 && touchProof;
+    const target=proofAt(e.target,direct);
+    if(!target || (!direct && !target.classList.contains('cancellation-chip'))) return;
+    if(direct) {
+      // A tap previews in place; it must not move focus to the board.
+      e.preventDefault();e.stopPropagation();
+      hoveredProof=focusedProof=undefined;
+    }
+    if(pinnedProof?.classList.contains('cancellation-chip')) pinnedProof.setAttribute('aria-pressed','false');
+    pinnedProof=pinnedProof===target?undefined:target;
+    if(pinnedProof?.classList.contains('cancellation-chip')) pinnedProof.setAttribute('aria-pressed','true');
+    updateProofPreview();
+  },true);
 
   function clearHint(keepProof=false) {
     if(game) game.highlight = null;
@@ -583,8 +614,10 @@
     if(result.wrong!==undefined) {
       feedback.tile('rejected',buttons[result.wrong]);
       feedback.sound('rejected');
-      say(`标错了：${coord(result.wrong)} 在当前线索下可能${kind==='mine'?'安全':'有雷'}。`,'error'); return;
+      const cell=coord(result.wrong);
+      say(kind==='mine'?`无法插旗：${cell} 可能安全。`:`无法开格：${cell} 可能有雷。`,'rejected'); return;
     }
+    for(const i of cells) feedback.clearRejection(buttons[i]);
     g.manual=batch;
     if(from!==undefined) removeFlag(g,from);
     showMarks(g,added.filter(i=>batch.marked.has(i)),wasDone);
@@ -739,13 +772,6 @@
     preview.setAttribute('aria-label',preview.title);
     proofTargets.set(preview,proofPreview([cancelled,positive,negative]));
     preview.setAttribute('aria-pressed','false');
-    preview.onclick=()=>{
-      const pin=pinnedProof!==preview;
-      pinnedProof?.setAttribute('aria-pressed','false');
-      pinnedProof=pin?preview:undefined;
-      preview.setAttribute('aria-pressed',String(pin));
-      updateProofPreview();
-    };
     return preview;
   }
 
@@ -1430,18 +1456,55 @@
   });
 
   const board = $('board');
-  let flagDrag, skipDragClick=false;
+  let flagDrag, inkDrag, skipDragClick=false;
+  board.addEventListener('touchstart',e=>{
+    if(input.writing && e.target.closest('[data-cell]')) e.preventDefault();
+  },{passive:false});
+  function cellAt(x,y) {
+    const cell=document.elementFromPoint(x,y)?.closest('[data-cell]');
+    if(cell && board.contains(cell)) return Number(cell.dataset.cell);
+  }
+  function moveInk(e) {
+    if(inkDrag?.id!==e.pointerId) return;
+    const {x,y,spacing}=inkDrag, dx=e.clientX-x, dy=e.clientY-y;
+    // Capture keeps the gesture active across gaps; sample the segment to avoid skipping cells.
+    const count=Math.max(1,Math.ceil(Math.hypot(dx,dy)/spacing)), cells=[];
+    for(let step=1;step<=count;step++) {
+      const i=cellAt(x+dx*step/count,y+dy*step/count);
+      if(i!==undefined) cells.push(i);
+    }
+    inkDrag.x=e.clientX;inkDrag.y=e.clientY;
+    input.drawStroke(cells);
+  }
+  function stopInk(e,finish=false) {
+    if(inkDrag?.id!==e.pointerId) return;
+    if(finish) moveInk(e);
+    inkDrag=null;input.endStroke();
+  }
   board.addEventListener('pointerdown',e=>{
     if(!e.isPrimary || e.button!==0) return;
+    if(inkDrag) return;
     flagDrag=null; skipDragClick=false;
-    if(!ready() || pending || auto || input.writing || !$('markFlower').inert) return;
     const cell=e.target.closest('[data-cell]');
     if(!cell) return;
-    const i=Number(cell.dataset.cell), from=game.flags.has(i)?i:undefined;
+    const i=Number(cell.dataset.cell);
+    if(input.writing) {
+      if(input.startStroke(i)) {
+        inkDrag={id:e.pointerId,x:e.clientX,y:e.clientY,spacing:Math.max(1,cell.offsetWidth/4)};
+        skipDragClick=true;
+        board.setPointerCapture(e.pointerId);
+        cell.focus({preventScroll:true});
+        input.drawStroke([i]);
+      }
+      return;
+    }
+    if(!ready() || pending || auto || !$('markFlower').inert) return;
+    const from=game.flags.has(i)?i:undefined;
     if(game.visible[i]<0 && from===undefined) return;
     flagDrag={id:e.pointerId,x:e.clientX,y:e.clientY,from,game};
   });
   board.addEventListener('pointermove',e=>{
+    if(inkDrag?.id===e.pointerId) {moveInk(e);return;}
     const drag=flagDrag;
     if(drag?.id!==e.pointerId || drag.game!==game) return;
     if(!drag.ghost) {
@@ -1463,8 +1526,7 @@
     drag.ghost.remove();
     skipDragClick=true;
     if(!drop || drag.game!==game || !ready() || pending || auto || input.writing) return;
-    const cell=document.elementFromPoint(e.clientX,e.clientY)?.closest('#board [data-cell]');
-    const i=cell?Number(cell.dataset.cell):undefined;
+    const i=cellAt(e.clientX,e.clientY);
     if(i===undefined || game.visible[i]>=0) {
       if(drag.from!==undefined) play(drag.from,true);
     } else if(!game.flags.has(i)) {
@@ -1472,8 +1534,9 @@
       void recordManual(game,[i],'mine',drag.from);
     }
   }
-  document.addEventListener('pointerup',e=>stopFlagDrag(e,true));
-  document.addEventListener('pointercancel',stopFlagDrag);
+  document.addEventListener('pointerup',e=>{stopInk(e,true);stopFlagDrag(e,true);});
+  document.addEventListener('pointercancel',e=>{stopInk(e);stopFlagDrag(e);});
+  board.addEventListener('lostpointercapture',e=>{if(e.target===board) {stopInk(e);stopFlagDrag(e);}});
   board.addEventListener('click',e=>{
     if(e.detail && skipDragClick) {skipDragClick=false;return;}
     const b=e.target.closest('[data-cell]'); if(!b) return;
@@ -1484,6 +1547,7 @@
   board.addEventListener('contextmenu',e=>{
     const b=e.target.closest('[data-cell]'); if (b) {
       e.preventDefault();
+      if(inkDrag) return;
       const i=Number(b.dataset.cell);
       if(!editing && input.erase(i)) return;
       (editing?editCell:play)(i,true);

@@ -1,5 +1,10 @@
 function makeMarkHistory() {
   const layers={red:new Map(),blue:new Map()}, past=[], future=[];
+  const same=(a,b)=>a?.symbol===b?.symbol && a?.level===b?.level;
+  function record(change) {
+    if(!change.length) return false;
+    past.push(change); future.length=0; return true;
+  }
   function write(change,undo=false) {
     for(const [color,cell,before,after] of change) {
       const value=undo?before:after;
@@ -10,13 +15,28 @@ function makeMarkHistory() {
     const change=[];
     for(const [cell,after] of entries) {
       const before=layers[color].get(cell);
-      if(before?.symbol!==after?.symbol || before?.level!==after?.level) change.push([color,cell,before,after]);
+      if(!same(before,after)) change.push([color,cell,before,after]);
     }
-    if(!change.length) return false;
-    write(change); past.push(change); future.length=0; return true;
+    write(change); return record(change);
   }
   return {
     layers,edit,
+    blueStroke(start,mark) {
+      const after=same(layers.blue.get(start),mark)?undefined:mark;
+      const seen=new Set(), change=[];
+      let finished=false;
+      return {
+        visit(cell) {
+          if(finished || seen.has(cell)) return false;
+          seen.add(cell);
+          const before=layers.blue.get(cell);
+          if(same(before,after)) return false;
+          const entry=['blue',cell,before,after];
+          change.push(entry);write([entry]);return true;
+        },
+        finish() {if(!finished) {finished=true;return record(change);}}
+      };
+    },
     clear(color) {return edit(color,[...layers[color].keys()].map(i=>[i]));},
     clearDeductions(level) {
       const advanced=[...layers.blue].filter(([,m])=>m.level>1);
@@ -161,7 +181,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   const rows=[[['x','拟定为雷'],['o','拟推为雷'],['v','拟定为雷'],['ʌ','拟推为雷'],['+','提高层级']],
     [['s','拟定安全'],['/','拟推安全'],['e','拟定安全'],['//','拟推安全'],['−','降低层级']]];
   const advanced=s=>['v','ʌ','e','//'].includes(s), buttons=new Map();
-  let selected='',level=2,hold,suppress;
+  let selected='',level=2,hold,suppress,stroke;
   function history() {
     const notes=getGame()?.notes;
     const visible=!(flower.inert && !selected);
@@ -182,7 +202,8 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     $('board').classList.toggle('writing-ink',!!selected);
     history();
   }
-  function close() {selected='';menu('mark',false);refresh();}
+  function endStroke() {if(stroke) {stroke.edit.finish();stroke=undefined;history();}}
+  function close() {endStroke();selected='';menu('mark',false);refresh();}
   function bindHold(button,action,click) {
     function cancel() {
       if(hold?.button!==button) return;
@@ -216,26 +237,31 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     const activate=()=>{
       if(symbol==='cursor') {close();say('');launcher.focus({preventScroll:true}); return;}
       if(!canAct()) return;
+      endStroke();
       if(symbol==='+' || symbol==='−') {level=Math.min(99,Math.max(2,level+(symbol==='+'?1:-1)));say(`拟定层级 ${level}`);}
       else {
         selected=symbol;say(button.title);
       }
       refresh();
     };
-    if(symbol==='−') bindHold(button,()=>{if(getGame().notes.clearDeductions(level===2?level:undefined)) changed();history();},activate);
+    if(symbol==='−') bindHold(button,()=>{endStroke();if(getGame().notes.clearDeductions(level===2?level:undefined)) changed();history();},activate);
     else button.onclick=activate;
   }
   add('cursor','返回游玩',flower);
-  const points=[[42,-103],[84,-74],[109,-27],[109,27],[84,74]];
-  // The options share a circle of radius 112; use their locations as arc endpoints.
+  const radius=96;
+  const points=[-75,-47.5,-20,7.5,35].map(deg=>{
+    const angle=deg*Math.PI/180;
+    return [Math.round(radius*Math.cos(angle)),Math.round(radius*Math.sin(angle))];
+  });
   for(const [side,id] of [[-1,'inkTrackLeft'],[1,'inkTrackRight']]) {
-    $(id).setAttribute('d',`M ${side*points[0][0]} ${points[0][1]} ${points.slice(1).map(([x,y])=>`A 112 112 0 0 ${side>0?1:0} ${side*x} ${y}`).join(' ')}`);
+    $(id).setAttribute('d',`M ${side*points[0][0]} ${points[0][1]} ${points.slice(1).map(([x,y])=>`A ${radius} ${radius} 0 0 ${side>0?1:0} ${side*x} ${y}`).join(' ')}`);
   }
   for(const [side,row] of rows.entries()) for(const [i,[symbol,label]] of row.entries()) {
     const [x,y]=points[i];
     add(symbol,label,flower,{x:`${side?x:-x}px`,y:`${y}px`});
   }
   bindHold(launcher,()=>{
+    endStroke();
     if(getGame().notes.clear('blue')) {changed();say('已清空蓝色记号。');}
     history();
   },()=>{
@@ -247,6 +273,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   function stamp(i,erase=false) {
     if(!selected && (flower.inert || !erase)) return false;
     if(canAct()) {
+      endStroke();
       const g=getGame(), notes=g.notes;
       g.focus=i;
       const existing=notes.layers.blue.get(i), levelForMark=advanced(selected)?level:0;
@@ -256,8 +283,22 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     }
     return true;
   }
-  $('undoMark').onclick=()=>{if(canAct()) {getGame().notes.undo();changed();history();}};
-  $('redoMark').onclick=()=>{if(canAct()) {getGame().notes.redo();changed();history();}};
+  function startStroke(i) {
+    if(!selected || !canAct()) return false;
+    endStroke();
+    const game=getGame();
+    game.focus=i;
+    stroke={game,edit:game.notes.blueStroke(i,{symbol:selected,level:advanced(selected)?level:0})};
+    return true;
+  }
+  function drawStroke(cells) {
+    if(!stroke || stroke.game!==getGame() || !canAct()) {endStroke();return;}
+    let last;
+    for(const i of cells) if(stroke.edit.visit(i)) last=i;
+    if(last!==undefined) changed(last);
+  }
+  $('undoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.undo();changed();history();}};
+  $('redoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.redo();changed();history();}};
   refresh();
-  return {close,reset:()=>{level=2;close();},stamp,erase:i=>stamp(i,true),get writing(){return !!selected;}};
+  return {close,reset:()=>{level=2;close();},stamp,startStroke,drawStroke,endStroke,erase:i=>stamp(i,true),get writing(){return !!selected;}};
 }

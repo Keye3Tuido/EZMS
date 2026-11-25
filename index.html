@@ -5,20 +5,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷</title>
-  <link rel="stylesheet" href="styles.css?v=20261126-4">
+  <link rel="stylesheet" href="styles.css?v=20261126-7">
   <link rel="stylesheet" href="game-motion.css?v=20261126-3">
   <script defer src="engine.js?v=20261125-15"></script>
   <script defer src="proof-format.js?v=20261126-5"></script>
-  <script defer src="board-input.js?v=20261126-2"></script>
+  <script defer src="board-input.js?v=20261126-4"></script>
   <script defer src="position-seed.js?v=20261125-11"></script>
-  <script defer src="game-feedback.js?v=20261126-4"></script>
-  <script defer src="app.js?v=20261126-6"></script>
+  <script defer src="game-feedback.js?v=20261126-6"></script>
+  <script defer src="app.js?v=20261126-10"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <symbol id="mine" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><path d="M12 2v4m0 12v4M2 12h4m12 0h4M5 5l3 3m8 8 3 3M5 19l3-3m8-8 3-3"/></symbol>
     <symbol id="flag" viewBox="0 0 24 24"><path d="M5 21V4c4-3 8 3 14 0v10c-6 3-10-3-14 0"/></symbol>
-    <symbol id="redo" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 1 1.6 5.1M3 4v8h8"/></symbol>
+    <symbol id="undoIcon" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+    <symbol id="redoIcon" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5m5 5H9.5a5.5 5.5 0 0 0 0 11H13"/></symbol>
+    <symbol id="restartIcon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 1 1.6 5.1M3 4v8h8"/></symbol>
     <symbol id="hintIcon" viewBox="0 0 24 24"><path d="M9 18h6m-5 4h4m-5-7c0-2-3-3-3-7a6 6 0 1 1 12 0c0 4-3 5-3 7"/></symbol>
     <symbol id="play" viewBox="0 0 24 24"><path d="m8 5 12 7-12 7Z"/></symbol>
     <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
@@ -83,10 +85,10 @@
           <span class="counter" title="总雷数减去旗数"><svg class="icon" aria-hidden="true"><use href="#flag"/></svg><b id="remaining" aria-label="剩余雷数">—</b></span>
           <span id="gameTime" class="counter" title="用时（秒）"><svg class="icon" aria-hidden="true"><use href="#clock"/></svg><b id="time" aria-label="用时（秒）">0</b></span>
           <div id="markHistory" class="mark-history is-inactive" aria-hidden="true">
-            <button type="button" id="undoMark" class="icon-button undo" title="撤销记号" aria-label="撤销记号"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
-            <button type="button" id="redoMark" class="icon-button" title="重做记号" aria-label="重做记号"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
+            <button type="button" id="undoMark" class="icon-button" title="撤销记号" aria-label="撤销记号"><svg class="icon" aria-hidden="true"><use href="#undoIcon"/></svg></button>
+            <button type="button" id="redoMark" class="icon-button" title="重做记号" aria-label="重做记号"><svg class="icon" aria-hidden="true"><use href="#redoIcon"/></svg></button>
           </div>
-          <button type="button" id="restart" class="icon-button" title="重开本局" aria-label="重开本局"><svg class="icon" aria-hidden="true"><use href="#redo"/></svg></button>
+          <button type="button" id="restart" class="icon-button" title="重开本局" aria-label="重开本局"><svg class="icon" aria-hidden="true"><use href="#restartIcon"/></svg></button>
           <span id="generationSeed" class="seed-badge is-inactive" aria-hidden="true">生成种子 <code id="generationSeedValue"></code></span>
           <div id="editTools" class="edit-tools" role="group" aria-label="编辑格子" hidden>
             <div class="mode-switch" role="group" aria-label="摆局方式">
@@ -104,11 +106,7 @@
             </div>
           </div>
         </div>
-        <div class="board-scroll">
-          <div id="emptyBoard" class="empty-board">
-            <div class="empty-grid" aria-hidden="true"><span></span><span></span><span class="empty-number">1</span><span></span><span class="empty-flag"><svg class="icon"><use href="#flag"/></svg></span><span class="empty-number">2</span><span></span><span></span><span></span></div>
-            <p>暂无棋局</p>
-          </div>
+        <div class="board-scroll" hidden>
           <div id="board" class="board" aria-label="棋盘格子" hidden></div>
         </div>
         <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
@@ -154,16 +152,16 @@
     <button type="button" id="reasonMenu" class="orb launcher" title="推理工具" aria-label="推理工具" aria-expanded="false" aria-controls="reasonFlower"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg></button>
   </nav>
   <div id="reasonFlower" class="radial flower" role="group" aria-label="推理工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-89" y1="-8" x2="89" y2="-84"><stop stop-color="#4d78ec"/><stop offset=".52" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -89 -8 C -89 -56 -47 -94 0 -94 S 89 -56 89 -8"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-78" y1="-8" x2="78" y2="-78"><stop stop-color="#4d78ec"/><stop offset=".52" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -78 -8 A 78 78 0 0 1 0 -78 A 78 78 0 0 1 78 -8"/></svg>
     <button type="button" id="closeReason" class="orb black center" title="返回" aria-label="折叠推理工具"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button>
-    <button type="button" id="focus" class="orb petal" style="--x:-89px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
-    <button type="button" id="hint" class="orb petal" style="--x:-66px;--y:-66px"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
-    <button type="button" id="answers" class="orb petal" style="--y:-94px" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
-    <button type="button" id="apply" class="orb petal" style="--x:66px;--y:-66px"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
-    <button type="button" id="solve" class="orb petal" style="--x:89px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
+    <button type="button" id="focus" class="orb petal" style="--x:-78px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
+    <button type="button" id="hint" class="orb petal" style="--x:-55px;--y:-55px"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
+    <button type="button" id="answers" class="orb petal" style="--y:-78px" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
+    <button type="button" id="apply" class="orb petal" style="--x:55px;--y:-55px"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
+    <button type="button" id="solve" class="orb petal" style="--x:78px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-103" x2="0" y2="74"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/></svg>
   </div>
 </body>
 </html>

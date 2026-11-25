@@ -601,6 +601,32 @@ test('clearing second-level deductions preserves assumptions and other layers', 
   h.redo(); assert.deepEqual([...h.layers.blue.keys()],[0,1,4,5,6]);
 });
 
+test('a blue stroke writes, overwrites or erases each visited cell in one history entry', () => {
+  const h=require('./board-input')();
+  const x={symbol:'x',level:0}, v={symbol:'v',level:3};
+  h.edit('red',[[1,x]]);
+  h.edit('blue',[[1,x]]);
+  const paint=h.blueStroke(0,v);
+  assert.equal(paint.visit(0),true);
+  assert.equal(paint.visit(1),true);
+  assert.equal(paint.visit(0),false);
+  assert.equal(h.layers.blue.get(1),v);
+  assert.equal(paint.finish(),true);
+  assert.equal(paint.visit(2),false);
+  h.undo(); assert.deepEqual([...h.layers.blue],[[1,x]]);
+  h.redo(); assert.equal(h.layers.blue.size,2);
+
+  h.edit('blue',[[2,x]]);
+  const erase=h.blueStroke(1,{...v});
+  for(const cell of [1,2,0,2]) erase.visit(cell);
+  erase.finish();
+  assert.equal(h.layers.blue.size,0);
+  assert.equal(h.layers.red.get(1),x);
+  h.undo(); assert.equal(h.layers.blue.size,3);
+  assert.equal(h.layers.blue.get(2),x);
+  h.redo(); assert.equal(h.layers.blue.size,0);
+});
+
 test('manual confirmations wait for all forced cells and reject incorrect batches atomically', () => {
   const manual=require('./board-input').makeManualBatch;
   const makeManualBatch=(state,flags)=>manual(state,flags,engine.confirmationTargets);
