@@ -21,6 +21,8 @@ files:
     reason: 复用局面编码、解码和结构检查
   - target: game-feedback.js
     reason: 在实际棋盘状态变化后播放一次性反馈
+  - target: game-fullscreen.js
+    reason: 控制全屏切换与横屏拖旗坐标转换
 - name: board-input.js
   purpose: 收集手动求解确认，管理蓝色记号与可闭合的连格笔迹，按整笔记录拖画历史
 - name: engine.js
@@ -36,8 +38,12 @@ files:
     reason: 核验变量组合和区域坐标显示
   - target: board-input.js
     reason: 核验手动批次、记号历史与笔迹覆盖
+- name: favicon.svg
+  purpose: 与游戏标题徽标一致的浏览器标签图标
 - name: game-feedback.js
   purpose: 播放棋格反馈和本地合成音效，管理游戏内动画偏好
+- name: game-fullscreen.js
+  purpose: 同步原生和网页内全屏状态，请求手机横屏并转换旋转后的拖旗坐标
 - name: game-motion.css
   purpose: 统一按钮按压、可反向的圆弧与轨道过渡、提交入口和长按进度
 - name: index.html
@@ -49,4 +55,4 @@ files:
   details: 将连续加减合为一式，保留取整边界；按格区分完全相消、正项剩余和负项剩余。
 - name: styles.css
   purpose: 定义响应式布局、棋盘和推导外观、公式高亮及悬浮圆弧几何
-  details: 推导原位替换当前推理指标；临时工具用浮层和预留位置维持棋盘及控件坐标。
+  details: 推导原位替换当前推理指标；面板折叠时棋盘使用释放的空间。全屏保留原有工具布局，适配横屏和安全区。

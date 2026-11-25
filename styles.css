@@ -45,8 +45,6 @@ input:disabled, select:disabled { color: #61736b; background: #edf1ee; }
 .position-tools { margin-top: 10px; }
 .editor-settings .form-actions { flex-wrap: wrap; }
 .edit-tools { flex-basis: 100%; }
-.seed-badge { flex-basis: 100%; font-size: 13px; color: var(--muted); }
-.seed-badge code { color: var(--ink); font-weight: 700; user-select: all; }
 dialog { width: min(540px, calc(100% - 24px)); padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); }
 dialog::backdrop { background: #222b2766; }
 .dialog-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
@@ -175,7 +173,6 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .ink-rank { position: absolute; right: 2px; bottom: 2px; font: 700 .59em/1 system-ui,sans-serif; pointer-events: none; }
 .mark-history { display: flex; gap: 3px; }
 .is-inactive { visibility: hidden; pointer-events: none; }
-.seed-badge { min-height: 1.5em; }
 .reason-status { padding: 8px 0; }
 aside .proof-pane { padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
 .panel-head { min-height: 55px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
@@ -219,7 +216,24 @@ aside .proof-pane { padding: 0; border: 1px solid var(--line); border-radius: 8p
   mask: radial-gradient(farthest-side, transparent calc(100% - 4px), black calc(100% - 3px));
 }
 
-main { max-width: 1180px; padding-bottom: max(82px, env(safe-area-inset-bottom)); }
+main {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-width: 1180px;
+  padding-bottom: max(82px, env(safe-area-inset-bottom));
+}
+main > * { flex-shrink: 0; }
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 18px;
+  margin-top: auto;
+  padding-top: 20px;
+  font-size: 13px;
+}
+.site-footer a { color: var(--action); text-underline-offset: 3px; }
 header { padding-bottom: 18px; }
 h1 { font-size: 29px; font-weight: 850; }
 .game-emblem { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 8px; color: #fff; background: var(--action); }
@@ -295,6 +309,10 @@ input, select { background: #fcfcfe; }
 .cell.proof-preview { outline: none; box-shadow: none; }
 .reason-status { border-top: 1px solid #b1bcb2; padding-top: 11px; }
 .reason-slot { overflow-anchor: none; }
+.reason-panel-tools { display: flex; align-items: center; gap: 6px; }
+.reason-collapsed { grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+.reason-collapsed .reason-slot > section { display: none; }
+#openReasonPanel .icon { rotate: 180deg; }
 .reason-status[inert] { display: none; }
 .reason-slot > section + section { margin-top: 0; }
 .reason-status-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 37px; }
@@ -341,10 +359,20 @@ input, select { background: #fcfcfe; }
   .current-metrics dd { font-size: 18px; }
 }
 @media (max-width: 420px) {
+  .header-tools { gap: 4px; }
+  .header-tools .mode-switch button { padding-inline: 7px; }
+  .header-tools > .icon-button { flex: none; width: 34px; }
   .board-head .icon-button { width: 32px; min-height: 32px; }
   .board-footer { grid-template-columns: auto minmax(0,1fr); }
   .board-footer #commitMarks { grid-area: 1 / 1; }
   .board-footer .round-feedback { grid-area: 1 / 2; }
+}
+@media (max-width: 760px) {
+  :root:not([data-fullscreen-mode]) .layout:not(.reason-collapsed) {
+    --stage: max(180px, calc(100dvh - 400px));
+  }
+  .layout.reason-collapsed { grid-template-columns: minmax(0,1fr); }
+  .reason-collapsed .reason-slot { justify-self: start; }
 }
 .radial {
   --fan-right: 94px;
@@ -411,3 +439,121 @@ input, select { background: #fcfcfe; }
 .board-proof .boundary.negative { stroke: #c49612; stroke-opacity: .95; }
 .board-proof .boundary.cancelled { stroke: #697781; stroke-opacity: .78; }
 .board-proof .boundary.element { stroke: #2466cf; }
+
+#fullscreenStatus:empty { display: none; }
+#fullscreenStatus { flex-basis: 100%; color: var(--muted); text-align: center; }
+
+:root[data-fullscreen-mode] { overflow: hidden; scrollbar-gutter: auto; }
+[data-fullscreen-mode] #gameViewport {
+  --view-width: 100dvw;
+  --view-height: 100dvh;
+  --safe-top: env(safe-area-inset-top);
+  --safe-right: env(safe-area-inset-right);
+  --safe-bottom: env(safe-area-inset-bottom);
+  --safe-left: env(safe-area-inset-left);
+  --dock-right: max(16px, var(--safe-right));
+  --dock-bottom: max(15px, var(--safe-bottom));
+  position: fixed;
+  inset: 0 auto auto 0;
+  width: var(--view-width);
+  height: var(--view-height);
+  overflow: hidden;
+  background: #f4f5f1;
+}
+[data-fullscreen-mode] main {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block-start: var(--fullscreen-header-height, 54px);
+  padding: 0 max(12px, var(--safe-right)) max(72px, var(--safe-bottom)) max(12px, var(--safe-left));
+}
+[data-fullscreen-mode] header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  gap: 8px;
+  min-height: 54px;
+  padding: max(6px, var(--safe-top)) 0 8px;
+  background: #f4f5f1;
+}
+[data-fullscreen-mode] h1 { gap: 6px; font-size: 20px; }
+[data-fullscreen-mode] .game-emblem { width: 32px; height: 32px; }
+[data-fullscreen-mode] :is(.tool-dock, .radial, .drag-flag) { position: absolute; }
+[data-fullscreen-mode] .setup-bar { position: relative; z-index: 5; }
+[data-fullscreen-mode] .layout {
+  --stage: max(144px, calc(var(--view-height) - 225px - var(--safe-top) - var(--safe-bottom)));
+  gap: 12px;
+}
+[data-fullscreen-mode] .board-scroll { min-height: 0; }
+[data-fullscreen-mode] #fullscreenToggle { flex: none; }
+
+@media (max-height: 500px), (pointer: coarse) and (orientation: portrait) and (max-width: 500px) {
+  [data-fullscreen-mode] .setup-bar { padding-block: 5px; margin-bottom: 6px; }
+  [data-fullscreen-mode] .board-head { min-height: 43px; padding-block: 3px; }
+  [data-fullscreen-mode] .board-scroll { padding-block: 7px 9px; }
+  [data-fullscreen-mode] .board {
+    --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 42px) / var(--rows) - var(--grid-gap))), 56px);
+  }
+  [data-fullscreen-mode] .board-footer { min-height: 50px; padding-block: 5px; }
+}
+
+@media (min-width: 540px), (pointer: coarse) and (orientation: portrait) and (min-height: 540px) {
+  [data-fullscreen-mode] .layout { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+  [data-fullscreen-mode] .layout.reason-collapsed { grid-template-columns: minmax(0,1fr) auto; }
+  [data-fullscreen-mode] .current-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  [data-fullscreen-mode] .reason-status[inert] { display: none; }
+  [data-fullscreen-mode] aside .proof-pane {
+    position: static;
+    max-height: none;
+    box-shadow: none;
+  }
+}
+@media (pointer: coarse) and (orientation: portrait) and (min-height: 740px) {
+  [data-fullscreen-mode] .setup-bar .settings { width: auto; }
+  [data-fullscreen-mode] .settings { grid-template-columns: repeat(2,minmax(60px,88px)) auto auto; }
+  [data-fullscreen-mode] .advanced { grid-column: auto; }
+}
+@media (pointer: coarse) and (orientation: portrait) {
+  [data-fullscreen-mode] #gameViewport {
+    --view-width: 100dvh;
+    --view-height: 100dvw;
+    --safe-top: env(safe-area-inset-right);
+    --safe-right: env(safe-area-inset-bottom);
+    --safe-bottom: env(safe-area-inset-left);
+    --safe-left: env(safe-area-inset-top);
+    transform: translateX(100dvw) rotate(90deg);
+    transform-origin: top left;
+  }
+  [data-fullscreen-mode] #seedDialog {
+    width: min(540px, calc(100dvh - 32px));
+    max-width: none;
+    max-height: calc(100dvw - 32px);
+    left: 50%;
+    top: 50%;
+    right: auto;
+    bottom: auto;
+    margin: 0;
+    transform: translate(-50%, -50%) rotate(90deg);
+    overflow: auto;
+  }
+}
+
+@media (max-height: 500px), (pointer: coarse) and (orientation: portrait) and (max-width: 500px) {
+  [data-fullscreen-mode] aside .proof-pane {
+    --proof-top: calc(var(--fullscreen-header-height, 54px) + 8px);
+    --proof-right: calc(var(--dock-right) + 234px);
+    /* Keep the proof outside the dock and both expanded arcs. */
+    position: fixed;
+    z-index: 9;
+    inset: var(--proof-top) var(--proof-right) auto auto;
+    width: min(420px, calc(var(--view-width) - var(--proof-right) - max(12px, var(--safe-left))));
+    display: flex;
+    flex-direction: column;
+    max-height: min(calc(var(--view-height) * .45), calc(var(--view-height) - var(--proof-top) - max(12px, var(--safe-bottom))));
+    box-shadow: 0 4px 18px #182c4633;
+  }
+  [data-fullscreen-mode] .proof-pane .panel-head { flex: none; }
+  [data-fullscreen-mode] .proof-pane .proof { min-height: 0; }
+}
