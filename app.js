@@ -855,6 +855,8 @@
 
   function steps(batch) {
     const list = element('ol','proof-steps'), rows = new Map(), emitted = new Map(), lines = [];
+    const targets=new Map([...batch.safe.map(v=>[v,0]),...batch.mines.map(v=>[v,1])]);
+    const covered=new Set();
     const visited = new Set();
     const gather = node => {
       if (visited.has(node)) return;
@@ -884,24 +886,25 @@
         return [prefix,term];
       });
     }
-    function add(raw, sign, rhs, note, conclusion, sourceRow) {
-      const {w,h}=game.board;
-      const grouping=conclusion ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
-      const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
+    function add(raw, sign, rhs, note, sourceRow) {
       const {key,flipped}=format.lineIdentity(raw,sign,rhs);
       if(emitted.has(key)) {
         const ref=emitted.get(key);
-        if(conclusion) {
-          list.children[ref.id-1].classList.add(`conclusion-${conclusion}`);
-          if(sign==='=') lines[ref.id-1].keep=true;
-        }
         return {...ref,reflected:ref.reflected!==(ref.flipped!==flipped)};
       }
+      const fixed=format.fixedCells(raw,sign,rhs).filter(([v,value])=>targets.get(v)===value);
+      const fresh=fixed.filter(([v])=>!covered.has(v));
+      const {w,h}=game.board;
+      const grouping=fresh.length ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
+      const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
       const line = element('li','proof-line'), formula = element('div','formula');
+      for(const [v,value] of fresh) {
+        line.classList.add(value?'conclusion-mine':'conclusion-safe');
+        covered.add(v);
+      }
       const id=list.children.length+1;
       const marker=equationNumber(id);
       marker.classList.add('equation-marker');
-      if(conclusion) line.classList.add(`conclusion-${conclusion}`);
       if (sourceRow) {
         const s=sourceRow.source, clueRegion=s>=0, name=clueRegion?coord(s):'全盘';
         const scope=clueRegion?`${name} 的邻域`:name;
@@ -933,7 +936,7 @@
         line.append(small);
       }
       list.append(line);
-      lines.push({keep:Boolean(conclusion && sign==='='),refs:[...line.querySelectorAll('.proof-note [data-equation]')]
+      lines.push({keep:fresh.length>0,refs:[...line.querySelectorAll('.proof-note [data-equation]')]
         .map(number=>Number(number.dataset.equation))});
       const ref={id,reflected:constantFirst,exact:comparison==='=',flipped};
       emitted.set(key,ref);
@@ -945,15 +948,11 @@
       const note = [clue,shown === row.rhs ? '' : ` − ${shown-row.rhs} 雷`];
       if ([...game.manual?.marked??[]].some(([v,kind])=>kind==='safe' &&
         (row.source<0 || game.board.ns[row.source].includes(v)))) note.push('，已确认安全格计 0');
-      rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,note,null,row).id);
+      rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,note,row).id);
     }
     for(const m of batch.proofs) {
-    const conclusion=m.value?'mine':'safe';
-    if(m.kind==='count') {
-      const id=rowNumbers.get(m.row.source);
-      list.children[id-1].classList.add(`conclusion-${conclusion}`);
-      lines[id-1].keep=true;
-    } else if (m.kind === 'difference') {
+    if(m.symmetric.every(v=>covered.has(v))) continue;
+    if (m.kind === 'difference') {
       const shared = new Set(m.shared);
       const capacity = row => row.vs.filter(v => !shared.has(v)).length;
       const a = rowNumbers.get(m.a.source), b = rowNumbers.get(m.b.source);
@@ -962,21 +961,17 @@
         const [large,small]=capacity(m.a)?[m.a,m.b]:[m.b,m.a];
         const note=[equationNumber(rowNumbers.get(large.source)),' − ',equationNumber(rowNumbers.get(small.source)),
           ' ',cancellationChip([ones(large.vs),small.vs.map(v=>[v,-1])])];
-        add(ones(m.vs),'=',m.value ? m.vs.length : 0,note,conclusion);
+        add(ones(m.vs),'=',m.value ? m.vs.length : 0,note);
       } else {
         // A single bound saturates the target; the other direction is its capacity.
         const useLower=inside===Boolean(m.value);
         const bound=useLower
-          ? add(ones(m.shared),'≥',m.low,['max(0, ',equationNumber(a),` − ${capacity(m.a)}, `,equationNumber(b),` − ${capacity(m.b)})`],inside?conclusion:null)
-          : add(ones(m.shared),'≤',m.high,[`min(${m.shared.length}, `,equationNumber(a),', ',equationNumber(b),')'],inside?conclusion:null);
-        const finish=bound=>add(ones(m.vs),'=',m.value ? m.vs.length : 0,
-          [equationNumber(bound.id),m.value?`，至多 ${m.vs.length} 雷`:'，雷数非负'],conclusion);
-        if (inside) finish(bound);
-        else {
+          ? add(ones(m.shared),'≥',m.low,['max(0, ',equationNumber(a),` − ${capacity(m.a)}, `,equationNumber(b),` − ${capacity(m.b)})`])
+          : add(ones(m.shared),'≤',m.high,[`min(${m.shared.length}, `,equationNumber(a),', ',equationNumber(b),')']);
+        if (!inside) {
           const row = m.vs.every(v => m.a.vs.includes(v)) ? a : b;
-          const next=add(ones(m.vs),m.value?'≥':'≤',m.value?m.lower:m.upper,
-            [equationNumber(row),' − ',equationNumber(bound.id)],conclusion);
-          finish(next);
+          add(ones(m.vs),m.value?'≥':'≤',m.value?m.lower:m.upper,
+            [equationNumber(row),' − ',equationNumber(bound.id)]);
         }
       }
     } else if (m.kind === 'resolution') {
@@ -990,10 +985,8 @@
         }
         const note = n.row ? [equationNumber(rowNumbers.get(n.row.source)),`，取区外${n.positive.length?'上':'下'}界`]
           : [equationNumber(numbers[n.from[0]]),'、',equationNumber(numbers[n.from[1]]),' 取整消去 ',chip(n.pivot)];
-        numbers.push(add(terms,'≥',rhs,note,n===m.nodes.at(-1)?conclusion:null).id);
+        numbers.push(add(terms,'≥',rhs,note).id);
       }
-      add(ones(m.vs),'=',m.value ? m.vs.length : 0,
-        [equationNumber(numbers.at(-1)),m.value?'，二元上界':'，二元下界'],conclusion);
     } else if (m.inequality) {
       const inequality=format.simplifyInequality(m.inequality);
       const labels = new Map();
@@ -1007,36 +1000,19 @@
           const sign=refs.every(ref=>ref.exact)?'=':'≤';
           const reflected=format.relation(sign,r.rhs).constantFirst;
           const note=[...arithmetic(refs,reflected),' ',cancellationChip(parts.map(part=>part.terms),reflected)];
-          ref={...add(r.terms,sign,r.rhs,note,r===inequality?conclusion:null),k:1};
+          ref={...add(r.terms,sign,r.rhs,note),k:1};
         } else {
           const a=visit(r.a), reflected=format.relation('≤',r.rhs).constantFirst;
           const note=[...arithmetic([a],reflected),` ÷ 2，系数与常数${format.rounding(reflected)}`];
-          ref={...add(r.terms,'≤',r.rhs,note,r===inequality?conclusion:null),k:1};
+          ref={...add(r.terms,'≤',r.rhs,note),k:1};
         }
         labels.set(r,ref);
         return ref;
       };
-      const {id:final,exact}=visit(inequality);
-      const reflected=inequality.rhs<0;
-      const slack=inequality.rhs-m.min;
-      const bound=format.weightedBound({...m,inequality,slack},reflected,exact);
-      if (bound) {
-        const extremum=reflected?'上界':'下界';
-        const notes=slack?null:format.extremumNotes(bound,m.value);
-        const basis=notes?notes.capacity:[equationNumber(final),`，其余项取${extremum}`];
-        const limit=add(bound.terms,bound.sign,bound.rhs,basis);
-        const deduction=notes?`，${notes.deduction}`:'，每格权重超过余量';
-        add(ones(m.vs),'=',m.value ? m.vs.length : 0,
-          [...(!slack && final!==limit.id?[equationNumber(final),'、']:[]),equationNumber(limit.id),deduction],conclusion);
-      } else {
-        list.children[final-1].classList.add(`conclusion-${conclusion}`);
-        lines[final-1].keep=true;
-      }
+      visit(inequality);
     }
-    if(m.symmetric.some(v=>!m.vs.includes(v))) {
-      const group=m.symmetric.filter(v=>!m.vs.includes(v));
-      add(ones(group),'=',m.value?group.length:0,['与 ',chip(m.vs),' 等价'],conclusion);
-    }
+    const group=m.symmetric.filter(v=>!m.vs.includes(v) && !covered.has(v));
+    if(group.length) add(ones(group),'=',m.value?group.length:0,['与 ',chip(m.vs),' 等价']);
     }
     const numbering=new Map(format.usedLines(lines).map((id,i)=>[id,i+1]));
     for(const [i,line] of [...list.children].entries()) {

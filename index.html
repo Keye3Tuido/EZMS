@@ -6,15 +6,15 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261126-22">
+  <link rel="stylesheet" href="styles.css?v=20261126-24">
   <link rel="stylesheet" href="game-motion.css?v=20261126-4">
   <script defer src="engine.js?v=20261126-17"></script>
-  <script defer src="proof-format.js?v=20261126-5"></script>
+  <script defer src="proof-format.js?v=20261126-7"></script>
   <script defer src="board-input.js?v=20261126-13"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-7"></script>
-  <script defer src="game-fullscreen.js?v=20261126-5"></script>
-  <script defer src="app.js?v=20261126-27"></script>
+  <script defer src="game-fullscreen.js?v=20261126-6"></script>
+  <script defer src="app.js?v=20261126-29"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -54,6 +54,7 @@
         <button id="soundToggle" class="icon-button" type="button" aria-label="反馈音效" aria-pressed="false" title="开启反馈音效"><svg class="icon" aria-hidden="true"><use href="#volumeOff"/></svg></button>
         <button id="fullscreenToggle" class="icon-button" type="button" aria-label="进入全屏" title="进入全屏"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5m0 8v5h-5M8 21H3v-5"/></svg></button>
       </div>
+      <span id="fullscreenStatus" role="status"></span>
     </header>
 
     <div class="setup-bar">
@@ -150,7 +151,6 @@
     <footer class="site-footer" aria-label="项目信息">
       <a href="LICENSE" target="_blank" rel="license noopener">MIT 开源协议</a>
       <a href="https://github.com/Keye3Tuido/EZMS" target="_blank" rel="noopener">GitHub 仓库</a>
-      <span id="fullscreenStatus" role="status"></span>
     </footer>
   </main>
   <dialog id="seedDialog" aria-labelledby="seedDialogTitle">

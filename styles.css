@@ -190,6 +190,7 @@ aside .proof-pane { padding: 0; border: 1px solid var(--line); border-radius: 8p
 .proof-line { padding-inline: 4px; border-radius: 4px; }
 .proof-line.conclusion-safe { background: #dff2e9; border-left: 3px solid #168971; }
 .proof-line.conclusion-mine { background: #f8e4eb; border-left: 3px solid #a32b44; }
+.proof-line.conclusion-safe.conclusion-mine { background-color: #f1eeec; border-left-color: #168971; border-right: 3px solid #a32b44; }
 .proof-line.proof-active { background-image: linear-gradient(#4067a81f,#4067a81f); box-shadow: inset 0 0 0 1px #4067a8; }
 .proof-line, .proof-cell { touch-action: manipulation; }
 .proof-line .proof-cell { max-width: 100%; }
@@ -476,8 +477,20 @@ input, select { background: #fcfcfe; }
 .board-proof .boundary.cancelled { stroke: #697781; stroke-opacity: .78; }
 .board-proof .boundary.element { stroke: #2466cf; }
 
-#fullscreenStatus:empty { display: none; }
-#fullscreenStatus { flex-basis: 100%; color: var(--muted); text-align: center; }
+#fullscreenStatus {
+  position: absolute;
+  inset: calc(100% + 4px) 0 auto auto;
+  max-width: 100%;
+  font-size: 13px;
+  pointer-events: none;
+}
+#fullscreenStatus:not(:empty) {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 3px 10px #151e241a;
+}
 
 :root[data-fullscreen-mode] { overflow: hidden; scrollbar-gutter: auto; }
 [data-fullscreen-mode] #gameViewport {

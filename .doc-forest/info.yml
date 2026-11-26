@@ -44,7 +44,12 @@ files:
 - name: game-feedback.js
   purpose: 播放棋格反馈和本地合成音效，管理游戏内动画偏好
 - name: game-fullscreen.js
-  purpose: 为移动端提供保持当前朝向的网页内全屏，为桌面端同步原生全屏及其降级状态
+  purpose: 在手机和电脑上请求并同步原生全屏，不锁定朝向；不可用时切换网页内模式并提示
+- name: game-fullscreen.test.cjs
+  purpose: 核验点按发起原生全屏、退出、旧版 WebKit 事件和网页内降级
+  depends_on:
+  - target: game-fullscreen.js
+    reason: 核验全屏控制器对浏览器事件和能力差异的处理
 - name: game-motion.css
   purpose: 统一按钮、圆弧菜单、面板和对话框的过渡，保留长按进度反馈
 - name: index.html
@@ -54,7 +59,12 @@ files:
   details: 红标字段仅保留未开格上的记录，导入和导出时都忽略已开格上的红标。
 - name: proof-format.js
   purpose: 保留公式的比较关系，格式化负常数换位、组合变量与区域坐标
-  details: 将连续加减合为一式，保留取整边界；按格区分完全相消、正项剩余和负项剩余。
+  details: 将连续加减合为一式，保留取整边界；按格区分相消项、正项和负项。按原式的上下界识别可直接定值的格子，供推导面板合并结论并裁剪未使用的步骤。
+- name: proof-panel.test.cjs
+  purpose: 用导入局面核验推导公式、引用编号与结论高亮
+  depends_on:
+  - target: app.js
+    reason: 核验推导面板对重复证明和必要前提的取舍
 - name: styles.css
   purpose: 定义响应式布局、棋盘和推导外观、公式高亮及悬浮圆弧几何
   details: 桌面推导与当前推理原位切换；窄屏推导独立浮动，当前推理在棋盘下方。短横屏推导浮窗为右侧推理工具留出空间。全屏沿用屏幕方向和原有工具布局。

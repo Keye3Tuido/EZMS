@@ -128,34 +128,18 @@ function makeProofFormat() {
     return result;
   }
 
-  function weightedBound(move,reflected,exact) {
-    const raw=move.inequality.terms;
-    if (!move.slack) {
-      // A same-sign equality at its extremum already fixes every term.
-      if (exact && raw.every(([,c])=>move.value ? c<0 : c>0)) return null;
-      return reflected
-        ? {terms:raw.map(([v,c])=>[v,-c]),sign:'≤',rhs:-move.min}
-        : {terms:raw,sign:'≥',rhs:move.min};
+  function fixedCells(raw,sign,rhs) {
+    let min=0, max=0;
+    for(const [,c] of raw) {
+      min+=Math.min(0,c);
+      max+=Math.max(0,c);
     }
-    // All other terms can contribute no less than their combined minimum.
-    const targets=new Set(move.vs);
-    const terms=raw.filter(([v])=>targets.has(v)).map(([v,c])=>[v,Math.abs(c)]);
-    return move.value
-      ? {terms,sign:'≥',rhs:terms.reduce((area,[,c])=>area+c,0)-move.slack}
-      : {terms,sign:'≤',rhs:move.slack};
-  }
-
-  function extremumNotes({terms,sign,rhs},value) {
-    const upper=sign==='≤';
-    const positive=terms.reduce((sum,[,c])=>sum+Math.max(0,c),0);
-    const negative=terms.reduce((sum,[,c])=>sum+Math.max(0,-c),0);
-    const capacity=[positive?`加项最多 ${positive}`:'',negative?`减项最多 ${negative}`:''];
-    if (upper && negative) capacity[1]='减项最少 0';
-    if (!upper && positive) capacity[0]='加项最少 0';
-    const part=upper===Boolean(value)?'加项':'减项';
-    const violation=value?'有一格无雷':'有一格有雷';
-    const deduction=`达到${upper?'上':'下'}界；${part}若${violation}，算式就${upper?'小':'大'}于 ${rhs}`;
-    return {capacity:capacity.filter(Boolean).join('，'),deduction};
+    const below=sign==='≥'||sign==='>' ? Infinity : rhs-min-Number(sign==='<');
+    const above=sign==='≤'||sign==='<' ? Infinity : max-rhs-Number(sign==='>');
+    if(below<0 || above<0) return [];
+    // Leaving either extreme costs the absolute weight of the cell.
+    return raw.flatMap(([v,c])=>Math.abs(c)>below ? [[v,Number(c<0)]]
+      : Math.abs(c)>above ? [[v,Number(c>0)]] : []);
   }
 
   const rounding = reflected => reflected ? '向上取整' : '向下取整';
@@ -192,7 +176,7 @@ function makeProofFormat() {
     return [...needed].sort((a,b)=>a-b);
   }
 
-  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,weightedBound,extremumNotes,rounding,simplifyInequality,lineIdentity,usedLines};
+  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,fixedCells,rounding,simplifyInequality,lineIdentity,usedLines};
 }
 
 if (typeof module !== 'undefined') module.exports = makeProofFormat();

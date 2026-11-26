@@ -5,10 +5,7 @@ function makeGameFullscreen(viewport, toggle, status) {
   const enterIcon = glyph.getAttribute('d');
   const exitIcon = 'M3 8h5V3m8 0v5h5m0 8h-5v5M8 21v-5H3';
   const native = () => (document.fullscreenElement ?? document.webkitFullscreenElement) === root;
-  const touchFirst = matchMedia('(pointer: coarse)');
-  const mobile = navigator.userAgentData?.mobile || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
-    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  let mode = '', busy = false;
+  let mode = '', busy = false, statusTimer;
 
   function sizeHeader() {
     if (mode) viewport.style.setProperty('--fullscreen-header-height', `${header.offsetHeight}px`);
@@ -25,7 +22,9 @@ function makeGameFullscreen(viewport, toggle, status) {
     glyph.setAttribute('d', mode ? exitIcon : enterIcon);
     toggle.title = label;
     toggle.setAttribute('aria-label', label);
-    status.textContent = mode === 'page' ? '网页内全屏' : '';
+    clearTimeout(statusTimer);
+    status.textContent = mode === 'page' ? '浏览器未进入全屏，已切换到网页内模式。' : '';
+    if (mode === 'page') statusTimer = setTimeout(() => { status.textContent = ''; }, 5000);
   }
 
   function syncNative() {
@@ -40,8 +39,6 @@ function makeGameFullscreen(viewport, toggle, status) {
     if (busy) return;
     if (mode === 'page') { setMode(''); return; }
     const leaving = native();
-    // Avoid browser-controlled rotation on mobile fullscreen entry.
-    if (!leaving && (mobile || touchFirst.matches)) { setMode('page'); return; }
     const action = leaving ? document.exitFullscreen ?? document.webkitExitFullscreen
       : root.requestFullscreen ?? root.webkitRequestFullscreen;
     const event = action === root.webkitRequestFullscreen || action === document.webkitExitFullscreen
@@ -58,18 +55,19 @@ function makeGameFullscreen(viewport, toggle, status) {
               document.removeEventListener('webkitfullscreenerror', failed);
               if (error) reject(error); else resolve();
             };
-            const changed = () => finish();
+            const changed = () => { if (native() !== leaving) finish(); };
             const failed = () => finish(new Error('Fullscreen unavailable'));
             const timer = setTimeout(failed, 1000);
             document.addEventListener(event, changed);
             document.addEventListener('webkitfullscreenerror', failed);
             try {
               const result = action.call(leaving ? document : root);
-              if (result) result.then(changed, finish);
-              else if (native() !== leaving) changed();
+              if (result?.then) result.then(() => finish(), finish);
+              else changed();
             } catch (error) { finish(error); }
           });
-        } else await action.call(leaving ? document : root);
+        } else if (leaving) await action.call(document);
+        else await action.call(root, { navigationUI: 'hide' });
       }
     } catch {
       // Fullscreen can be denied by the browser or by an embedding page.

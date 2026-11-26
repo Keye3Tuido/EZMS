@@ -602,9 +602,8 @@ test('seed routes produce different first-proof overlap graphs without history',
       }
       assert.deepEqual(roots[1].terms,roots[0].terms,'both conclusions share the same combined equation');
       assert.ok(move.safe.length && move.mines.length);
-      const bounds=move.proofs.map(proof=>format.weightedBound(proof,r.rhs<0,true));
-      assert.deepEqual(bounds[0],bounds[1],'both conclusions share the same extremum');
-      assert.equal(bounds[0].sign,r.rhs<0?'≤':'≥');
+      assert.ok(roots.every(r=>format.fixedCells(r.terms,'=',r.rhs).length===r.terms.length),
+        'one combined equation is the conclusion for both safe and mined cells');
     }
     edge.add(move.sources.some(v=>board.ns[v].length<8));
     const groups=engine.equivalentGroups(move.sources.map(v=>({vs:board.ns[v].filter(u=>visible[u]<0)})));
@@ -1180,28 +1179,15 @@ test('only completely cancelled cells get the cancellation pattern', () => {
   assert.deepEqual(format.cancellation(inputs,true),{cancelled:[0],positive:[1],negative:[2,3]});
 });
 
-test('weighted capacity and projected bounds preserve the binary argument', () => {
-  const inequality={terms:[[0,2],[1,-3],[2,1]],rhs:-2};
-  const move={inequality,min:-3,slack:1};
-  const safe=format.weightedBound({...move,vs:[0],value:0},true);
-  const mine=format.weightedBound({...move,vs:[1],value:1},true);
-  assert.deepEqual(safe,{terms:[[0,2]],sign:'≤',rhs:1});
-  assert.deepEqual(mine,{terms:[[1,3]],sign:'≥',rhs:2});
-  const lower=format.weightedBound({...move,slack:0,value:0},false,true);
-  const upper=format.weightedBound({...move,slack:0,value:1},true,true);
-  assert.deepEqual(lower,{terms:inequality.terms,sign:'≥',rhs:-3});
-  assert.deepEqual(upper,{terms:[[0,-2],[1,3],[2,-1]],sign:'≤',rhs:3});
-  const lhs=(terms,bits)=>terms.reduce((sum,[v,c])=>sum+c*(bits>>v&1),0);
-  for(let bits=0;bits<8;bits++) {
-    assert.ok(lhs(lower.terms,bits)>=lower.rhs);
-    assert.ok(lhs(upper.terms,bits)<=upper.rhs);
-    if(lhs(inequality.terms,bits)>inequality.rhs) continue;
-    assert.ok(lhs(safe.terms,bits)<=safe.rhs);
-    assert.ok(lhs(mine.terms,bits)>=mine.rhs);
-  }
+test('a weighted bound can fix cells while other terms can still vary', () => {
+  const terms=[[0,2],[1,-3],[2,1]];
+  assert.deepEqual(format.fixedCells(terms,'≤',-2),[[0,0],[1,1]]);
+  assert.deepEqual(format.fixedCells(terms,'≥',2),[[0,1],[1,0]]);
+  assert.deepEqual(format.fixedCells(terms,'≤',0),[]);
+  assert.deepEqual(format.fixedCells(terms,'≥',0),[]);
 });
 
-test('direct cancellation equality needs no separate capacity bound', () => {
+test('an equality from direct cancellation is already the conclusion', () => {
   const p=settings(5,5,4), visible=Array(25).fill(-1);
   visible[6]=2; visible[7]=3; visible[9]=1;
   const {move}=engine.hint(p,visible,new Set(),new Set(),{opening:true});
@@ -1209,28 +1195,15 @@ test('direct cancellation equality needs no separate capacity bound', () => {
   const [safe]=move.proofs;
   assert.deepEqual(format.summands(safe.inequality).map(part=>[part.row.source,part.k]),[[6,1],[7,-1],[9,1]]);
   assert.equal(safe.inequality.rhs,0);
-  assert.equal(format.weightedBound(safe,false,true),null);
-  assert.deepEqual(format.weightedBound(safe,false,false),{terms:safe.inequality.terms,sign:'≥',rhs:0});
-
-  const mines={inequality:{terms:[[0,-2],[1,-1]],rhs:-3},vs:[0,1],value:1,min:-3,slack:0};
-  assert.equal(format.weightedBound(mines,true,true),null);
-  assert.deepEqual(format.weightedBound(mines,true,false),{terms:[[0,2],[1,1]],sign:'≤',rhs:3});
+  assert.deepEqual(format.fixedCells(safe.inequality.terms,'=',0),move.safe.map(v=>[v,0]));
 });
 
-test('extremum notes explain the capacity and which term can break the bound', () => {
-  const upper={terms:[[0,3],[1,-2]],sign:'≤',rhs:3};
-  const lower={terms:upper.terms,sign:'≥',rhs:-2};
-  assert.deepEqual(format.extremumNotes(upper,1),{
-    capacity:'加项最多 3，减项最少 0',
-    deduction:'达到上界；加项若有一格无雷，算式就小于 3',
-  });
-  assert.match(format.extremumNotes(upper,0).deduction,/减项若有一格有雷，算式就小于 3/);
-  assert.deepEqual(format.extremumNotes(lower,0),{
-    capacity:'加项最少 0，减项最多 2',
-    deduction:'达到下界；加项若有一格有雷，算式就大于 -2',
-  });
-  assert.match(format.extremumNotes(lower,1).deduction,/减项若有一格无雷，算式就大于 -2/);
-  assert.equal(format.extremumNotes({terms:[[0,1]],sign:'≥',rhs:0},0).capacity,'加项最少 0');
+test('bounds that fix every cell need no reverse bound or restated equality', () => {
+  const positive=[[0,1],[1,1]], mixed=[[0,1],[1,-1]], weighted=[[0,2],[1,2]];
+  assert.deepEqual(format.fixedCells(positive,'≤',0),[[0,0],[1,0]]);
+  assert.deepEqual(format.fixedCells(positive,'≥',2),[[0,1],[1,1]]);
+  assert.deepEqual(format.fixedCells(mixed,'=',-1),[[0,0],[1,1]]);
+  assert.deepEqual(format.fixedCells(weighted,'<',2),[[0,0],[1,0]]);
 });
 
 test('comparison formatting preserves the original sign, boundary and meaning', () => {
@@ -1254,7 +1227,7 @@ test('comparison formatting preserves the original sign, boundary and meaning', 
   assert.deepEqual(raw,[[0,-2],[1,-2],[2,1]]);
 });
 
-test('extreme bounds still display as bounds until the proof explicitly derives equality', () => {
+test('a conclusive bound keeps its comparison symbol', () => {
   assert.deepEqual(format.relation('≤',0),{sign:'≤',constant:0,constantFirst:false});
   assert.deepEqual(format.relation('≥',3),{sign:'≥',constant:3,constantFirst:false});
   assert.deepEqual(format.relation('≤',-2),{sign:'≤',constant:2,constantFirst:true});
