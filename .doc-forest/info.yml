@@ -44,7 +44,7 @@ files:
 - name: game-feedback.js
   purpose: 播放棋格反馈和本地合成音效，管理游戏内动画偏好
 - name: game-fullscreen.js
-  purpose: 同步原生和网页内全屏状态及安全区布局，不改变设备朝向
+  purpose: 为移动端提供保持当前朝向的网页内全屏，为桌面端同步原生全屏及其降级状态
 - name: game-motion.css
   purpose: 统一按钮、圆弧菜单、面板和对话框的过渡，保留长按进度反馈
 - name: index.html
