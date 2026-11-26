@@ -1,5 +1,5 @@
 function makePositionSeeds(adj) {
-  const symbols=[['x','s'],['x','s','o','/','v','\u028c','e','//']];
+  const redSymbols=['x','s'];
   // Printable characters excluding quotes and backslashes.
   const alphabet=Array.from({length:94},(_,i)=>String.fromCharCode(i+33)).filter(c=>c!=='"' && c!=='\\').join('');
   const digitOf=new Map(Array.from(alphabet,(c,i)=>[c,i]));
@@ -9,36 +9,40 @@ function makePositionSeeds(adj) {
   const dimensionsOk=(w,h)=>sizeOk(w) && sizeOk(h) && w*h<=maxArea;
   const fail=()=>{throw Error('局面种子无效或已损坏。');};
 
-  function unpack([w,h,cells,...inks]) {
+  function readNotes(red,visible) {
+    const n=visible.length;
+    if(!Array.isArray(red) || red.length>n) fail();
+    const notes=[], seen=new Set();
+    for(const entry of red) {
+      if(!Array.isArray(entry) || entry.length!==3) fail();
+      const [i,s,level]=entry;
+      if(!Number.isInteger(i) || i<0 || i>=n || seen.has(i) || !Number.isInteger(s) || !redSymbols[s] || level!==0) fail();
+      seen.add(i);
+      if(visible[i]<0) notes.push([i,{symbol:redSymbols[s],level}]);
+    }
+    return [notes,[]];
+  }
+
+  function unpack([w,h,cells,red=[]]) {
     if(!dimensionsOk(w,h) || typeof cells!=='string' || cells.length!==w*h || !/^[01245]+$/.test(cells)) fail();
-    const n=w*h, ns=adj(w,h), bits=Array.from(cells,Number);
+    const ns=adj(w,h), bits=Array.from(cells,Number);
     const bombs=bits.map(b=>!!(b&1)), mines=bombs.filter(Boolean).length;
     const opening=bits.flatMap((b,i)=>b&2?[i]:[]), flags=bits.flatMap((b,i)=>b&4?[i]:[]);
     const clues=ns.map(row=>row.reduce((sum,i)=>sum+Number(bombs[i]),0));
-    const notes=inks.map((entries,color)=>{
-      if(!Array.isArray(entries) || entries.length>n) fail();
-      const seen=new Set();
-      return entries.map(entry=>{
-        if(!Array.isArray(entry) || entry.length!==3) fail();
-        const [i,s,level]=entry;
-        const validLevel=color===1 && s>=4 ? Number.isInteger(level) && level>=2 && level<=99 : level===0;
-        if(!Number.isInteger(i) || i<0 || i>=n || seen.has(i) || !Number.isInteger(s) || !symbols[color][s] || !validLevel) fail();
-        seen.add(i);
-        return [i,{symbol:symbols[color][s],level}];
-      });
-    });
+    const visible=bits.map((b,i)=>b&2?clues[i]:-1);
     return {board:{w,h,ns,bombs,mines,clues,opening,first:opening[0]??0,seed:0},
-      visible:bits.map((b,i)=>b&2?clues[i]:-1),flags,notes};
+      visible,flags,notes:readNotes(red,visible)};
   }
 
-  function pack({board,visible,flags,notes}) {
+  function pack({board,visible,flags,notes,manual}) {
     const flagSet=flags instanceof Set?flags:new Set(flags??[]);
+    const red=new Map(notes?.layers?.red??notes?.[0]??[]);
+    for(const [i,kind] of manual?.marked??[]) red.set(i,{symbol:kind==='mine'?'x':'s',level:0});
     return [board.w,board.h,board.bombs.map((mine,i)=>Number(mine)+2*Number(visible[i]>=0)+4*Number(flagSet.has(i))).join(''),
-      ...['red','blue'].map((color,c)=>[...(notes?.layers?.[color]??notes?.[c]??[])].sort(([a],[b])=>a-b)
-        .map(([i,m])=>[i,symbols[c].indexOf(m.symbol),m.level]))];
+      [...red].sort(([a],[b])=>a-b).map(([i,m])=>[i,redSymbols.indexOf(m.symbol==='/'?'s':m.symbol),m.level])];
   }
 
-  function numbers(w,h,mines=0,digits,flagCells=[],inks=[[],[]]) {
+  function numbers(w,h,mines=0,digits,flagCells=[],red=[]) {
     if(!dimensionsOk(w,h)) fail();
     if(digits===undefined) digits='.'.repeat(w*h);
     if(!Number.isInteger(mines) || mines<0 || mines>w*h ||
@@ -49,8 +53,8 @@ function makePositionSeeds(adj) {
       if(!Number.isInteger(i) || i<0 || i>=w*h || visible[i]!==-1 || bits[i]!=='0') fail();
       bits[i]='4';
     }
-    const {board,flags,notes}=unpack([w,h,bits.join(''),...inks]);
-    return {board:{...board,mines,opening:visible.flatMap((v,i)=>v>=0?[i]:[])},visible,flags,notes,numbers:true};
+    const {board,flags}=unpack([w,h,bits.join('')]);
+    return {board:{...board,mines,opening:visible.flatMap((v,i)=>v>=0?[i]:[])},visible,flags,notes:readNotes(red,visible),numbers:true};
   }
 
   function encodeBigInt(value) {
@@ -152,7 +156,7 @@ function makePositionSeeds(adj) {
       if(end<0) break;
       const next=text[end+1];
       if(next===escape) fields[fields.length-1]+=escape;
-      else if(next===zero && fields.length<3) fields.push('');
+      else if(next===zero && fields.length===1) fields.push('');
       else fail();
       start=end+2;
     }
@@ -213,38 +217,28 @@ function makePositionSeeds(adj) {
     return result;
   }
 
-  function encodeNotes(entries,color,n) {
-    const states=color===0?2:396, width=codeWidth(n*states);
-    return entries.map(([index,symbol,level])=>
-      encodeFixed(index*states+symbol+(level?4*(level-2):0),width)).join('');
+  function encodeRedNotes(entries,n) {
+    const width=codeWidth(n*2);
+    return entries.map(([index,symbol])=>encodeFixed(index*2+symbol,width)).join('');
   }
 
-  function decodeNotes(text,color,n) {
-    const states=color===0?2:396, width=codeWidth(n*states);
+  function decodeRedNotes(text,n) {
+    const width=codeWidth(n*2);
     if(text.length%width || text.length/width>n) fail();
     const entries=[]; let previous=-1;
     for(let i=0;i<text.length;i+=width) {
-      const packed=decodeFixed(text.slice(i,i+width),n*states-1), index=Math.floor(packed/states), code=packed%states;
+      const packed=decodeFixed(text.slice(i,i+width),n*2-1), index=Math.floor(packed/2);
       if(index<=previous) fail();
       previous=index;
-      const symbol=code<4?code:4+code%4, level=code<4?0:1+Math.floor(code/4);
-      entries.push([index,symbol,level]);
+      entries.push([index,packed%2,0]);
     }
     return entries;
   }
 
   function encodeCompact(position) {
-    const numeric=!!position.numbers, packed=pack(position), noteEntries=[];
-    let canonical;
-    if(numeric) {
-      const {board,visible,flags}=position;
-      const data=[board.w,board.h,board.mines,visible.map(v=>v<0?'.':v).join(''),[...(flags??[])],...packed.slice(3)];
-      canonical=numbers(...data.slice(0,5),data.slice(5));
-      noteEntries.push(...data.slice(5));
-    } else {
-      canonical=unpack(packed);
-      noteEntries.push(...packed.slice(3));
-    }
+    const numeric=!!position.numbers, packed=pack(position), [w,h,,red]=packed;
+    const canonical=numeric?numbers(w,h,position.board.mines,position.visible.map(v=>v<0?'.':v).join(''),
+      [...(position.flags??[])],red):unpack(packed);
     const {board,visible,flags}=canonical, n=board.w*board.h, flagSet=new Set(flags);
     const hasFlags=flags.length>0;
     const cells=[];
@@ -258,15 +252,16 @@ function makePositionSeeds(adj) {
     const rectangular=board.w!==board.h;
     const header=encodeHeader(8*(board.w-1)+Number(numeric)+2*Number(hasFlags)+4*Number(rectangular))+
       (rectangular?encodeHeader(board.h-1):'')+(numeric?encodeHeader(board.mines):'');
-    const fields=[encodeCells(cells,cellRadix(numeric,hasFlags)),encodeNotes(noteEntries[0],0,n),encodeNotes(noteEntries[1],1,n)];
-    while(fields.at(-1)==='') fields.pop();
+    const fields=[encodeCells(cells,cellRadix(numeric,hasFlags))];
+    const coveredRed=canonical.notes[0].map(([i,{symbol,level}])=>[i,redSymbols.indexOf(symbol),level]);
+    if(coveredRed.length) fields.push(encodeRedNotes(coveredRed,n));
     return header+fields.map(text=>text.replaceAll(escape,escape+escape)).join(escape+zero);
   }
 
   function decodeCompact(seed) {
     const {w,h,numeric,hasFlags,mines,offset}=readHeader(seed), n=w*h;
-    const [cellText,redText='',blueText='']=readFields(seed.slice(offset));
-    const red=decodeNotes(redText,0,n), blue=decodeNotes(blueText,1,n);
+    const [cellText,redText='']=readFields(seed.slice(offset));
+    const red=decodeRedNotes(redText,n);
     const cells=decodeCells(cellText,cellRadix(numeric,hasFlags),n);
     if(hasFlags && !cells.some(v=>numeric?v===1:v>=3)) fail();
     if(numeric) {
@@ -276,9 +271,9 @@ function makePositionSeeds(adj) {
         if(value===1 && hasFlags) flags.push(i);
         else if(value>0) visible[i]=value-1-Number(hasFlags);
       }
-      return numbers(w,h,mines,visible.map(v=>v<0?'.':v).join(''),flags,[red,blue]);
+      return numbers(w,h,mines,visible.map(v=>v<0?'.':v).join(''),flags,red);
     }
-    return unpack([w,h,Array.from(cells,value=>'01245'[value]).join(''),red,blue]);
+    return unpack([w,h,Array.from(cells,value=>'01245'[value]).join(''),red]);
   }
 
   return {
@@ -286,7 +281,7 @@ function makePositionSeeds(adj) {
     numbers,
     create(w,h,cells) {
       if(!dimensionsOk(w,h)) fail();
-      return unpack([w,h,cells??'0'.repeat(w*h),[],[]]);
+      return unpack([w,h,cells??'0'.repeat(w*h)]);
     },
     encode(position) { return encodeCompact(position); },
     decode(text) {

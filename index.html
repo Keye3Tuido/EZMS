@@ -6,15 +6,15 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261126-11">
-  <link rel="stylesheet" href="game-motion.css?v=20261126-3">
-  <script defer src="engine.js?v=20261125-15"></script>
+  <link rel="stylesheet" href="styles.css?v=20261126-22">
+  <link rel="stylesheet" href="game-motion.css?v=20261126-4">
+  <script defer src="engine.js?v=20261126-17"></script>
   <script defer src="proof-format.js?v=20261126-5"></script>
-  <script defer src="board-input.js?v=20261126-4"></script>
-  <script defer src="position-seed.js?v=20261125-11"></script>
-  <script defer src="game-feedback.js?v=20261126-6"></script>
-  <script defer src="game-fullscreen.js?v=20261126-3"></script>
-  <script defer src="app.js?v=20261126-13"></script>
+  <script defer src="board-input.js?v=20261126-13"></script>
+  <script defer src="position-seed.js?v=20261126-3"></script>
+  <script defer src="game-feedback.js?v=20261126-7"></script>
+  <script defer src="game-fullscreen.js?v=20261126-4"></script>
+  <script defer src="app.js?v=20261126-27"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -61,14 +61,14 @@
       <label>宽度<input id="width" type="number" min="1" value="5" required></label>
       <label>高度<input id="height" type="number" min="1" value="5" required></label>
       <div class="form-actions"><button id="generate" class="primary" type="submit">生成棋局</button><button id="cancel" type="button" class="is-inactive" aria-hidden="true" disabled>取消</button></div>
-      <details class="advanced" id="difficultySettings">
-        <summary>难度设置</summary>
-        <div>
+      <div class="advanced" id="difficultySettings">
+        <button id="difficultyToggle" type="button" aria-expanded="false" aria-controls="difficultyOptions"><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg>难度设置</button>
+        <div id="difficultyOptions" inert>
           <label title="整局各步骤经验证的最少线索数的平均值">平均最少线索下限<input id="minAverage" type="number" min="1" step="any"></label>
           <label title="最少需要三条或更多线索的步骤，占整条解法的比例">多线索步骤占比下限 (%)<input id="minMultiPercent" type="number" min="0" max="100" step="any"></label>
           <label title="至少有一步经验证需要这么多条线索">峰值线索数下限<input id="minPeakClues" type="number" min="1" step="1"></label>
         </div>
-      </details>
+      </div>
     </form>
     <form id="editorSettings" class="settings editor-settings" aria-label="编辑器尺寸" hidden>
       <label>宽度<input id="editWidth" type="number" min="1" value="5" required></label>
@@ -79,8 +79,9 @@
     <div class="position-tools" role="group" aria-label="局面工具">
       <button type="button" id="importPosition"><svg class="icon" aria-hidden="true"><use href="#importIcon"/></svg>导入种子</button>
       <button type="button" id="exportPosition"><svg class="icon" aria-hidden="true"><use href="#exportIcon"/></svg>导出种子</button>
-      <button type="button" id="playPosition" hidden><svg class="icon" aria-hidden="true"><use href="#play"/></svg>载入游戏</button>
+      <button type="button" id="playPosition" aria-describedby="draftMarkStatus" hidden><svg class="icon" aria-hidden="true"><use href="#play"/></svg>载入游戏</button>
     </div>
+    <p id="draftMarkStatus" class="status" role="status" hidden></p>
 
     </div>
     <div class="layout">
@@ -116,6 +117,7 @@
         <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
           <div class="round-feedback">
             <p id="status" class="status" role="status">等待生成或导入棋局</p>
+            <p id="roundText" class="status" role="status" hidden></p>
             <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
           </div>
           <button type="button" id="commitMarks" class="primary is-inactive" aria-hidden="true" disabled>开格并插旗</button>
@@ -123,24 +125,26 @@
       </section>
 
       <aside class="reason-slot" aria-label="推导与推理指标">
-        <button id="openReasonPanel" type="button" class="icon-button" title="展开推导与推理指标" aria-label="展开推导与推理指标" aria-controls="reasonStatus proofPane" aria-expanded="false" hidden><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg></button>
+        <button id="openReasonPanel" type="button" class="icon-button" title="展开当前推理" aria-label="展开当前推理" aria-controls="reasonStatus" aria-expanded="false" inert><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg></button>
+        <div class="reason-fold"><div class="reason-content">
         <section id="reasonStatus" class="reason-status" aria-labelledby="reason-status-title">
-          <div class="reason-status-head"><h2 id="reason-status-title">当前推理</h2><div class="reason-panel-tools"><button id="expandPosition" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#eye"/></svg>开扩</button><button type="button" class="icon-button" data-collapse-reason title="折叠推导与推理指标" aria-label="折叠推导与推理指标" aria-controls="reasonStatus proofPane" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg></button></div></div>
+          <div class="reason-status-head"><h2 id="reason-status-title">当前推理</h2><div class="reason-panel-tools"><button id="expandPosition" type="button" hidden><svg class="icon" aria-hidden="true"><use href="#eye"/></svg>开扩</button><button type="button" class="icon-button" data-collapse-reason title="折叠当前推理" aria-label="折叠当前推理" aria-controls="reasonStatus" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg></button></div></div>
           <p id="currentStatus" class="status" role="status">暂无棋局</p>
           <dl class="metrics current-metrics">
             <div><dt>必安全</dt><dd id="currentSafe">—</dd></div>
             <div><dt>必雷</dt><dd id="currentMines">—</dd></div>
-            <div><dt title="代入已确认红标后，下一步需要的最少线索数">本步最少线索</dt><dd id="currentClues">—</dd></div>
+            <div><dt id="currentClueLabel" title="红标作为已知条件，不计入线索数">本步最少线索</dt><dd id="currentClues">—</dd></div>
             <div><dt title="从当前盘面和已确认红标出发，各剩余推导步骤最少线索数的平均值">余局平均线索</dt><dd id="averageClues">—</dd></div>
             <div><dt title="从初始盘面无猜通关的回放中，各步最少线索数的最大值">本局峰值最少线索数</dt><dd id="peakClues">—</dd></div>
             <div><dt title="从初始盘面无猜通关的回放中，最少需要 3 条或更多线索的步骤占比">本局多线索推理占比</dt><dd id="multiClueRatio">—</dd></div>
           </dl>
           <p id="verificationStatus" class="muted" role="status"></p>
         </section>
-        <section id="proofPane" class="proof-pane" aria-labelledby="proof-title" hidden>
+        <section id="proofPane" class="proof-pane" aria-labelledby="proof-title" inert>
           <div class="panel-head"><h2 id="proof-title">推导</h2><div class="reason-panel-tools"><button type="button" class="icon-button" data-collapse-reason title="折叠推导与推理指标" aria-label="折叠推导与推理指标" aria-controls="reasonStatus proofPane" aria-expanded="true"><svg class="icon" aria-hidden="true"><use href="#panelChevron"/></svg></button><button type="button" id="closeProof" class="icon-button" title="关闭推导" aria-label="关闭推导"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></div></div>
           <div id="proof" class="proof" aria-live="polite"></div>
         </section>
+        </div></div>
       </aside>
     </div>
     <footer class="site-footer" aria-label="项目信息">
@@ -150,7 +154,7 @@
     </footer>
   </main>
   <dialog id="seedDialog" aria-labelledby="seedDialogTitle">
-    <div class="dialog-head"><h2 id="seedDialogTitle"></h2><form method="dialog"><button class="icon-button" title="关闭" aria-label="关闭种子窗口"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></form></div>
+    <div class="dialog-head"><h2 id="seedDialogTitle"></h2><button type="button" id="closeSeedDialog" class="icon-button" title="关闭" aria-label="关闭种子窗口"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button></div>
     <form id="seedForm">
       <label>局面种子<textarea id="positionSeedText" rows="4" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea></label>
       <p id="seedFeedback" class="status" role="status"></p>
@@ -171,7 +175,7 @@
     <button type="button" id="solve" class="orb petal" style="--x:78px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient><linearGradient id="redInkArc"><stop stop-color="#d67089"/><stop offset="1" stop-color="#9b1e42"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/><path id="redInkTrack" d="M -54 -26 Q -32 0 0 0 T 54 -26" pathLength="1" stroke="url(#redInkArc)"/></svg>
   </div>
   </div>
 </body>

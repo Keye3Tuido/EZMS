@@ -945,7 +945,7 @@ function makeMinesEngine() {
     return {...report,status:'passed',opened,...(point?{point}:{}),...(openingPoint?{openingPoint}:{})};
   }
 
-  function hint(p,visible,proven,flags,{opening=false,minimumBudget=120000,useTotal=true,confirmed,excluded}={}) {
+  function hint(p,visible,proven,flags,{opening=false,minimumBudget=120000,useTotal=true,confirmed,excluded,target}={}) {
     flags=flags instanceof Set?flags:new Set(flags);
     const ns=adj(p.w,p.h), used=new Set(proven), prior=[];
     const skip=new Set(excluded);
@@ -977,6 +977,24 @@ function makeMinesEngine() {
     for(const [v,kind] of confirmed??[]) {
       if(kind==='mine') used.add(v);
       if(kind==='safe') knownSafe.add(v);
+    }
+    if(target!==undefined) {
+      const context=constraints(p,visible,used,ns,knownSafe);
+      const result=(status,move=null,clues)=>({status,move,clues,marks:[...used],prior});
+      if(context.invalid) return result('invalid');
+      if(!context.unknown.includes(target)) return result('confirmed');
+      const judgment=classifyRows(visible,context,minimumBudget,true);
+      if(judgment.status==='invalid') return result('invalid');
+      const state=judgment.state[target];
+      if(state!=='safe' && state!=='mine') return result(judgment.status==='complete'?'target-unfixed':'minimum-unavailable');
+      if(flags.has(target) && state==='mine') return result('confirmed');
+      const value=Number(state==='mine');
+      const move=targetProof(context.rows,target,value);
+      if(!move) return result('stuck');
+      const best=minimumProof(p,visible,used,move,{ns,target,value,budget:minimumBudget,knownSafe});
+      if(!best.minimum) return result('minimum-unavailable');
+      const batch=batchMove(p,visible,used,best,ns,minimumBudget,knownSafe);
+      return result(batch?'move':'batch-unavailable',batch,best.sources.length);
     }
     while(true) {
       const a=analyze(p,visible,used,{ns,useTotal,knownSafe});

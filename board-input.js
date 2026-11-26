@@ -1,5 +1,5 @@
 function makeMarkHistory() {
-  const layers={red:new Map(),blue:new Map()}, past=[], future=[];
+  const layers={red:new Map(),blue:new Map(),archivedBlue:new Map()}, past=[], future=[];
   const same=(a,b)=>a?.symbol===b?.symbol && a?.level===b?.level;
   function record(change) {
     if(!change.length) return false;
@@ -21,23 +21,58 @@ function makeMarkHistory() {
   }
   return {
     layers,edit,
-    blueStroke(start,mark) {
-      const after=same(layers.blue.get(start),mark)?undefined:mark;
+    stroke(color,start,mark) {
+      const after=same(layers[color].get(start),mark)?undefined:mark;
       const seen=new Set(), change=[];
       let finished=false;
       return {
         visit(cell) {
           if(finished || seen.has(cell)) return false;
           seen.add(cell);
-          const before=layers.blue.get(cell);
+          const before=layers[color].get(cell);
           if(same(before,after)) return false;
-          const entry=['blue',cell,before,after];
+          const entry=[color,cell,before,after];
           change.push(entry);write([entry]);return true;
         },
         finish() {if(!finished) {finished=true;return record(change);}}
       };
     },
+    discardRed(cells) {
+      for(const cell of cells) layers.red.delete(cell);
+    },
+    discardCells(cells) {
+      const discarded=new Set(cells);
+      for(const layer of Object.values(layers)) for(const cell of discarded) layer.delete(cell);
+      // Opening a cell must not bring its marks back through undo or redo.
+      for(const stack of [past,future]) for(let i=stack.length-1;i>=0;i--) {
+        const change=stack[i].filter(([,cell])=>!discarded.has(cell));
+        if(change.length) stack[i]=change; else stack.splice(i,1);
+      }
+    },
     clear(color) {return edit(color,[...layers[color].keys()].map(i=>[i]));},
+    clearBlue() {
+      const color=layers.blue.size?'blue':'archivedBlue';
+      return edit(color,[...layers[color].keys()].map(i=>[i]));
+    },
+    archiveBlue(covered=()=>true) {
+      const change=[];
+      const initialize=![...layers.archivedBlue.keys()].some(covered);
+      let archived=false;
+      for(const [cell,mark] of layers.blue) {
+        change.push(['blue',cell,mark,undefined]);
+        if(!covered(cell)) continue;
+        const symbol=['x','o','v','ʌ'].includes(mark.symbol)?'o':['s','/','e','//'].includes(mark.symbol)?'/':null;
+        if(!symbol) continue;
+        const before=layers.archivedBlue.get(cell);
+        if(!initialize && !before) continue;
+        if(before?.symbol!==symbol) {
+          change.push(['archivedBlue',cell,before,before?undefined:{symbol,level:0}]);
+          archived=true;
+        }
+      }
+      write(change);
+      return record(change)?(archived?'archived':'cleared'):false;
+    },
     clearDeductions(level) {
       const advanced=[...layers.blue].filter(([,m])=>m.level>1);
       const rank=level??advanced.reduce((n,[,m])=>Math.max(n,m.level),0);
@@ -68,6 +103,25 @@ function makeManualBatch(state,flags,selectTargets) {
 // A staged step has exactly two UI phases: collect every red mark, then commit the complete batch.
 function manualStepAction(batch) {
   return batch?.done ? 'commit' : 'stage';
+}
+
+function checkPositionMarks(state,flags,red) {
+  const issues=[];
+  const check=(cell,expected,mark)=>{
+    const actual=state[cell];
+    if(actual===expected || expected==='safe' && actual==='open') return;
+    issues.push({cell,mark,conflict:actual==='open' || actual==='safe' || actual==='mine'});
+  };
+  for(const cell of flags) check(cell,'mine','flag');
+  for(const [cell,mark] of red) check(cell,mark.symbol==='x'?'mine':'safe',mark.symbol==='x'?'cross':'slash');
+  return issues;
+}
+
+function restoreManualMarks(state,flags,selectTargets,notes) {
+  const batch=makeManualBatch(state,flags,selectTargets);
+  for(const [cell,mark] of notes.layers.red) batch.record([cell],mark.symbol==='x'?'mine':'safe');
+  notes.discardRed(notes.layers.red.keys());
+  return batch.marked.size?batch:null;
 }
 
 function inkTrails(cells,width) {
@@ -174,14 +228,29 @@ function inkPath(points,tile,offset=0,closed=false) {
   return closed?d+'Z':d+`L${move(parallel(points.at(-1),last),last,extent)}`;
 }
 
-if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,manualStepAction,inkTrails,inkPath});
+if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,manualStepAction,checkPositionMarks,restoreManualMarks,inkTrails,inkPath});
+
+const inkShapes=new Map([
+  ['x','<path d="M4 4L20 20M20 4L4 20"/>'],
+  ['o','<circle cx="12" cy="12" r="10"/>'],
+  ['s','<path d="M20 5C17 1 6 1 5 7C4 12 20 11 20 17C19 23 8 23 4 19"/>'],
+  ['e','<path d="M3 12H21C21 6 17 2 12 2C7 2 3 6 3 12C3 18 7 22 13 22C16 22 18 21 20 19"/>'],
+  ['v','<path d="M3 3L11 20Q12 22 13 20L21 3"/>'],
+  ['ʌ','<path d="M3 21L11 4Q12 2 13 4L21 21"/>'],
+]);
+function inkGlyph(symbol) {
+  const shape=inkShapes.get(symbol);
+  return shape?`<svg class="ink-glyph" viewBox="0 0 24 24" aria-hidden="true">${shape}</svg>`:'';
+}
 
 function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   const flower=$('markFlower'), launcher=$('markMenu');
   const rows=[[['x','拟定为雷'],['o','拟推为雷'],['v','拟定为雷'],['ʌ','拟推为雷'],['+','提高层级']],
     [['s','拟定安全'],['/','拟推安全'],['e','拟定安全'],['//','拟推安全'],['−','降低层级']]];
   const advanced=s=>['v','ʌ','e','//'].includes(s), buttons=new Map();
-  let selected='',level=2,hold,suppress,stroke;
+  let selected='',level=2,hold,suppress,stroke,red=false;
+  const color=()=>red?'red':'blue';
+  const redLabels={x:'标记为雷（笔记）','/':'标记为安全（笔记）',cursor:'返回编辑'};
   function history() {
     const notes=getGame()?.notes;
     const visible=!(flower.inert && !selected);
@@ -194,16 +263,22 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   function refresh() {
     for(const [symbol,{button,label}] of buttons) {
       const rank=advanced(symbol)?level:0;
-      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${symbol}${rank>2?`<sub>${rank}</sub>`:''}`;
-      button.title=button.ariaLabel=rank?`第 ${rank} 层：${label}`:label;
+      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${inkGlyph(symbol)||symbol}${rank>2?`<sub>${rank}</sub>`:''}`;
+      button.title=rank?`第 ${rank} 层：${label}`:(red && redLabels[symbol] || label);
+      if(symbol==='+') button.title=`${label}（长按取交集）`;
       if(symbol==='−') button.title+=level===2?'（长按清除第二层拟推）':'（长按清除最高层拟推）';
+      button.ariaLabel=button.title;
+      button.hidden=red && !redLabels[symbol];
       if(!['+','−','cursor'].includes(symbol)) button.setAttribute('aria-pressed',String(selected===symbol));
     }
     $('board').classList.toggle('writing-ink',!!selected);
     history();
   }
-  function endStroke() {if(stroke) {stroke.edit.finish();stroke=undefined;history();}}
-  function close() {endStroke();selected='';menu('mark',false);refresh();}
+  function endStroke() {if(stroke) {stroke.edit?.finish();stroke=undefined;history();}}
+  function close() {
+    if(hold) {clearTimeout(hold.timer);hold.button.classList.remove('holding');hold=undefined;}
+    endStroke();selected='';menu('mark',false);refresh();
+  }
   function bindHold(button,action,click) {
     function cancel() {
       if(hold?.button!==button) return;
@@ -232,7 +307,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   function add(symbol,label,root,arc) {
     const button=document.createElement('button');
     button.type='button'; button.className=arc?'orb mark-option':'orb black center'; button.dataset.ink=symbol;
-    if(arc) for(const [name,value] of Object.entries(arc)) button.style.setProperty(`--${name}`,value);
+    if(arc) for(const [name,value] of Object.entries(arc)) button.style.setProperty(`--blue-${name}`,value);
     buttons.set(symbol,{button,label}); root.append(button);
     const activate=()=>{
       if(symbol==='cursor') {close();say('');launcher.focus({preventScroll:true}); return;}
@@ -244,7 +319,21 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
       }
       refresh();
     };
-    if(symbol==='−') bindHold(button,()=>{endStroke();if(getGame().notes.clearDeductions(level===2?level:undefined)) changed();history();},activate);
+    if(symbol==='+') bindHold(button,()=>{
+      endStroke();
+      const game=getGame();
+      const result=game.notes.archiveBlue(i=>game.visible[i]<0);
+      if(result) {changed();say(result==='archived'?'已取交集，普通蓝标已清空。':'交集未变，普通蓝标已清空。');}
+      history();
+    },activate);
+    else if(symbol==='−') bindHold(button,()=>{
+      endStroke();
+      const cleared=getGame().notes.clearDeductions(level===2?level:undefined);
+      if(cleared) changed();
+      const rank=level===2?'第二层':'最高层';
+      say(cleared?`已清除${rank}拟推标记。`:`没有可清除的${rank}拟推标记。`);
+      history();
+    },activate);
     else button.onclick=activate;
   }
   add('cursor','返回游玩',flower);
@@ -262,7 +351,10 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   }
   bindHold(launcher,()=>{
     endStroke();
-    if(getGame().notes.clear('blue')) {changed();say('已清空蓝色记号。');}
+    const notes=getGame().notes, ordinary=notes.layers.blue.size>0;
+    const cleared=red?notes.clear('red'):notes.clearBlue();
+    if(cleared) {changed();say(red?'已清空红色标记。':ordinary?'已清空蓝标。':'已清空绿色持久标。');}
+    else if(red) say('没有可清空的红色标记。');
     history();
   },()=>{
     if(!canAct()) return;
@@ -275,10 +367,11 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     if(canAct()) {
       endStroke();
       const g=getGame(), notes=g.notes;
+      if(g.visible[i]>=0) return true;
       g.focus=i;
-      const existing=notes.layers.blue.get(i), levelForMark=advanced(selected)?level:0;
+      const existing=notes.layers[color()].get(i), levelForMark=advanced(selected)?level:0;
       const mark=erase || existing?.symbol===selected && existing?.level===levelForMark?undefined:{symbol:selected,level:levelForMark};
-      if(notes.edit('blue',[[i,mark]])) changed(i);
+      if(notes.edit(color(),[[i,mark]])) changed(i);
       history();
     }
     return true;
@@ -288,17 +381,30 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     endStroke();
     const game=getGame();
     game.focus=i;
-    stroke={game,edit:game.notes.blueStroke(i,{symbol:selected,level:advanced(selected)?level:0})};
+    stroke={game,color:color(),mark:{symbol:selected,level:advanced(selected)?level:0}};
     return true;
   }
   function drawStroke(cells) {
     if(!stroke || stroke.game!==getGame() || !canAct()) {endStroke();return;}
     let last;
-    for(const i of cells) if(stroke.edit.visit(i)) last=i;
+    for(const i of cells) {
+      if(stroke.game.visible[i]>=0) continue;
+      stroke.edit??=stroke.game.notes.stroke(stroke.color,i,stroke.mark);
+      if(stroke.edit.visit(i)) last=i;
+    }
     if(last!==undefined) changed(last);
   }
   $('undoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.undo();changed();history();}};
   $('redoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.redo();changed();history();}};
   refresh();
-  return {close,reset:()=>{level=2;close();},stamp,startStroke,drawStroke,endStroke,erase:i=>stamp(i,true),get writing(){return !!selected;}};
+  function reset(editing) {
+    red=editing;level=2;
+    flower.toggleAttribute('data-red-pen',red);
+    launcher.toggleAttribute('data-red-pen',red);
+    const label=red?'红色记号':'蓝色记号';
+    launcher.title=launcher.ariaLabel=`${label}（长按清空）`;
+    flower.ariaLabel=`${label}工具`;
+    close();
+  }
+  return {close,reset,stamp,startStroke,drawStroke,endStroke,history,erase:i=>stamp(i,true),get writing(){return !!selected;}};
 }

@@ -27,12 +27,11 @@ function makeGameFeedback(toggle, motionToggle) {
     board: [{opacity:.52,translate:'0 5px'},{opacity:1,translate:'0 0'}],
     open: [{opacity:1,scale:1},{opacity:.9,scale:.84,offset:.34},{opacity:0,scale:.68}],
     flag: [{opacity:0,translate:'0 -9px',scale:.72},{opacity:1,translate:'0 1px',scale:1.12,offset:.66},{opacity:1,translate:'0 0',scale:1}],
-    proof: [{opacity:.45,translate:'0 5px'},{opacity:1,translate:'0 0'}],
     rejected: [{opacity:1},{opacity:1,offset:.72,easing:ease},{opacity:0}],
     ink: [{opacity:.85,scale:.72},{opacity:1,scale:1,offset:.25},{opacity:0,scale:1}],
     handoff: [{opacity:1},{opacity:.8,offset:.23},{opacity:0}]
   };
-  const durations={board:255,open:330,flag:310,proof:190,rejected:1800,ink:350,handoff:218};
+  const durations={board:255,open:330,flag:310,rejected:1800,ink:350,handoff:218};
   function visual(kind,node,delay=0) {
     if (!node?.animate || motionReduced()) return;
     playing.get(node)?.cancel();

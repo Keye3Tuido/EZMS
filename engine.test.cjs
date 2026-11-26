@@ -3,21 +3,108 @@ const assert = require('node:assert/strict');
 const engine = require('./engine');
 const format = require('./proof-format');
 const positionSeeds = require('./position-seed')(engine.adj);
-const {manualStepAction,inkTrails} = require('./board-input');
+const {manualStepAction,checkPositionMarks,restoreManualMarks,inkTrails} = require('./board-input');
 const sampleBits='1000000102211220022002201000000110122101102222011020020110011001';
 const sampleSeed='Z#&!#ktdfIF_HvWqUJ';
 
-test('position seed round trips mines, open clues, manual flags and both ink layers', () => {
+test('position seed preserves mine positions, open clues, flags and red marks, but omits both blue layers', () => {
   const position=positionSeeds.create(3,2,'124500');
-  const notes={layers:{red:new Map([[1,{symbol:'s',level:0}]]),blue:new Map([[2,{symbol:'\u028c',level:3}],[0,{symbol:'o',level:0}]])}};
-  const seed=positionSeeds.encode({...position,flags:new Set(position.flags),notes});
+  const red=new Map([[1,{symbol:'s',level:0}],[4,{symbol:'x',level:0}]]);
+  const notes={layers:{red,blue:new Map([[2,{symbol:'\u028c',level:3}],[0,{symbol:'o',level:0}]]),archivedBlue:new Map([[4,{symbol:'x',level:0}]])}};
+  const manual={marked:new Map([[4,'safe'],[0,'mine']])};
+  const seed=positionSeeds.encode({...position,flags:new Set(position.flags),notes,manual});
+  assert.equal(seed,positionSeeds.encode({...position,notes:{layers:{red}},manual}));
   const restored=positionSeeds.decode(`  ${seed}\n`);
   assert.match(seed,/^[\x21\x23-\x5b\x5d-\x7e]+$/);
   assert.deepEqual(restored.board,position.board);
   assert.deepEqual(restored.visible,[-1,2,-1,-1,-1,-1]);
   assert.deepEqual(restored.flags,[2,3]);
-  assert.deepEqual(restored.notes,[[[1,{symbol:'s',level:0}]],[[0,{symbol:'o',level:0}],[2,{symbol:'\u028c',level:3}]]]);
+  assert.deepEqual(restored.notes,[[[0,{symbol:'x',level:0}],[4,{symbol:'s',level:0}]],[]]);
+  assert.equal(red.get(4).symbol,'x');
   assert.equal(positionSeeds.encode(restored),seed);
+});
+
+test('position marks distinguish contradictions from guesses, regardless of the hidden layout', () => {
+  const red=[[0,{symbol:'x',level:0}],[1,{symbol:'s',level:0}],[4,{symbol:'s',level:0}]];
+  const pos=positionSeeds.create(5,1,'21050');
+  const draft=positionSeeds.decode(positionSeeds.encode({...pos,notes:[red]}));
+  const numbers=positionSeeds.decode(positionSeeds.encode({
+    ...positionSeeds.numbers(5,1,2,'1....',draft.flags),notes:[red],
+  }));
+  for(const {board,visible,flags,notes} of [draft,numbers]) {
+    const {state}=engine.classify(board,visible);
+    assert.deepEqual(state,['open','mine','either','either','either']);
+    assert.deepEqual(checkPositionMarks(state,flags,notes[0]),[
+      {cell:3,mark:'flag',conflict:false},
+      {cell:1,mark:'slash',conflict:true},
+      {cell:4,mark:'slash',conflict:false},
+    ]);
+  }
+  const wrong=positionSeeds.create(3,1,'240');
+  assert.deepEqual(checkPositionMarks(engine.classify(wrong.board,wrong.visible).state,wrong.flags,[]),[
+    {cell:1,mark:'flag',conflict:true},
+  ]);
+});
+
+test('restored confirmations retain their batch but do not duplicate open cells or flags', () => {
+  const {board,visible}=positionSeeds.create(3,1,'210');
+  const {state}=engine.classify(board,visible);
+  const cross={symbol:'x',level:0}, slash={symbol:'/',level:0};
+  const red=[[0,slash],[1,cross],[2,slash]];
+  for(const flags of [new Set(),new Set([1])]) {
+    const history=require('./board-input')();
+    history.layers.red=new Map(red);
+    assert.deepEqual(checkPositionMarks(state,flags,history.layers.red),[]);
+    const restored=restoreManualMarks(state,flags,engine.confirmationTargets,history);
+    assert.equal(manualStepAction(restored),'commit');
+    assert.deepEqual([...restored.marked],flags.size?[[2,'safe']]:[[1,'mine'],[2,'safe']]);
+    assert.equal(history.layers.red.size,0);
+  }
+  const finished=positionSeeds.create(3,1,'252');
+  const finishedState=engine.classify(finished.board,finished.visible).state;
+  assert.deepEqual(checkPositionMarks(finishedState,finished.flags,red),[]);
+  assert.deepEqual(checkPositionMarks(finishedState,finished.flags,[[1,slash]]),[
+    {cell:1,mark:'slash',conflict:true},
+  ]);
+});
+
+test('red strokes overwrite or erase in one undoable operation without touching blue marks', () => {
+  const h=require('./board-input')(), cross={symbol:'x',level:0}, slash={symbol:'/',level:0};
+  h.edit('blue',[[1,cross]]);
+  h.edit('red',[[1,slash]]);
+  const draw=h.stroke('red',0,cross);
+  [0,1,1,2].forEach(draw.visit); draw.finish();
+  assert.deepEqual([...h.layers.red.values()],[cross,cross,cross]);
+  const erase=h.stroke('red',0,cross);
+  [0,1].forEach(erase.visit); erase.finish();
+  assert.deepEqual([...h.layers.red],[[2,cross]]);
+  h.undo(); assert.equal(h.layers.red.size,3);
+  h.undo(); assert.deepEqual([...h.layers.red],[[1,slash]]);
+  h.redo(); h.clear('red');
+  assert.equal(h.layers.red.size,0);
+  h.undo(); assert.equal(h.layers.red.size,3);
+  assert.deepEqual([...h.layers.blue],[[1,cross]]);
+});
+
+test('opening cells prunes all mark layers and both history stacks without losing other cells in a stroke', () => {
+  const h=require('./board-input')(), cross={symbol:'x',level:0}, slash={symbol:'/',level:0};
+  const draw=h.stroke('red',1,cross);
+  [1,2].forEach(draw.visit); draw.finish();
+  h.edit('archivedBlue',[[1,slash]]);
+  h.edit('blue',[[1,slash],[2,slash]]);
+  h.undo();
+  h.discardCells([1]);
+  for(const layer of Object.values(h.layers)) assert.equal(layer.has(1),false);
+  assert.equal(h.canUndo,true);
+  h.redo();
+  assert.deepEqual([...h.layers.blue],[[2,slash]]);
+  h.undo(); h.undo();
+  assert.equal(h.layers.red.size,0);
+  assert.equal(h.canUndo,false);
+  h.redo();
+  assert.deepEqual([...h.layers.red],[[2,cross]]);
+  h.redo();
+  assert.deepEqual([...h.layers.blue],[[2,slash]]);
 });
 
 test('Base92 folds the dimensions and position type into a short header', () => {
@@ -34,9 +121,12 @@ test('Base92 folds the dimensions and position type into a short header', () => 
 
 test('position seeds only accept the new Base92 format', () => {
   for(const old of ['MS1.WzgsOCwiMTAwMDAwMDEwMjIxMTIyMDAyMjAwMjIwMTAwMDAwMDExMDEyMjEwMTEwMjIyMjAxMTAyMDAyMDExMDAxMTAwMSIsW10sW11d',
-    'MS2.WzMsMiwxLCIuLi4xLi4iLFswXSxbXSxbXV0','MS3.m)""&!#ktdfIF_HvWqUJ','MS3.m)']) {
+    'MS2.WzMsMiwxLCIuLi4xLi4iLFswXSxbXSxbXV0','MS3.m)""&!#ktdfIF_HvWqUJ','MS3.m)',
+    '8#Ve~!%~!!$*f','8#Ve~!~!!$*f']) {
     assert.throws(()=>positionSeeds.decode(old),/无效/);
   }
+  const current='8#Ve';
+  assert.equal(positionSeeds.encode(positionSeeds.decode(current)),current);
 });
 
 test('Base92 note records preserve every mark across radix boundaries', () => {
@@ -48,17 +138,33 @@ test('Base92 note records preserve every mark across radix boundaries', () => {
   assert.deepEqual(restored.notes[0],[...red]);
 });
 
-test('numeric Base92 seeds preserve every public digit, flag and note level', () => {
+test('numeric Base92 seeds preserve public digits, flags and covered red notes, and omit blue notes', () => {
   const draft=positionSeeds.numbers(4,3,5,'.0123.45678.',[0,5]);
-  const position={...draft,flags:new Set(draft.flags),notes:{layers:{red:new Map([[2,{symbol:'x',level:0}],[9,{symbol:'s',level:0}]]),blue:new Map([[3,{symbol:'v',level:2}],[10,{symbol:'//',level:99}]])}}};
+  const position={...draft,flags:new Set(draft.flags),notes:{layers:{red:new Map([[2,{symbol:'x',level:0}],[9,{symbol:'s',level:0}],[11,{symbol:'s',level:0}]]),blue:new Map([[3,{symbol:'v',level:2}],[10,{symbol:'//',level:99}]])}}};
   const seed=positionSeeds.encode(position);
+  assert.equal(seed,positionSeeds.encode(positionSeeds.numbers(4,3,5,'.0123.45678.',[0,5],[[11,1,0]])));
   assert.match(seed,/~~/);
   assert.match(seed,/~!/);
   const restored=positionSeeds.decode(seed);
   assert.deepEqual(restored.visible,draft.visible);
   assert.deepEqual(restored.flags,draft.flags);
-  assert.deepEqual(restored.notes,[[[2,{symbol:'x',level:0}],[9,{symbol:'s',level:0}]],[[3,{symbol:'v',level:2}],[10,{symbol:'//',level:99}]]]);
+  assert.deepEqual(restored.notes,[[[11,{symbol:'s',level:0}]],[]]);
   assert.equal(positionSeeds.encode(restored),seed);
+});
+
+test('Base92 import drops hidden red marks from open cells without losing covered marks or flags', () => {
+  const reported=positionSeeds.decode('F!#~~~!!');
+  assert.deepEqual(reported.visible,[0,-1,1,-1,-1]);
+  assert.deepEqual(reported.notes,[[],[]]);
+  assert.equal(positionSeeds.encode(reported),positionSeeds.encode(positionSeeds.create(5,1,'20210')));
+
+  for(const seed of ["@!%o~!!')","A!#Ng~!!')"]) {
+    const p=positionSeeds.decode(seed);
+    assert.deepEqual(p.visible,[1,-1,-1,0]);
+    assert.deepEqual(p.flags,[1]);
+    assert.deepEqual(p.notes,[[[2,{symbol:'s',level:0}]],[]]);
+    assert.deepEqual(positionSeeds.decode(positionSeeds.encode(p)),p);
+  }
 });
 
 test('compact Base92 seeds reject malformed headers, cells and field separators', () => {
@@ -76,8 +182,8 @@ test('position seed rejects invalid dimensions, incompatible cell states and uns
   for(const args of [[0,2,''],[65536,65536,'0'],[2,2,'000'],[2,2,'3000'],[2,2,'6000']]) {
     assert.throws(()=>positionSeeds.create(...args),/无效/);
   }
-  for(const inks of [[[[4,0,0]],[]],[[[1,0,0],[1,0,0]],[]],[[],[[1,'<b>',0]]],[[],[[1,7,1]]]]) {
-    assert.throws(()=>positionSeeds.numbers(2,2,0,'....',[],inks),/无效/);
+  for(const red of [[[4,0,0]],[[1,0,0],[1,0,0]],[[1,'<b>',0]],[[1,7,1]],[[1,0,2]]]) {
+    assert.throws(()=>positionSeeds.numbers(2,2,0,'....',[],red),/无效/);
   }
   for(const seed of ['*~!*','*~!$$','*~!~!!']) assert.throws(()=>positionSeeds.decode(seed),/无效/,seed);
 });
@@ -147,6 +253,33 @@ test('staged hints substitute a confirmed safe square before counting clues', ()
   assert.deepEqual(next.mines,[2]);
   assert.deepEqual(next.sources,[3]);
   assert.equal(visible[1],-1);
+});
+
+test('a selected target has its own minimum, recalculated after a red confirmation', () => {
+  const {board,visible}=positionSeeds.create(5,1,'20210');
+  const before=[...visible], target=3;
+  assert.equal(engine.inspect(board,visible).clues,1);
+  const selected=engine.hint(board,visible,[],[],{target});
+  assert.equal(selected.clues,2);
+  assert.deepEqual(selected.move.sources,[0,2]);
+  assert.deepEqual(selected.move.safe,[1]);
+  assert.deepEqual(selected.move.mines,[3]);
+  const changed=engine.hint(board,visible,[],[],{target,confirmed:[[1,'safe']]});
+  assert.equal(changed.clues,1);
+  assert.deepEqual(changed.move.sources,[2]);
+  assert.deepEqual(changed.move.safe,[]);
+  assert.deepEqual(changed.move.mines,[3]);
+  assert.equal(engine.hint(board,visible,[],[],{target,confirmed:[[3,'mine']]}).status,'confirmed');
+  assert.deepEqual(visible,before);
+});
+
+test('target hints do not substitute an easier move for an unfixed square', () => {
+  const {board,visible}=positionSeeds.create(7,1,'2021001');
+  assert.equal(engine.inspect(board,visible).clues,1);
+  const selected=engine.hint(board,visible,[],[],{target:5});
+  assert.equal(selected.status,'target-unfixed');
+  assert.equal(selected.clues,undefined);
+  assert.equal(selected.move,null);
 });
 
 const reviewPosition=(w,h,bits)=>positionSeeds.create(w,h,bits);
@@ -589,6 +722,88 @@ test('mark history keeps colors separate and treats clears as one action', () =>
   assert.equal(h.layers.blue.get(0).symbol,'v');
 });
 
+test('blue archiving takes marks from all levels and makes one undoable change', () => {
+  const h=require('./board-input')();
+  const source=['x','o','s','/','v','ʌ','e','//'].map((symbol,i)=>[i,{symbol,level:i<4?0:i%2+2}]);
+  h.edit('blue',source);
+  assert.equal(h.archiveBlue(),'archived');
+  assert.equal(h.layers.blue.size,0);
+  const expected=['o','o','/','/','o','o','/','/'].map((symbol,i)=>[i,{symbol,level:0}]);
+  assert.deepEqual([...h.layers.archivedBlue],expected);
+  assert.equal(h.archiveBlue(),false);
+  h.undo();
+  assert.deepEqual([...h.layers.blue],source);
+  assert.equal(h.layers.archivedBlue.size,0);
+  h.redo();
+  assert.equal(h.layers.blue.size,0);
+  assert.deepEqual([...h.layers.archivedBlue],expected);
+});
+
+test('blue archiving can start with only an advanced mark', () => {
+  const h=require('./board-input')();
+  h.edit('blue',[[1,{symbol:'v',level:2}]]);
+  assert.equal(h.archiveBlue(),'archived');
+  assert.equal(h.layers.blue.size,0);
+  assert.deepEqual([...h.layers.archivedBlue],[[1,{symbol:'o',level:0}]]);
+  h.undo();
+  assert.equal(h.layers.blue.get(1).level,2);
+});
+
+test('blue archiving keeps matching marks, removes conflicts, and preserves other cells', () => {
+  const h=require('./board-input')();
+  const mark=(symbol,level=0)=>({symbol,level});
+  h.edit('blue',[[0,mark('o')],[1,mark('x')],[2,mark('/')],[3,mark('/')]]);
+  h.archiveBlue();
+  const original=new Map(h.layers.archivedBlue);
+  h.edit('blue',[[0,mark('v',2)],[1,mark('//',3)],[2,mark('ʌ',4)],[4,mark('e',3)]]);
+  assert.deepEqual(h.layers.archivedBlue,original);
+  h.archiveBlue();
+  assert.deepEqual(h.layers.archivedBlue,new Map([[0,mark('o')],[3,mark('/')]]));
+  h.undo();
+  assert.deepEqual(h.layers.archivedBlue,original);
+  assert.equal(h.layers.blue.size,4);
+});
+
+test('archiving does not add marks in the same action that clears the last green mark', () => {
+  const h=require('./board-input')();
+  const x={symbol:'x',level:0}, ring={symbol:'o',level:0}, slash={symbol:'/',level:0};
+  h.edit('blue',[[0,x]]);
+  h.archiveBlue();
+  h.edit('blue',[[0,slash],[1,x]]);
+  h.archiveBlue();
+  assert.equal(h.layers.archivedBlue.size,0);
+  assert.equal(h.layers.blue.size,0);
+  h.undo();
+  assert.deepEqual(h.layers.archivedBlue,new Map([[0,ring]]));
+  assert.deepEqual(h.layers.blue,new Map([[0,slash],[1,x]]));
+  h.redo();
+  assert.equal(h.layers.archivedBlue.size,0);
+  assert.equal(h.layers.blue.size,0);
+  h.edit('blue',[[1,x],[2,x]]);
+  h.archiveBlue(i=>i!==2);
+  assert.deepEqual(h.layers.archivedBlue,new Map([[1,ring]]));
+});
+
+test('clear blue removes the ordinary layer first and the archive on a separate action', () => {
+  const h=require('./board-input')();
+  const x={symbol:'x',level:0}, v={symbol:'v',level:2};
+  h.edit('red',[[0,x]]);
+  h.edit('blue',[[0,x]]);
+  h.archiveBlue();
+  h.edit('blue',[[0,v]]);
+  assert.equal(h.clearBlue(),true);
+  assert.equal(h.layers.blue.size,0);
+  assert.equal(h.layers.archivedBlue.size,1);
+  assert.equal(h.clearBlue(),true);
+  assert.equal(h.layers.archivedBlue.size,0);
+  assert.equal(h.clearBlue(),false);
+  assert.equal(h.layers.red.size,1);
+  h.undo(); assert.equal(h.layers.archivedBlue.size,1);
+  h.undo(); assert.equal(h.layers.blue.get(0),v);
+  h.redo(); assert.equal(h.layers.blue.size,0);
+  h.redo(); assert.equal(h.layers.archivedBlue.size,0);
+});
+
 test('clearing second-level deductions preserves assumptions and other layers', () => {
   const h=require('./board-input.js')();
   const original=[['v',2],['e',2],['ʌ',2],['//',2],['ʌ',3],['//',4],['/',0]]
@@ -606,7 +821,7 @@ test('a blue stroke writes, overwrites or erases each visited cell in one histor
   const x={symbol:'x',level:0}, v={symbol:'v',level:3};
   h.edit('red',[[1,x]]);
   h.edit('blue',[[1,x]]);
-  const paint=h.blueStroke(0,v);
+  const paint=h.stroke('blue',0,v);
   assert.equal(paint.visit(0),true);
   assert.equal(paint.visit(1),true);
   assert.equal(paint.visit(0),false);
@@ -617,7 +832,7 @@ test('a blue stroke writes, overwrites or erases each visited cell in one histor
   h.redo(); assert.equal(h.layers.blue.size,2);
 
   h.edit('blue',[[2,x]]);
-  const erase=h.blueStroke(1,{...v});
+  const erase=h.stroke('blue',1,{...v});
   for(const cell of [1,2,0,2]) erase.visit(cell);
   erase.finish();
   assert.equal(h.layers.blue.size,0);

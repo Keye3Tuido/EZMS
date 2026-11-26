@@ -26,6 +26,7 @@
   let digit=1, draftMinesValid=true;
   let playWorker, pending;
   let verificationWorker, verificationTimer;
+  let draftMarkJob, draftMarkJudgment;
   const proofKinds=['cancelled','positive','negative','element'];
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   let hoveredProof, focusedProof, pinnedProof;
@@ -53,6 +54,11 @@
     progress.max=batch?.total || 1;
     progress.value=batch?.marked.size || 0;
     progress.toggleAttribute('data-complete',complete);
+    const text=$('roundText');
+    const message=!showProgress?'':`本轮已确认 ${batch.marked.size} / ${batch.total} 格${complete?'，可以开格并插旗。':''}`;
+    if(text.textContent!==message) text.textContent=message;
+    text.hidden=!showProgress;
+    text.toggleAttribute('data-complete',complete);
     // 标齐后，求解一步直接提交这一批；未标齐时才执行下一条推导。
     $('apply').disabled = locked || !live;
   }
@@ -60,7 +66,7 @@
   function controls() {
     const live = game?.state === 'playing', locked = !!worker || auto || !!pending;
     for (const id of fields) $(id).disabled = !!worker;
-    $('generate').disabled = !!worker;
+    $('generate').disabled = !!worker || !!pending && !auto;
     const cancel=$('cancel'), canCancel=!!worker;
     cancel.classList.toggle('is-inactive',!canCancel);
     cancel.setAttribute('aria-hidden',String(!canCancel));
@@ -75,13 +81,14 @@
     for (const control of $('editorSettings').elements) control.disabled = locked;
     $('copyGamePosition').disabled = locked || !parkedGame;
     for (const button of $('editTools').querySelectorAll('button')) button.disabled = locked;
-    $('toolDock').hidden = editing;
+    $('reasonMenu').classList.toggle('is-inactive',editing);
     $('restart').hidden = editing;
     $('gameTime').hidden = editing;
     $('board').setAttribute('aria-busy',String(!!pending));
     for (const id of ['focus', 'hint', 'answers']) $(id).disabled = locked || !live;
-    for (const id of ['reasonMenu','markMenu']) $(id).disabled = !game || !!worker;
-    $('restart').disabled = !!worker || !game;
+    $('reasonMenu').disabled = editing || !game || !!worker;
+    $('markMenu').disabled = !game || !!worker || !!pending || auto || !editing && !live;
+    $('restart').disabled = !!worker || !!pending && !auto || !game;
     $('solve').disabled = !!worker || !live || (!!pending && !auto);
     $('solve').innerHTML = auto ? `${icon('stopIcon')}停止求解` : `${icon('play')}自动求解`;
     $('reasonMenu').innerHTML=icon(auto?'stopIcon':'hintIcon');
@@ -125,7 +132,7 @@
       const input = $(id), v = input.valueAsNumber;
       if (input.value === '' && !input.validity.badInput) return undefined;
       if (Number.isFinite(v) && condition(v)) return v;
-      $('difficultySettings').open = true;
+      setDifficultyOpen(true);
       input.focus(); throw Error(error);
     };
     const {w,h}=readDimensions('width','height');
@@ -136,13 +143,16 @@
     return {p: {w,h,minAverage,minMultiPercent,minPeakClues}, seed};
   }
 
+  function cancelPlayRequest() {
+    if (!pending) return;
+    playWorker.terminate(); playWorker = null;
+    pending(null); pending = null;
+  }
+
   function stopAuto() {
-    if (auto && proofPanel.querySelector('.proof-pending')) clearHint();
+    if (auto && proofVisible && proofPanel.querySelector('.proof-pending')) clearHint();
     auto = false; run++;
-    if (pending) {
-      playWorker.terminate(); playWorker = null;
-      pending(null); pending = null;
-    }
+    cancelPlayRequest();
     controls();
   }
   function finishWorker() { worker?.terminate(); worker = null; controls(); }
@@ -155,7 +165,7 @@
 
   function generate(e) {
     e?.preventDefault();
-    if (worker) return;
+    if (worker || pending && !auto) return;
     let job;
     try { job = readSettings(); } catch (error) { say(error.message, 'error'); return; }
     stopAuto();
@@ -200,10 +210,15 @@
     worker.postMessage(job);
   }
 
-  function positionGame({board,visible=engine.opening(board),flags=[],notes=[[],[]],numbers=false},p={}) {
+  const noteColors=['red','blue','archivedBlue'];
+
+  function positionGame({board,visible=engine.opening(board),flags=[],notes=[],numbers=false},p={}) {
     const opened=visible.filter(n=>n>=0).length;
     const history=makeMarkHistory();
-    for (const [i,color] of ['red','blue'].entries()) history.layers[color]=new Map(notes[i]);
+    for (const [i,color] of noteColors.entries()) {
+      for(const [cell,mark] of notes[i]??[]) history.layers[color].set(cell,
+        color==='red' && mark.symbol==='s'?{...mark,symbol:'/'}:mark);
+    }
     return {board,original:board,originalVisible:visible,originalFlags:[...flags],originalNotes:notes,p:{...p,w:board.w,h:board.h,mines:board.mines},
       numbers,visible,flags:new Set(flags),notes:history,proven:new Set(),opened,
       state:opened===visible.length-board.mines?'won':'playing',started:null,ended:null,highlight:null,focus:board.first,
@@ -213,7 +228,7 @@
   function mount(position) {
     stopAuto();
     game=position;
-    input.reset(); showReason(false);
+    input.reset(editing); showReason(false);
     clearHint();
     scheduleVerification();
     const root = $('board');
@@ -273,7 +288,9 @@
     $('reasonStatus').dataset.state=current?.status??'';
     $('currentSafe').textContent=count(current?.safe);
     $('currentMines').textContent=count(current?.mines);
-    $('currentClues').textContent=current?.clues??'—';
+    const selectedClues=game?.selectedClues;
+    $('currentClueLabel').textContent=selectedClues===undefined?'本步最少线索':'所示步骤最少线索';
+    $('currentClues').textContent=selectedClues??current?.clues??'—';
     $('averageClues').textContent=verification?.averageClues?.toFixed(2)??'—';
     $('peakClues').textContent=wholeGame?.peakClues??'—';
     const ratio=wholeGame?.multiClueRatio;
@@ -292,7 +309,7 @@
 
   function confirmedInk(g,i) {
     const kind=g.manual?.marked.get(i);
-    return kind?{symbol:kind==='mine'?'x':'/',level:0}:g.notes.layers.red.get(i);
+    return kind?{symbol:kind==='mine'?'x':'/',level:0}:editing?g.notes.layers.red.get(i):undefined;
   }
 
   function paintInk() {
@@ -303,8 +320,10 @@
     const dx=tile+parseFloat(style.columnGap),dy=height+parseFloat(style.rowGap);
     const left=axis+dx-tile/2, top=axisY+dy-height/2;
     if(!Number.isFinite(left+top)) return;
-    const layers=[['red',new Map(game.notes.layers.red)],['blue',game.notes.layers.blue]];
-    for(const i of game.manual?.marked.keys()??[]) layers[0][1].set(i,confirmedInk(game,i));
+    const redCells=editing?game.notes.layers.red.keys():game.manual?.marked.keys()??[];
+    const covered=([i])=>game.visible[i]<0;
+    const visibleRed=new Map([...redCells].map(i=>[i,confirmedInk(game,i)]).filter(covered));
+    const layers=[['red',visibleRed],['blue',[...game.notes.layers.blue].filter(covered)]];
     const width=parseFloat(style.width), boardHeight=parseFloat(style.height);
     const key=JSON.stringify([w,width,boardHeight,tile,height,dx,dy,left,top,...layers.map(([,ink])=>[...ink])]);
     if(key===paintedInk) return;
@@ -323,7 +342,7 @@
       const lines=new Map();
       for(const [i,{symbol,level}] of ink) {
         if(symbol==='x') {
-          const [x,y]=center(i), r=tile*(color==='red'?.36:.29);
+          const [x,y]=center(i), r=tile*(color==='blue'?.29:.36);
           draw(color,`M${x-r},${y-r}L${x+r},${y+r}M${x-r},${y+r}L${x+r},${y-r}`,weight);
         } else if(symbol==='/' || symbol==='//') {
           const group=symbol==='/'?0:level;
@@ -333,7 +352,7 @@
       }
       for(const [rank,cells] of lines) for(const {cells:trail,closed} of inkTrails(cells,w)) {
         const points=trail.map(center);
-        const overlaps=color==='blue' && !rank && trail.some(i=>layers[0][1].get(i)?.symbol==='/');
+        const overlaps=color==='blue' && !rank && trail.some(i=>visibleRed.get(i)?.symbol==='/');
         for(const shift of rank?[-tile*.09,tile*.09]:[overlaps?tile*.13:0]) {
           draw(color,inkPath(points,tile,shift,closed),weight*(rank?.78:1));
         }
@@ -458,12 +477,14 @@
       if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
       let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? `<span class="cell-number">${n}</span>` : '';
       const confirmed=game.manual?.marked.get(i);
-      const red=confirmedInk(game,i);
-      const blue=game.notes.layers.blue.get(i);
-      for(const [color,m] of [['red',red],['blue',blue]]) {
-        if(m && !['x','/','//'].includes(m.symbol)) body+=`<span class="cell-note ${color}">${m.symbol}</span>`;
-        if(m?.level>2) body+=`<sub class="ink-rank">${m.level}</sub>`;
+      const red=n<0?confirmedInk(game,i):undefined;
+      const blue=n<0?game.notes.layers.blue.get(i):undefined;
+      const archived=n<0?game.notes.layers.archivedBlue.get(i):undefined;
+      if(blue) {
+        if(blue.symbol!=='x') body+=inkGlyph(blue.symbol);
+        if(blue.level>2) body+=`<sub class="ink-rank">${blue.level}</sub>`;
       }
+      if(archived) body+=`<svg class="archived-note" viewBox="0 0 12 12" aria-hidden="true">${archived.symbol==='o'?'<circle cx="6" cy="6" r="4"/>':'<path d="M2 10L10 2"/>'}</svg>`;
       if (b.classList.contains('proof-preview')) marks.push('proof-preview');
       const opening=b.classList.contains('covered') && n>=0;
       const flagPlaced=b.classList.contains('cell') && marked && !b.classList.contains('flagged');
@@ -472,7 +493,7 @@
       if(opening) feedback.tile('open',b,Math.min(revealed++*11,99));
       if(flagPlaced && !mine) feedback.visual('flag',b.querySelector('.icon'),65);
       b.tabIndex = i === focus ? 0 : -1;
-      b.setAttribute('aria-label',`${coord(i)} ${label}${first.has(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}`);
+      b.setAttribute('aria-label',`${coord(i)} ${label}${first.has(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':red?`，红色笔记：${red.symbol==='x'?'雷':'安全'}`:''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}${archived?`，绿色持久标${archived.symbol==='o'?'雷':'安全'}`:''}`);
     }
     $('remaining').textContent = !editing && state === 'won' ? '0' : board.mines-flags.size;
     $('totalMines').classList.toggle('clue-total', !!highlight?.sources.includes(-1));
@@ -510,7 +531,62 @@
   const proofPanel=$('proof');
   const reasonSlot=proofPanel.closest('.reason-slot');
   const reasonLayout=reasonSlot.parentElement;
+  const reasonContent=reasonSlot.querySelector('.reason-content');
+  const proofPane=$('proofPane'), reasonStatus=$('reasonStatus');
   const openReasonPanel=$('openReasonPanel');
+  const header=viewport.querySelector('header');
+  const compactReason=matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 1000px)');
+  let proofVisible=false, reasonCollapsed=false, proofReturn;
+
+  function positionProofWindow() {
+    if(!compactReason.matches || !proofVisible) return;
+    const top=document.documentElement.dataset.fullscreenMode ? header.getBoundingClientRect().bottom+8 : 12;
+    const minRoom=proofPane.querySelector('.panel-head').offsetHeight+24;
+    const gap=10;
+    const fan=$('reasonFlower').getBoundingClientRect();
+    const focus=$('focus'), answers=$('answers');
+    // Reserve the fully expanded fan, independent of its opening animation.
+    const fanLeft=fan.left+parseFloat(focus.style.getPropertyValue('--x'))-focus.offsetWidth/2;
+    const fanTop=fan.top+parseFloat(answers.style.getPropertyValue('--y'))-answers.offsetHeight/2;
+    const aboveFan=fanTop-gap;
+    const shortLandscape=window.innerHeight <= 500 && window.innerWidth > window.innerHeight;
+    const tight=aboveFan-top<minRoom;
+    const side=(shortLandscape && fanLeft>=230) || (tight && fanLeft>=170);
+    // If neither placement fits, keep the controls above the scrollable proof.
+    proofPane.classList.toggle('under-tools',tight && !side);
+    proofPane.style.setProperty('--proof-right',side?`${window.innerWidth-fanLeft+gap}px`:'12px');
+    const bottom=side?window.innerHeight-12:Math.max(top+minRoom,aboveFan);
+    const rect=reasonSlot.getBoundingClientRect();
+    const above=Math.min(bottom,rect.top-8)-top;
+    const below=bottom-Math.max(top,rect.bottom+8);
+    // Leave the current reasoning visible even when the page is scrolled to it.
+    const useBelow=above<Math.min(180,(bottom-top)*.45) && below>above;
+    const y=useBelow?Math.max(top,rect.bottom+8):top;
+    const room=useBelow?below:above;
+    // Leave room for the title and a scrollable strip on short screens.
+    proofPane.style.setProperty('--proof-top',`${Math.min(y,Math.max(top,bottom-minRoom))}px`);
+    proofPane.style.setProperty('--proof-room',`${Math.max(minRoom,room)}px`);
+  }
+
+  function syncReasonLayout() {
+    const floating=compactReason.matches;
+    if(floating && proofPane.parentElement!==viewport) viewport.append(proofPane);
+    else if(!floating && proofPane.parentElement!==reasonContent) reasonContent.append(proofPane);
+    proofPane.setAttribute('role',floating?'dialog':'region');
+    reasonStatus.inert=reasonCollapsed || (!floating && proofVisible);
+    proofPane.inert=!proofVisible || (!floating && reasonCollapsed);
+    positionProofWindow();
+  }
+  compactReason.addEventListener('change',syncReasonLayout);
+  window.addEventListener('resize',positionProofWindow);
+  document.addEventListener('scroll',positionProofWindow,{capture:true,passive:true});
+  new MutationObserver(positionProofWindow).observe(document.documentElement,{
+    attributes:true,attributeFilter:['data-fullscreen-mode']
+  });
+  const proofPositionObserver=new ResizeObserver(positionProofWindow);
+  proofPositionObserver.observe(reasonSlot);
+  proofPositionObserver.observe(header);
+  syncReasonLayout();
   let touchProof=false;
   function proofAt(target,includeRow) {
     if(!proofPanel.contains(target)) return;
@@ -553,10 +629,15 @@
   },true);
 
   function clearHint(keepProof=false) {
-    if(game) game.highlight = null;
+    if(game) {
+      game.highlight = null;
+      if(game.selectedClues!==undefined) {
+        game.selectedClues=undefined;
+        showVerification();
+      }
+    }
     clearProofHover();
     setProofVisible(keepProof);
-    proofPanel.replaceChildren();
     if(keepProof) showPendingProof();
   }
 
@@ -624,14 +705,9 @@
     showMarks(g,added.filter(i=>batch.marked.has(i)),wasDone);
   }
 
-  function markProgress(g) {
-    const {marked,total,done}=g.manual;
-    say(done?(auto?'本轮已标齐，即将开格并插旗。':'本轮已标齐，可以开格并插旗。'): `本轮已确认 ${marked.size} / ${total} 格`);
-  }
-
   function showMarks(g,added,wasDone) {
     g.started??=Date.now();
-    markProgress(g);
+    say('');
     g.current=g.verification=undefined; scheduleVerification();
     render();
     for(const i of added) feedback.tile('ink',buttons[i]);
@@ -658,10 +734,11 @@
     feedback.handoff(inkDrawing);
     g.proven=proven;
     g.flags=flags;
+    discardOpenedMarks(g,safe);
     g.manual=null;
     g.current=g.verification=undefined; scheduleVerification();
     const won=g.opened===g.visible.length-g.board.mines;
-    clearHint(auto && !won && !$('proofPane').hidden);
+    clearHint(auto && !won && proofVisible);
     if(won) finish();
     else {
       say(`本轮已打开 ${safe.length} 格，插旗 ${mines.length} 格。`,'success');
@@ -972,7 +1049,7 @@
   }
 
   function display(a, weak) {
-    if($('proofPane').hidden) return;
+    if(!proofVisible) return;
     const panel=$('proof'), m=a.move;
     clearProofHover();
     panel.replaceChildren();
@@ -1000,19 +1077,31 @@
       const body=element('div','proof-body'), clues=element('div','proof-chips clues');
       const tokens=ss=>ss.slice().sort((a,b)=>a-b).map(s=>chip(s,s<0?'总雷数':`${coord(s)} · ${game.visible[s]}`));
       clues.append(...tokens(weak?sources:m.sources));
-      body.append(element('p','proof-caption',weak?'在棋盘上查看高亮数字':
-        `最少 ${m.sources.length} 条线索`));
+      body.append(element('p','proof-caption',`最少 ${m.sources.length} 条线索`));
       if (weak) body.append(clues);
       if (!weak) {
         body.append(steps(m));
         if(a.prior.length) {
-          const prior=element('details','proof-detail');
-          prior.append(element('summary','', '本步之前证实的旗子'));
+          const prior=element('div','proof-detail');
+          const toggle=element('button','proof-detail-toggle','本步之前证实的旗子');
+          toggle.type='button';
+          toggle.setAttribute('aria-controls','priorProof');
+          toggle.setAttribute('aria-expanded','false');
+          const fold=element('div','prior-fold');
+          fold.id='priorProof';
+          fold.inert=true;
+          const content=element('div','prior-content');
+          toggle.onclick=()=>{
+            fold.inert=!fold.inert;
+            toggle.setAttribute('aria-expanded',String(!fold.inert));
+          };
+          fold.append(content);
           for(const p of a.prior) {
             const targets=element('div','proof-chips targets mine');
             targets.append(element('strong','target-label','必雷'),...regionChips(p.mines,'必雷'));
-            prior.append(targets,steps(p));
+            content.append(targets,steps(p));
           }
+          prior.append(toggle,fold);
           body.append(prior);
         }
       }
@@ -1046,8 +1135,7 @@
 
   function pauseSolve() {
     stopAuto();
-    if(game.manual?.marked.size) markProgress(game);
-    else say('已停止自动求解。');
+    say('已停止自动求解。');
   }
 
   async function solve() {
@@ -1055,7 +1143,7 @@
     if (!ready() || pending) return;
     auto = true;
     const task=++run, g=game;
-    if($('proofPane').hidden) {
+    if(!proofVisible) {
       showPendingProof();
       setProofVisible(true);
     }
@@ -1074,15 +1162,21 @@
     } finally { if (task === run) stopAuto(); }
   }
 
-  async function requestHint(show) {
-    if (!openReasonPanel.hidden) setReasonCollapsed(false);
+  async function requestHint(show, trigger, selectStep=false) {
     if (!ready() || auto || pending) return;
+    if (!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
     const task = run;
-    clearHint(); render();
-    setProofVisible(true);
-    showPendingProof();
+    proofReturn=trigger;
+    clearHint(true); render();
+    if(compactReason.matches && trigger===$('hint')) $('closeProof').focus({preventScroll:true});
     const a = await next();
-    if (task === run && ready() && a) show(a);
+    if (task === run && ready() && a && (!selectStep || proofVisible)) {
+      if(selectStep && a.move) {
+        game.selectedClues=a.move.sources.length;
+        showVerification();
+      }
+      show(a);
+    }
   }
 
   function showReason(open,focus=false) {
@@ -1099,26 +1193,34 @@
   }
 
   function setProofVisible(visible) {
-    const pane=$('proofPane'), wasHidden=pane.hidden;
-    if(!visible && pane.contains(document.activeElement)) $('reasonMenu').focus({preventScroll:true});
-    $('reasonStatus').inert=visible;
-    pane.hidden=!visible;
-    if(visible && wasHidden && openReasonPanel.hidden) feedback.visual('proof',proofPanel);
+    if(!visible && proofPane.contains(document.activeElement)) focusProofReturn();
+    proofVisible=visible;
+    proofPane.classList.toggle('is-open',visible);
+    reasonLayout.classList.toggle('show-proof',visible);
+    syncReasonLayout();
   }
 
   function setReasonCollapsed(collapsed, focus=false) {
-    if(collapsed) clearProofHover();
+    if(collapsed && !compactReason.matches) clearProofHover();
+    reasonCollapsed=collapsed;
     reasonLayout.classList.toggle('reason-collapsed',collapsed);
-    openReasonPanel.hidden=!collapsed;
+    openReasonPanel.inert=!collapsed;
+    openReasonPanel.setAttribute('aria-expanded',String(!collapsed));
+    syncReasonLayout();
     if(focus) {
-      const section=$($('proofPane').hidden?'reasonStatus':'proofPane');
+      const section=proofVisible && !compactReason.matches?proofPane:reasonStatus;
       (collapsed?openReasonPanel:section.querySelector('[data-collapse-reason]')).focus({preventScroll:true});
     }
   }
 
+  function focusProofReturn() {
+    (proofReturn?.isConnected && !proofReturn.disabled && !proofReturn.closest('[inert]')
+      ? proofReturn : $('reasonMenu')).focus({preventScroll:true});
+  }
+
   function closeProof() {
     clearHint(); render();
-    $('reasonMenu').focus({preventScroll:true});
+    focusProofReturn();
   }
 
   function setMode(next) {
@@ -1129,7 +1231,12 @@
     for(const id of ['editorSettings','editTools','playPosition']) $(id).hidden=!next;
   }
 
-  function copyPosition(g) {return seeds.decode(seeds.encode(g));}
+  function copyPosition(g) {
+    const position=seeds.decode(seeds.encode(g));
+    position.notes[1]=[...g.notes.layers.blue];
+    position.notes[2]=[...g.notes.layers.archivedBlue];
+    return position;
+  }
 
   function mountDraft(position) {
     draft=position;
@@ -1186,7 +1293,7 @@
       }
       next=seeds.numbers(w,h,blank?0:Math.min(old.mines,w*h),digits.join(''),flags);
     } else next=seeds.create(w,h,bits.join(''));
-    if(!blank) next.notes=['red','blue'].map(color=>[...game.notes.layers[color]].flatMap(([i,note])=>{
+    if(!blank) next.notes=noteColors.map(color=>[...game.notes.layers[color]].flatMap(([i,note])=>{
       const at=translate(i);
       return at>=0 ? [[at,note]] : [];
     }));
@@ -1201,13 +1308,12 @@
     if(tool==='flag') {
       if(n>=0) return;
       if(!g.flags.delete(i)) g.flags.add(i);
-      g.current=g.verification=undefined; scheduleVerification();
+      refreshDraftMarks();
       render(); return;
     }
     if(tool==='number') {
       if(n===value) return;
       g.visible[i]=value;
-      if(value>=0) g.flags.delete(i);
     } else if(tool==='mine') {
       b.bombs[i]=!b.bombs[i];
       const delta=b.bombs[i]?1:-1;
@@ -1221,8 +1327,8 @@
     } else if(b.bombs[i]) {say('有雷的格子不能设为已开。','error');return;}
     else {
       g.visible[i]=n>=0?-1:b.clues[i];
-      if(n<0) g.flags.delete(i);
     }
+    if(n<0 && g.visible[i]>=0) discardOpenedMarks(g,[i]);
     b.opening=g.visible.flatMap((v,at)=>v>=0?[at]:[]);
     b.first=b.opening[0]??0;
     g.opened=b.opening.length;
@@ -1230,22 +1336,106 @@
     scheduleVerification(); render(); say('');
   }
 
-  async function acceptPosition(position) {
-    if(editing) mountDraft(positionGame(position));
-    else {
-      if(position.board.mines===position.visible.length) throw Error('游戏局面至少需要一个安全格。');
-      if(position.numbers) {
-        const {board,visible}=position;
-        const result=await ask('materialize',{p:board,visible});
-        if(!result?.board) throw Error(result?.status==='invalid'?'数字与总雷数互相矛盾。':'尚未找到可行的雷布局。');
-        position={...position,numbers:false,board:result.board};
-      }
-      mount(positionGame(position));
+  function discardOpenedMarks(g,cells) {
+    if(!cells.length) return;
+    input.endStroke();
+    for(const i of cells) g.flags.delete(i);
+    g.notes.discardCells(cells);
+    input.history();
+  }
+
+  function positionMarkIssue({status,state},board,flags,red) {
+    if(status==='invalid') return '数字与总雷数互相矛盾。';
+    if(status!=='complete') return '未能核对旗子和红标。';
+    const names={flag:'旗子',cross:'红叉',slash:'红斜杠'};
+    const issues=checkPositionMarks(state,flags,red);
+    if(!issues.length) return '';
+    const details=issues.slice(0,6).map(({cell,mark,conflict})=>
+      `${format.coordinate(cell,board.w)} 的${names[mark]}${conflict?'与公开线索冲突':'尚不能由公开线索证实'}`);
+    if(issues.length>details.length) details.push(`另有 ${issues.length-details.length} 处`);
+    return `${details.join('；')}。`;
+  }
+
+  function cancelDraftMarkJob() {
+    if(!draftMarkJob) return;
+    clearTimeout(draftMarkJob.timer);
+    draftMarkJob.worker?.terminate();
+    draftMarkJob=null;
+  }
+
+  function refreshDraftMarks(publicChanged=false) {
+    const label=$('draftMarkStatus'), g=game;
+    if(publicChanged) {
+      cancelDraftMarkJob();
+      draftMarkJudgment=null;
     }
-    say('已导入局面。','success');
+    label.hidden=!editing || !g;
+    if(label.hidden) return;
+    const red=g.notes.layers.red;
+    function show(text,tone='') {
+      label.dataset.tone=tone;
+      if(label.textContent!==text) label.textContent=text;
+    }
+    if(!g.flags.size && !red.size) {
+      cancelDraftMarkJob();
+      show('草稿标记校验：无旗子或红标。');
+    } else if(g.numbers && !draftMinesValid) {
+      show('草稿标记校验：请输入有效的总雷数。','error');
+    } else if(g.board.mines===g.visible.length) {
+      show('草稿标记校验：游戏局面至少需要一个安全格。','error');
+    } else if(draftMarkJudgment) {
+      const issue=positionMarkIssue(draftMarkJudgment,g.board,g.flags,red);
+      show(`草稿标记校验：${issue || '旗子和红标均可由公开线索证实。'}`,issue?'error':'success');
+    } else {
+      show('正在核对草稿中的旗子和红标…');
+      if(draftMarkJob) return;
+      const job=draftMarkJob={timer:setTimeout(()=>{
+        function receive(result) {
+          if(job!==draftMarkJob || g!==game || !editing) return;
+          cancelDraftMarkJob();
+          draftMarkJudgment=result;
+          refreshDraftMarks();
+        }
+        try {
+          const task=job.worker=background(`const engine=makeMinesEngine();
+            onmessage=({data:{p,visible}})=>{
+              try {postMessage(engine.classify(p,visible,{nodeBudget:Infinity}));}
+              catch {postMessage({status:'error'});}
+            };`);
+          task.onmessage=({data})=>receive(data);
+          task.onerror=()=>receive({status:'error'});
+          task.postMessage({p:g.p,visible:g.visible});
+        } catch {receive({status:'error'});}
+      },160)};
+    }
+  }
+
+  async function prepareGame(position,p,witness) {
+    const {board,visible,flags=[],notes=[]}=position;
+    if(board.mines===visible.length) throw Error('游戏局面至少需要一个安全格。');
+    let judgment;
+    if(flags.length || notes[0]?.length) {
+      // Check the public position without assuming any of its flags or red marks.
+      judgment=await ask('classify',{p:{w:board.w,h:board.h,mines:board.mines},visible});
+      const issue=positionMarkIssue(judgment??{},board,flags,notes[0]??[]);
+      if(issue) throw Error(`局面未载入：${issue}`);
+    }
+    if(position.numbers) {
+      const result=witness?{board:witness}:await ask('materialize',{p:board,visible});
+      if(!result?.board) throw Error(result?.status==='invalid'?'数字与总雷数互相矛盾。':'尚未找到可行的雷布局。');
+      position={...position,numbers:false,board:result.board};
+    }
+    const g=positionGame(position,p);
+    if(judgment) {
+      g.judgment=judgment;
+      g.proven=new Set(g.flags);
+      g.manual=restoreManualMarks(judgment.state,g.flags,engine.confirmationTargets,g.notes);
+    }
+    return g;
   }
 
   function scheduleVerification() {
+    refreshDraftMarks(true);
     clearTimeout(verificationTimer);
     verificationWorker?.terminate();
     verificationWorker=null;
@@ -1263,11 +1453,11 @@
       try {
         const task=verificationWorker=background(`const engine = makeMinesEngine();
           const summarize=(${verificationSummary.toString()});
-          onmessage = ({data:{board,p,visible,proven,flags,numbers,hasVerification,opening,confirmed,original,sameAsOpening}}) => {
+          onmessage = ({data:{board,p,visible,proven,flags,numbers,hasCurrent,hasVerification,opening,confirmed,original,sameAsOpening}}) => {
             try {
-              const current=engine.inspect(p,visible,proven,flags,{opening,confirmed});
-              const witness=numbers && current.status!=='invalid'?engine.publicBoard(p,visible).board:null;
-              postMessage({current,witness});
+              const current=hasCurrent?null:engine.inspect(p,visible,proven,flags,{opening,confirmed});
+              const witness=numbers && current?.status!=='invalid'?engine.publicBoard(p,visible).board:null;
+              if(current) postMessage({current,witness});
               if(!hasVerification) {
                 const model=current.status==='invalid' || current.status==='finished'?null:numbers?witness:board;
                 const snapshot=model && {...model,opening:visible.flatMap((v,i)=>v>=0?[i]:[])};
@@ -1277,7 +1467,7 @@
                 postMessage({verification,...(sameAsOpening?{openingVerification:verification}:{})});
               }
               if(original) {
-                const report=engine.verify(original.board,p,{flags:original.flags,certify:true,allowEmpty:true});
+                const report=engine.verify(original.board,p,{flags:original.flags,marks:original.flags,certify:true,allowEmpty:true});
                 postMessage({openingVerification:summarize(report)});
               }
               postMessage({done:true});
@@ -1297,12 +1487,15 @@
         const confirmed=g.manual?[...g.manual.marked]:[];
         const sameAsOpening=needsOpeningVerification && !g.verification && g.visible===g.originalVisible && !g.proven.size && !confirmed.length &&
           g.flags.size===g.originalFlags.length && g.originalFlags.every(v=>g.flags.has(v));
-        task.postMessage({p:g.p,board:g.board,visible:g.visible,proven:[...g.proven],flags:[...g.flags],numbers:g.numbers,
-          hasVerification:!!g.verification,opening:editing || g.opened===g.original.opening.length,confirmed,sameAsOpening,
+        // Draft marks describe the editor's notes, not the puzzle being verified.
+        task.postMessage({p:g.p,board:g.board,visible:g.visible,proven:[...g.proven],flags:editing?[]:[...g.flags],numbers:g.numbers,
+          hasCurrent:!!g.current && !!g.verification,hasVerification:!!g.verification,
+          opening:editing || g.opened===g.original.opening.length,confirmed,sameAsOpening,
           original:needsOpeningVerification && !sameAsOpening?{board:g.original,flags:g.originalFlags}:null});
       } catch {
         verificationWorker?.terminate(); verificationWorker=null;
-        g.current??={status:'error'}; g.verification??={status:'error'}; showVerification(); controls();
+        g.current??={status:'error'}; g.verification??={status:'error'};
+        showVerification(); controls();
       }
     },160);
   }
@@ -1312,7 +1505,9 @@
     $('seedFeedback').dataset.tone=tone;
   }
 
+  let seedImport;
   function seedDialog(importing) {
+    const dialog=$('seedDialog');
     const box=$('positionSeedText');
     $('seedDialogTitle').textContent=importing?'导入局面种子':'导出局面种子';
     $('confirmImport').hidden=!importing;
@@ -1320,9 +1515,31 @@
     box.readOnly=!importing;
     box.value=importing?'':seeds.encode(game);
     seedFeedback('');
-    $('seedDialog').showModal();
+    if(!dialog.open) dialog.showModal();
+    dialog.classList.remove('is-closing');
     box.focus();
     if(!importing) box.select();
+  }
+
+  function closeSeedDialog() {
+    const dialog=$('seedDialog');
+    if(!dialog.open || dialog.classList.contains('is-closing')) return;
+    if(seedImport) {
+      seedImport=null;
+      cancelPlayRequest();
+      $('confirmImport').disabled=false;
+      controls();
+    }
+    dialog.classList.add('is-closing');
+    // Keep the native modal active until its fade finishes, then return focus.
+    const fade=dialog.getAnimations().find(a=>a.transitionProperty==='opacity');
+    const finish=()=>{
+      if(!dialog.classList.contains('is-closing')) return;
+      dialog.close();
+      dialog.classList.remove('is-closing');
+    };
+    if(fade) fade.finished.then(finish,finish);
+    else finish();
   }
 
   $('gameMode').onclick=()=>switchMode(false);
@@ -1340,8 +1557,8 @@
       if((mode==='numbers')===game.numbers) return;
       const {w,h,mines}=game.board;
       if(mode==='numbers') {
-        const position=seeds.numbers(w,h,mines,game.visible.map(n=>n<0?'.':n).join(''),[...game.flags],
-          ['red','blue'].map(color=>[...game.notes.layers[color]]));
+        const position=seeds.numbers(w,h,mines,game.visible.map(n=>n<0?'.':n).join(''),[...game.flags]);
+        position.notes=noteColors.map(color=>[...game.notes.layers[color]]);
         mountDraft(positionGame(position));
       } else {
         if(!game.witness) {
@@ -1376,26 +1593,27 @@
     $('digitPalette').append(button);
   }
   chooseDigit(digit);
-  $('playPosition').onclick=()=>{
-    const position=copyPosition(game);
-    if(position.numbers) {position.board=game.witness;position.numbers=false;}
-    if(position.board.mines===position.visible.length) {say('游戏局面至少需要一个安全格。','error');return;}
-    setMode(false);
-    parkedGame=undefined;
-    mount(positionGame(position));
-    say('已将编辑局面载入游戏。','success');
+  $('playPosition').onclick=async()=>{
+    if(!editing || pending || $('playPosition').disabled) return;
+    try {
+      const g=await prepareGame(copyPosition(game),undefined,game.witness);
+      setMode(false);
+      parkedGame=undefined;
+      mount(g);
+      say('已将编辑局面载入游戏。','success');
+    } catch(error) {say(error.message,'error');}
   };
   $('expandPosition').onclick=async()=>{
     const g=game;
     if(!g || g.current?.status!=='blocked' || pending || worker || auto) return;
     const board=g.numbers?g.witness:g.board;
     if(!board) return;
-    const result=await ask('expand',{board,visible:g.visible,flags:g.flags});
+    const result=await ask('expand',{board,visible:g.visible,flags:editing?[]:g.flags});
     if(g!==game) return;
     if(result?.status!=='expanded') {say('未能确定最少开扩格数，局面未改变。','error');return;}
     g.manual=null;
     g.visible=result.visible; g.opened+=result.cells.length;
-    for(const v of result.cells) g.flags.delete(v);
+    discardOpenedMarks(g,result.cells);
     if(editing) {
       g.board.opening=g.visible.flatMap((n,i)=>n>=0?[i]:[]);
       g.board.first=g.board.opening[0]??0;
@@ -1411,13 +1629,31 @@
   };
   $('importPosition').onclick=()=>seedDialog(true);
   $('exportPosition').onclick=()=>seedDialog(false);
+  $('closeSeedDialog').onclick=closeSeedDialog;
+  $('seedDialog').addEventListener('cancel',e=>{e.preventDefault();closeSeedDialog();});
   $('seedForm').onsubmit=async e=>{
     e.preventDefault();
-    if($('confirmImport').hidden || pending) return;
-    $('confirmImport').disabled=true;
-    try {await acceptPosition(seeds.decode($('positionSeedText').value));$('seedDialog').close();}
-    catch(error) {seedFeedback(error.message,'error');}
-    finally {$('confirmImport').disabled=false;}
+    const dialog=$('seedDialog'), button=$('confirmImport');
+    if(!dialog.open || dialog.classList.contains('is-closing') || button.hidden || seedImport || pending) return;
+    const job=seedImport={};
+    button.disabled=true;
+    try {
+      const position=seeds.decode($('positionSeedText').value);
+      const g=editing?positionGame(position):await prepareGame(position);
+      if(seedImport!==job) return;
+      if(editing) mountDraft(g);
+      else mount(g);
+      say('已导入局面。','success');
+    } catch(error) {
+      if(seedImport===job) seedFeedback(error.message,'error');
+      return;
+    } finally {
+      if(seedImport===job) {
+        seedImport=null;
+        button.disabled=false;
+      }
+    }
+    closeSeedDialog();
   };
   $('copyPosition').onclick=async()=>{
     const box=$('positionSeedText');
@@ -1429,29 +1665,44 @@
     seedFeedback('已复制。','success');
   };
 
-  const input = makeBoardInput({$,icon,say,canAct:()=>ready()&&!pending&&!auto,getGame:()=>game,changed:i=>{
-    if(game) {render();feedback.tile('blue',buttons[i]);feedback.sound('ink');}
+  const input = makeBoardInput({$,icon,say,canAct:()=>!!game && !worker && !pending && !auto && (editing || ready()),getGame:()=>game,changed:i=>{
+    if(game) {
+      if(editing) refreshDraftMarks();
+      render(); feedback.tile(editing?'ink':'blue',buttons[i]); feedback.sound('ink');
+    }
   },
     menu:setRadial,closeReason:()=>showReason(false)});
   $('settings').addEventListener('submit',generate);
   showDifficultyDefaults();
   const difficulty=$('difficultySettings');
+  const difficultyToggle=$('difficultyToggle'), difficultyOptions=$('difficultyOptions');
+  function setDifficultyOpen(open) {
+    difficultyToggle.setAttribute('aria-expanded',String(open));
+    difficultyOptions.inert=!open;
+  }
+  difficultyToggle.onclick=()=>setDifficultyOpen(difficultyOptions.inert);
   document.addEventListener('pointerdown',e=>{
-    if(difficulty.open && !difficulty.contains(e.target)) difficulty.open=false;
+    if(!difficultyOptions.inert && !difficulty.contains(e.target)) {
+      if(difficultyOptions.contains(document.activeElement)) difficultyToggle.focus({preventScroll:true});
+      setDifficultyOpen(false);
+    }
   });
   $('cancel').onclick = () => { finishWorker(); say(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
-  $('restart').onclick = () => {
-    if (!game || worker) return;
-    const {original,p,originalFlags,originalNotes}=game;
-    mount(positionGame({board:original,flags:originalFlags,notes:originalNotes},p));
-    say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
+  $('restart').onclick = async () => {
+    if (!game || worker || pending && !auto) return;
+    stopAuto();
+    const {original,p,originalVisible,originalFlags,originalNotes}=game;
+    try {
+      mount(await prepareGame({board:original,visible:originalVisible,flags:originalFlags,notes:originalNotes},p));
+      say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
+    } catch(error) {say(error.message,'error');}
   };
-  $('focus').onclick = () => requestHint(a=>display(a,true));
-  $('hint').onclick = () => requestHint(a=>display(a,false));
+  $('focus').onclick = () => requestHint(a=>display(a,true),$('focus'),true);
+  $('hint').onclick = () => requestHint(a=>display(a,false),$('hint'),true);
   $('apply').onclick = () => {
     if (!ready() || auto || pending) return;
     if (manualStepAction(game?.manual)==='commit') void commitBatch(game);
-    else void requestHint(stageStep);
+    else void requestHint(stageStep,$('apply'));
   };
   $('commitMarks').onclick = () => {if(!auto) void commitBatch(game);};
   $('solve').onclick = solve;
@@ -1460,16 +1711,16 @@
   $('closeReason').onclick = ()=>showReason(false,true);
   $('closeProof').onclick = closeProof;
   openReasonPanel.onclick = () => setReasonCollapsed(false,true);
-  for(const button of reasonSlot.querySelectorAll('[data-collapse-reason]')) {
+  for(const button of document.querySelectorAll('[data-collapse-reason]')) {
     button.onclick = () => setReasonCollapsed(true,true);
   }
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape' || e.defaultPrevented || $('seedDialog').open) return;
-    if(fullscreen.escape()) return;
-    if(openReasonPanel.hidden && !$('proofPane').hidden) closeProof();
-    else if(difficulty.open) {difficulty.open=false; difficulty.querySelector('summary').focus({preventScroll:true});}
+    if(!proofPane.inert) closeProof();
+    else if(!difficultyOptions.inert) {setDifficultyOpen(false);difficultyToggle.focus({preventScroll:true});}
     else if(!$('reasonFlower').inert) showReason(false,true);
     else if(!$('markFlower').inert || input.writing) {input.close();$('markMenu').focus({preventScroll:true});}
+    else fullscreen.escape();
   });
 
   const board = $('board');
@@ -1533,8 +1784,7 @@
       drag.ghost.setAttribute('aria-hidden','true');
       viewport.append(drag.ghost);
     }
-    const [x,y]=fullscreen.pointerPosition(e.clientX,e.clientY);
-    drag.ghost.style.transform=`translate(${x}px,${y}px) translate(-50%,-50%)`;
+    drag.ghost.style.transform=`translate(${e.clientX}px,${e.clientY}px) translate(-50%,-50%)`;
   });
   function stopFlagDrag(e,drop=false) {
     const drag=flagDrag;
@@ -1559,7 +1809,7 @@
     if(e.detail && skipDragClick) {skipDragClick=false;return;}
     const b=e.target.closest('[data-cell]'); if(!b) return;
     const i=Number(b.dataset.cell);
-    if(!editing && input.stamp(i)) return;
+    if(input.stamp(i)) return;
     (editing?editCell:play)(i,e.shiftKey);
   });
   board.addEventListener('contextmenu',e=>{
@@ -1567,7 +1817,7 @@
       e.preventDefault();
       if(inkDrag) return;
       const i=Number(b.dataset.cell);
-      if(!editing && input.erase(i)) return;
+      if(input.erase(i)) return;
       (editing?editCell:play)(i,true);
     }
   });
@@ -1585,7 +1835,7 @@
       case 'ArrowDown': if(i+w<buttons.length) n+=w; break;
       case 'f': case 'F':
         e.preventDefault();
-        if(editing || !input.writing) (editing?editCell:play)(i,true);
+        if(!input.writing) (editing?editCell:play)(i,true);
         return;
       default: return;
     }

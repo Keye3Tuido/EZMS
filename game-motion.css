@@ -2,6 +2,7 @@
   --glide: cubic-bezier(.18,.78,.26,1);
   --control-time: 155ms;
   --fan-time: 350ms;
+  --panel-time: 260ms;
 }
 
 button {
@@ -40,8 +41,52 @@ input, select { transition: border-color var(--control-time) ease, background-co
 #commitMarks:not(.is-inactive) { animation: commit-in 230ms var(--glide) both; }
 @keyframes commit-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
 
-dialog[open] { animation: dialog-in 210ms var(--glide) both; }
-@keyframes dialog-in { from { opacity: 0; translate: 0 7px; } to { opacity: 1; translate: 0 0; } }
+.layout { transition: grid-template-columns var(--panel-time) var(--glide); }
+.reason-fold { overflow: clip; }
+.reason-collapsed .reason-slot { min-height: 37px; }
+:is(.reason-status, .proof-pane, #openReasonPanel, #difficultyOptions) {
+  transition: opacity var(--panel-time) var(--glide), translate var(--panel-time) var(--glide),
+    visibility var(--panel-time) step-end;
+}
+:is(.reason-status, .proof-pane, #openReasonPanel, #difficultyOptions):not([inert]) {
+  transition-timing-function: var(--glide), var(--glide), step-start;
+}
+:is(.reason-status, .proof-pane, #openReasonPanel, #difficultyOptions)[inert] {
+  opacity: 0;
+  translate: 0 5px;
+  visibility: hidden;
+  pointer-events: none;
+}
+[data-collapse-reason] .icon, #openReasonPanel .icon, #difficultyToggle .icon {
+  transition: rotate var(--panel-time) var(--glide);
+}
+
+.prior-fold { display: grid; grid-template-rows: 1fr; }
+.prior-fold, .reason-fold {
+  transition: grid-template-rows var(--panel-time) var(--glide), opacity var(--panel-time) var(--glide);
+}
+.prior-fold[inert] { grid-template-rows: 0fr; opacity: 0; }
+.prior-content { min-height: 0; overflow: clip; }
+@media (max-width: 760px), (pointer: coarse) and (max-width: 1000px) {
+  .reason-fold { display: grid; grid-template-rows: 1fr; }
+  .reason-collapsed .reason-fold { grid-template-rows: 0fr; }
+  .reason-collapsed .reason-slot { min-height: 43px; }
+}
+
+dialog[open] {
+  opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  transition: opacity var(--panel-time) var(--glide), translate var(--panel-time) var(--glide),
+    scale var(--panel-time) var(--glide);
+}
+dialog[open]::backdrop { transition: background-color var(--panel-time) var(--glide); }
+dialog[open].is-closing { opacity: 0; translate: 0 8px; scale: .98; pointer-events: none; }
+dialog[open].is-closing::backdrop { background-color: transparent; }
+@starting-style {
+  dialog[open] { opacity: 0; translate: 0 8px; scale: .98; }
+  dialog[open]::backdrop { background-color: transparent; }
+}
 
 /* Hold progress conveys the time remaining even when decorative motion is off. */
 .holding::after { animation: hold-ring 650ms linear forwards; }
@@ -50,6 +95,10 @@ dialog[open] { animation: dialog-in 210ms var(--glide) both; }
 
 :root[data-motion-mode='reduced'] :is(button, summary, input, select,
   .radial .orb, .radial.expanded .orb, .radial-track,
-  .radial-track path, .radial.expanded .radial-track path) { transition: none; }
+  .radial-track path, .radial.expanded .radial-track path,
+  .layout, .reason-fold, .reason-status, .proof-pane, .prior-fold, #openReasonPanel,
+  #difficultyOptions, [data-collapse-reason] .icon, #openReasonPanel .icon, #difficultyToggle .icon,
+  dialog[open]) { transition: none; }
+:root[data-motion-mode='reduced'] dialog[open]::backdrop { transition: none; }
 :root[data-motion-mode='reduced'] :is(button:active:not(:disabled), summary:active) { scale: none; }
-:root[data-motion-mode='reduced'] :is(dialog[open], #commitMarks:not(.is-inactive)) { animation: none; }
+:root[data-motion-mode='reduced'] #commitMarks:not(.is-inactive) { animation: none; }

@@ -1,14 +1,11 @@
 function makeGameFullscreen(viewport, toggle, status) {
   const root = document.documentElement;
-  const touch = matchMedia('(pointer: coarse)');
-  const rotated = matchMedia('(pointer: coarse) and (orientation: portrait)');
-  const orientation = screen.orientation;
   const header = viewport.querySelector('header');
   const glyph = toggle.querySelector('path');
   const enterIcon = glyph.getAttribute('d');
   const exitIcon = 'M3 8h5V3m8 0v5h5m0 8h-5v5M8 21v-5H3';
   const native = () => (document.fullscreenElement ?? document.webkitFullscreenElement) === root;
-  let mode = '', busy = false, lockRequested = false;
+  let mode = '', busy = false;
 
   function sizeHeader() {
     if (mode) viewport.style.setProperty('--fullscreen-header-height', `${header.offsetHeight}px`);
@@ -30,14 +27,7 @@ function makeGameFullscreen(viewport, toggle, status) {
 
   function syncNative() {
     if (native()) setMode('native');
-    else if (mode === 'native') {
-      setMode('');
-      if (lockRequested) {
-        lockRequested = false;
-        try { orientation.unlock?.(); }
-        catch { /* The document can become inactive while leaving fullscreen. */ }
-      }
-    }
+    else if (mode === 'native') setMode('');
   }
 
   document.addEventListener('fullscreenchange', syncNative);
@@ -82,13 +72,7 @@ function makeGameFullscreen(viewport, toggle, status) {
       busy = false;
       syncNative();
     }
-    if (leaving) return;
-    if (!native()) { setMode('page'); return; }
-    if (touch.matches && orientation?.lock) {
-      lockRequested = true;
-      try { await orientation.lock('landscape'); }
-      catch { /* The portrait viewport is rotated in CSS instead. */ }
-    }
+    if (!leaving && !native()) setMode('page');
   });
 
   return {
@@ -96,11 +80,6 @@ function makeGameFullscreen(viewport, toggle, status) {
       if (mode !== 'page') return mode === 'native';
       setMode('');
       return true;
-    },
-    pointerPosition(x, y) {
-      if (!mode || !rotated.matches) return [x, y];
-      const rect = viewport.getBoundingClientRect();
-      return [y - rect.top, rect.right - x];
     }
   };
 }
