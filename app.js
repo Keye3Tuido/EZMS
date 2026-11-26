@@ -5,7 +5,7 @@
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
   const viewport = $('gameViewport');
-  const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('rotateScreen'), $('fullscreenStatus'));
+  const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('fullscreenStatus'));
   const feedback = makeGameFeedback($('soundToggle'),$('motionToggle'));
   const proofDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
   proofDrawing.classList.add('board-proof');

@@ -1,13 +1,20 @@
-function makeGameFullscreen(viewport, toggle, rotate, status) {
+function makeGameFullscreen(viewport, toggle, status) {
+  const {userAgent, userAgentData, platform, maxTouchPoints} = navigator;
+  const mobile = userAgentData?.mobile || /\b(Android|iOS|iPadOS|iPad|iPhone|iPod|Mobile|HarmonyOS)\b/i
+    .test(`${userAgent} ${userAgentData?.platform ?? ''}`);
+  // iPadOS can use a Mac UA. Chrome on Android can use a Linux UA and client hint,
+  // but its reduced navigator.platform is "Linux armv81", not desktop Linux's "Linux x86_64".
+  const desktopModeIPad = maxTouchPoints > 0 && /\bMacintosh\b/i.test(userAgent);
+  if (mobile || desktopModeIPad || platform === 'Linux armv81') return {escape: () => false};
+
+  toggle.hidden = false;
   const root = document.documentElement;
   const header = viewport.querySelector('header');
   const glyph = toggle.querySelector('path');
   const enterIcon = glyph.getAttribute('d');
   const exitIcon = 'M3 8h5V3m8 0v5h5m0 8h-5v5M8 21v-5H3';
   const native = () => (document.fullscreenElement ?? document.webkitFullscreenElement) === root;
-  const touch = matchMedia('(pointer: coarse)');
   let mode = '', busy = false, statusTimer;
-  let lockedOrientation, rotation;
 
   function sizeHeader() {
     if (mode) viewport.style.setProperty('--fullscreen-header-height', `${header.offsetHeight}px`);
@@ -20,22 +27,8 @@ function makeGameFullscreen(viewport, toggle, rotate, status) {
     if (message) statusTimer = setTimeout(() => { status.textContent = ''; }, 5000);
   }
 
-  function unlockOrientation(orientation) {
-    try { orientation?.unlock?.(); }
-    catch { /* The browser may already have ended the fullscreen session. */ }
-  }
-
   function setMode(next) {
     if (mode === next) return;
-    const previousRotation = rotation;
-    rotation = undefined;
-    rotate.removeAttribute('aria-disabled');
-    unlockOrientation(lockedOrientation);
-    if (previousRotation?.staleLock && previousRotation.orientation !== lockedOrientation) {
-      unlockOrientation(previousRotation.orientation);
-    }
-    lockedOrientation = undefined;
-    if (!next && document.activeElement === rotate) toggle.focus();
     mode = next;
     if (mode) root.dataset.fullscreenMode = mode;
     else delete root.dataset.fullscreenMode;
@@ -54,39 +47,6 @@ function makeGameFullscreen(viewport, toggle, rotate, status) {
 
   document.addEventListener('fullscreenchange', syncNative);
   document.addEventListener('webkitfullscreenchange', syncNative);
-
-  rotate.addEventListener('click', async () => {
-    if (!mode || !touch.matches || rotation) return;
-    const orientation = screen.orientation;
-    const landscape = orientation?.type ? orientation.type.startsWith('landscape')
-      : matchMedia('(orientation: landscape)').matches;
-    const unavailable = '浏览器无法切换方向，请打开系统自动旋转后转动手机。';
-    if (typeof orientation?.lock !== 'function') { showStatus(unavailable); return; }
-    const request = rotation = {orientation, staleLock: false};
-    rotate.setAttribute('aria-disabled', 'true');
-    try {
-      await orientation.lock(landscape ? 'portrait' : 'landscape');
-      if (rotation === request) {
-        lockedOrientation = orientation;
-        showStatus('');
-      } else if (rotation?.orientation === orientation) {
-        // Unlocking here could cancel the new request; defer cleanup until it fails or exits.
-        rotation.staleLock = true;
-      } else if (lockedOrientation !== orientation) {
-        unlockOrientation(orientation);
-      }
-    } catch {
-      if (rotation === request) {
-        if (request.staleLock && lockedOrientation !== orientation) unlockOrientation(orientation);
-        showStatus(unavailable);
-      }
-    } finally {
-      if (rotation === request) {
-        rotation = undefined;
-        rotate.removeAttribute('aria-disabled');
-      }
-    }
-  });
 
   toggle.addEventListener('click', async () => {
     if (busy) return;

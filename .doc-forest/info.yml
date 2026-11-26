@@ -50,9 +50,9 @@ files:
   - target: game-feedback.js
     reason: 核验音频启用和反馈播放条件
 - name: game-fullscreen.js
-  purpose: 请求并同步原生全屏，失败时切换网页内模式；处理触屏全屏中的手动横竖屏切换及退出解锁
+  purpose: 控制电脑端原生全屏和网页内回退；移动设备不启用全屏控制器
 - name: game-fullscreen.test.cjs
-  purpose: 核验原生全屏与网页内模式切换、旧版 WebKit 事件，以及手动旋转和退出时的方向锁清理
+  purpose: 核验移动设备屏蔽及电脑端的原生全屏、网页内回退和旧版 WebKit 事件
   depends_on:
   - target: game-fullscreen.js
     reason: 核验全屏控制器对浏览器事件和能力差异的处理
