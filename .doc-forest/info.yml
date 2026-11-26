@@ -20,7 +20,7 @@ files:
   - target: position-seed.js
     reason: 复用局面编码、解码和结构检查
   - target: game-feedback.js
-    reason: 在实际棋盘状态变化后播放一次性反馈
+    reason: 统一播放棋盘操作和状态变化的反馈
   - target: game-fullscreen.js
     reason: 控制原生和网页内全屏切换
 - name: board-input.js
@@ -42,11 +42,17 @@ files:
 - name: favicon.svg
   purpose: 与游戏标题徽标一致的浏览器标签图标
 - name: game-feedback.js
-  purpose: 播放棋格反馈和本地合成音效，管理游戏内动画偏好
+  purpose: 播放按钮与棋格反馈，保存音效和动画偏好
+  details: 默认开启音效，在用户操作后启用本地合成音频；快速连画按实际改变的格子错峰播放。
+- name: game-feedback.test.cjs
+  purpose: 核验音效默认状态、首次交互、静音偏好和快速连画调度
+  depends_on:
+  - target: game-feedback.js
+    reason: 核验音频启用和反馈播放条件
 - name: game-fullscreen.js
-  purpose: 在手机和电脑上请求并同步原生全屏，不锁定朝向；不可用时切换网页内模式并提示
+  purpose: 请求并同步原生全屏，失败时切换网页内模式；处理触屏全屏中的手动横竖屏切换及退出解锁
 - name: game-fullscreen.test.cjs
-  purpose: 核验点按发起原生全屏、退出、旧版 WebKit 事件和网页内降级
+  purpose: 核验原生全屏与网页内模式切换、旧版 WebKit 事件，以及手动旋转和退出时的方向锁清理
   depends_on:
   - target: game-fullscreen.js
     reason: 核验全屏控制器对浏览器事件和能力差异的处理

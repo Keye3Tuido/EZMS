@@ -79,8 +79,8 @@ function makeMarkHistory() {
       return edit('blue',advanced.filter(([,m])=>m.level===rank && ['ʌ','//'].includes(m.symbol)).map(([i])=>[i]));
     },
     get canUndo() {return !!past.length;}, get canRedo() {return !!future.length;},
-    undo() {if(past.length) {const change=past.pop();write(change,true);future.push(change);}},
-    redo() {if(future.length) {const change=future.pop();write(change);past.push(change);}}
+    undo() {if(past.length) {const change=past.pop();write(change,true);future.push(change);return true;}},
+    redo() {if(future.length) {const change=future.pop();write(change);past.push(change);return true;}}
   };
 }
 
@@ -243,7 +243,7 @@ function inkGlyph(symbol) {
   return shape?`<svg class="ink-glyph" viewBox="0 0 24 24" aria-hidden="true">${shape}</svg>`:'';
 }
 
-function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
+function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReason}) {
   const flower=$('markFlower'), launcher=$('markMenu');
   const rows=[[['x','拟定为雷'],['o','拟推为雷'],['v','拟定为雷'],['ʌ','拟推为雷'],['+','提高层级']],
     [['s','拟定安全'],['/','拟推安全'],['e','拟定安全'],['//','拟推安全'],['−','降低层级']]];
@@ -280,6 +280,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     endStroke();selected='';menu('mark',false);refresh();
   }
   function bindHold(button,action,click) {
+    button.dataset.soundHandled='';
     function cancel() {
       if(hold?.button!==button) return;
       clearTimeout(hold.timer); hold=undefined; button.classList.remove('holding');
@@ -301,7 +302,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     button.onclick=e=>{
       const blocked=e.detail!==0 && suppress===button;
       suppress=undefined;
-      if(!blocked) click();
+      if(!blocked && canAct()) {sound('click');click();}
     };
   }
   function add(symbol,label,root,arc) {
@@ -323,13 +324,14 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
       endStroke();
       const game=getGame();
       const result=game.notes.archiveBlue(i=>game.visible[i]<0);
-      if(result) {changed();say(result==='archived'?'已取交集，普通蓝标已清空。':'交集未变，普通蓝标已清空。');}
+      if(result) {changed([],result==='archived'?'ink':'erase');say(result==='archived'?'已取交集，普通蓝标已清空。':'交集未变，普通蓝标已清空。');}
+      else sound('click');
       history();
     },activate);
     else if(symbol==='−') bindHold(button,()=>{
       endStroke();
       const cleared=getGame().notes.clearDeductions(level===2?level:undefined);
-      if(cleared) changed();
+      if(cleared) changed([],'erase'); else sound('click');
       const rank=level===2?'第二层':'最高层';
       say(cleared?`已清除${rank}拟推标记。`:`没有可清除的${rank}拟推标记。`);
       history();
@@ -353,8 +355,8 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     endStroke();
     const notes=getGame().notes, ordinary=notes.layers.blue.size>0;
     const cleared=red?notes.clear('red'):notes.clearBlue();
-    if(cleared) {changed();say(red?'已清空红色标记。':ordinary?'已清空蓝标。':'已清空绿色持久标。');}
-    else if(red) say('没有可清空的红色标记。');
+    if(cleared) {changed([],'erase');say(red?'已清空红色标记。':ordinary?'已清空蓝标。':'已清空绿色持久标。');}
+    else {sound('click');if(red) say('没有可清空的红色标记。');}
     history();
   },()=>{
     if(!canAct()) return;
@@ -367,11 +369,12 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
     if(canAct()) {
       endStroke();
       const g=getGame(), notes=g.notes;
-      if(g.visible[i]>=0) return true;
+      if(g.visible[i]>=0) {sound('click');return true;}
       g.focus=i;
       const existing=notes.layers[color()].get(i), levelForMark=advanced(selected)?level:0;
       const mark=erase || existing?.symbol===selected && existing?.level===levelForMark?undefined:{symbol:selected,level:levelForMark};
-      if(notes.edit(color(),[[i,mark]])) changed(i);
+      if(notes.edit(color(),[[i,mark]])) changed([i],mark?'ink':'erase');
+      else sound('click');
       history();
     }
     return true;
@@ -386,16 +389,26 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,menu,closeReason}) {
   }
   function drawStroke(cells) {
     if(!stroke || stroke.game!==getGame() || !canAct()) {endStroke();return;}
-    let last;
+    const marked=[];
     for(const i of cells) {
       if(stroke.game.visible[i]>=0) continue;
       stroke.edit??=stroke.game.notes.stroke(stroke.color,i,stroke.mark);
-      if(stroke.edit.visit(i)) last=i;
+      if(stroke.edit.visit(i)) marked.push(i);
     }
-    if(last!==undefined) changed(last);
+    if(marked.length) changed(marked,stroke.game.notes.layers[stroke.color].has(marked[0])?'ink':'erase');
   }
-  $('undoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.undo();changed();history();}};
-  $('redoMark').onclick=()=>{if(canAct()) {endStroke();getGame().notes.redo();changed();history();}};
+  function historyButton(id,kind) {
+    const button=$(id);
+    button.dataset.soundHandled='';
+    button.onclick=()=>{
+      if(!canAct()) return;
+      endStroke();
+      if(getGame().notes[kind]()) changed([],kind==='undo'?'erase':'ink');
+      history();
+    };
+  }
+  historyButton('undoMark','undo');
+  historyButton('redoMark','redo');
   refresh();
   function reset(editing) {
     red=editing;level=2;

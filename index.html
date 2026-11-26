@@ -6,15 +6,15 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261126-24">
+  <link rel="stylesheet" href="styles.css?v=20261126-25">
   <link rel="stylesheet" href="game-motion.css?v=20261126-4">
   <script defer src="engine.js?v=20261126-17"></script>
   <script defer src="proof-format.js?v=20261126-7"></script>
-  <script defer src="board-input.js?v=20261126-13"></script>
+  <script defer src="board-input.js?v=20261126-14"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
-  <script defer src="game-feedback.js?v=20261126-7"></script>
-  <script defer src="game-fullscreen.js?v=20261126-6"></script>
-  <script defer src="app.js?v=20261126-29"></script>
+  <script defer src="game-feedback.js?v=20261126-8"></script>
+  <script defer src="game-fullscreen.js?v=20261126-8"></script>
+  <script defer src="app.js?v=20261126-31"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -51,8 +51,11 @@
           <button id="editMode" type="button" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg>局面编辑器</button>
         </div>
         <button id="motionToggle" class="icon-button" type="button" aria-label="动画效果" aria-pressed="true" title="关闭动画效果"><svg class="icon" aria-hidden="true"><use href="#motionIcon"/></svg></button>
-        <button id="soundToggle" class="icon-button" type="button" aria-label="反馈音效" aria-pressed="false" title="开启反馈音效"><svg class="icon" aria-hidden="true"><use href="#volumeOff"/></svg></button>
-        <button id="fullscreenToggle" class="icon-button" type="button" aria-label="进入全屏" title="进入全屏"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5m0 8v5h-5M8 21H3v-5"/></svg></button>
+        <button id="soundToggle" class="icon-button" type="button" aria-label="反馈音效" aria-pressed="true" title="关闭反馈音效"><svg class="icon" aria-hidden="true"><use href="#volumeOn"/></svg></button>
+        <div class="screen-tools">
+          <button id="fullscreenToggle" class="icon-button" type="button" aria-label="进入全屏" title="进入全屏"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5m0 8v5h-5M8 21H3v-5"/></svg></button>
+          <button id="rotateScreen" class="icon-button" type="button" aria-label="切换横竖屏" title="切换横竖屏"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="8.5" y="5" width="7" height="14" rx="1.5" transform="rotate(40 12 12)"/><path d="M3 10a8 8 0 0 1 6-7M5 3h4v4m12 7a8 8 0 0 1-6 7m4 0h-4v-4"/></svg></button>
+        </div>
       </div>
       <span id="fullscreenStatus" role="status"></span>
     </header>

@@ -87,55 +87,107 @@ function makeGameFeedback(toggle, motionToggle) {
   }
 
   const notes = {
-    enabled:[660], ink:[480], ready:[587,784], commit:[440,660], flag:[590], rejected:[220], won:[523,659,784]
+    click:[700], enabled:[660], ink:[480], erase:[370], ready:[587,784], commit:[440,660],
+    open:[530], flag:[590], rejected:[220], won:[523,659,784]
   };
   const Audio=window.AudioContext || window.webkitAudioContext;
-  let context, output, enabled=false, last=-Infinity;
+  const preference='ms-sound-mode';
+  let context, output, resuming, nextTap=0, enabled=!!Audio;
+  const pendingSounds=[], activeTones=new Set();
+  try { if(localStorage.getItem(preference)==='muted') enabled=false; }
+  catch {}
   toggle.disabled=!Audio;
 
-  function sound(kind) {
-    if (!enabled || context?.state!=='running') return;
+  function play(kind,count) {
     const now=context.currentTime;
-    const time=performance.now();
-    if (kind==='ink' && time-last<85) return;
-    last=time;
-    for (const [i,hz] of notes[kind].entries()) {
-      const start=now+i*.055, end=start+.105;
+    const light=kind==='click' || kind==='ink' || kind==='erase';
+    const first=light?Math.max(now,nextTap):now;
+    const spacing=Math.min(.040,.14/count)/(1+12*(first-now));
+    if(light) nextTap=first+count*spacing;
+    for(let i=0;i<count;i++) for (const [j,hz] of notes[kind].entries()) {
+      const start=first+i*spacing+j*.055, end=start+(light ? .045 : .105);
       const tone=context.createOscillator(), gain=context.createGain();
       tone.type=kind==='rejected'?'sine':'triangle';
       tone.frequency.value=hz;
       gain.gain.setValueAtTime(.001,start);
-      gain.gain.exponentialRampToValueAtTime(.062,start+.013);
+      const volume=light?(kind==='click' ? .022 : .034)/Math.sqrt(Math.max(1,count/4)):.062;
+      gain.gain.exponentialRampToValueAtTime(volume,start+(light ? .006 : .013));
       gain.gain.exponentialRampToValueAtTime(.001,end);
       tone.connect(gain).connect(output);
-      tone.onended=()=>{tone.disconnect();gain.disconnect();};
+      activeTones.add(tone);
+      tone.onended=()=>{activeTones.delete(tone);tone.disconnect();gain.disconnect();};
       tone.start(start); tone.stop(end);
     }
   }
+
+  function flush() {
+    if(!enabled || context?.state!=='running') return;
+    for(const [kind,count,at] of pendingSounds.splice(0)) if(performance.now()-at<1000) play(kind,count);
+  }
+
+  function sound(kind,count=1) {
+    if(!enabled || !count) return;
+    if(context?.state==='running') {flush();play(kind,count);}
+    else {
+      if(pendingSounds.length===16) pendingSounds.shift();
+      pendingSounds.push([kind,count,performance.now()]);
+    }
+  }
+
+  function unlock() {
+    if(!enabled || resuming) return;
+    try {
+      if(!context || context.state==='closed') {
+        const audio=new Audio(), gain=audio.createGain();
+        gain.connect(audio.destination);
+        context=audio; output=gain; nextTap=0;
+      }
+      if(context.state==='running') {flush();return;}
+      resuming=Promise.resolve(context.resume()).then(flush,()=>{}).finally(()=>{resuming=undefined;});
+    } catch { /* Audio is optional; another gesture can retry. */ }
+  }
+
+  function clickTarget(event) {
+    return event.target.closest?.('button,input[type=checkbox],input[type=radio],a[href]');
+  }
+
+  // Touch unlocks on pointer release; mouse, right click and keyboard can unlock earlier.
+  for(const name of ['pointerdown','pointerup','keydown','contextmenu','click']) {
+    document.addEventListener(name,event=>{
+      if(!event.isTrusted || name==='pointerdown' && event.pointerType!=='mouse') return;
+      if(name==='click' && clickTarget(event)===toggle) return;
+      unlock();
+    },true);
+  }
+  document.addEventListener('click',event=>{
+    const target=clickTarget(event);
+    if(target && target!==toggle && !target.disabled && !target.closest('[inert],[aria-disabled=true],[data-cell],[data-sound-handled]')) sound('click');
+  },true);
 
   function reflect() {
     toggle.setAttribute('aria-pressed',String(enabled));
     toggle.querySelector('use').setAttribute('href',enabled?'#volumeOn':'#volumeOff');
     toggle.title=enabled?'关闭反馈音效':'开启反馈音效';
   }
-  toggle.addEventListener('click',async()=>{
+  toggle.addEventListener('click',()=>{
     if (!Audio) return;
     enabled=!enabled;
     reflect();
-    if (!enabled) { if (output) output.gain.value=0; return; }
     try {
-      if (!context) {
-        context=new Audio();
-        output=context.createGain();
-        output.connect(context.destination);
-      }
-      output.gain.value=1;
-      if (context.state!=='running') await context.resume();
-      sound('enabled');
-    } catch {
-      enabled=false;
-      reflect();
+      if(enabled) localStorage.removeItem(preference);
+      else localStorage.setItem(preference,'muted');
+    } catch {}
+    if(!enabled) {
+      if(output) output.gain.value=0;
+      for(const tone of activeTones) tone.stop();
+      pendingSounds.length=0;
+      nextTap=0;
+      return;
     }
+    if(output) output.gain.value=1;
+    unlock();
+    sound('enabled');
   });
+  reflect();
   return {visual,tile,clearRejection,handoff,sound};
 }

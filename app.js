@@ -5,7 +5,7 @@
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
   const viewport = $('gameViewport');
-  const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('fullscreenStatus'));
+  const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('rotateScreen'), $('fullscreenStatus'));
   const feedback = makeGameFeedback($('soundToggle'),$('motionToggle'));
   const proofDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
   proofDrawing.classList.add('board-proof');
@@ -620,6 +620,7 @@
     if(direct) {
       // A tap previews in place; it must not move focus to the board.
       e.preventDefault();e.stopPropagation();
+      if(!e.target.closest('button')) feedback.sound('click');
       hoveredProof=focusedProof=undefined;
     }
     if(pinnedProof?.classList.contains('cancellation-chip')) pinnedProof.setAttribute('aria-pressed','false');
@@ -687,6 +688,7 @@
     const judgment=await judge(g);
     if(task!==run || g!==game || !ready()) return;
     if(judgment?.status!=='complete') {
+      feedback.sound('rejected');
       say(judgment?.status==='invalid'?'当前线索互相矛盾。':'未能核对当前局面。','error'); return;
     }
     const batch=g.manual??makeManualBatch(judgment.state,g.flags,engine.confirmationTargets);
@@ -702,7 +704,9 @@
     for(const i of cells) feedback.clearRejection(buttons[i]);
     g.manual=batch;
     if(from!==undefined) removeFlag(g,from);
-    showMarks(g,added.filter(i=>batch.marked.has(i)),wasDone);
+    const confirmed=added.filter(i=>batch.marked.has(i));
+    if(!confirmed.length) feedback.sound(from===undefined?'click':'erase');
+    showMarks(g,confirmed,wasDone);
   }
 
   function showMarks(g,added,wasDone) {
@@ -727,6 +731,7 @@
         proven:new Set([...proven].filter(v=>flags.has(v))),flags,allowUnsolved:true,exact:true});
       if(task!==run || g!==game || !ready()) return false;
       if(result?.opened!==safe.length) {
+        feedback.sound('rejected');
         say('未能更新棋盘，红色标记已保留。','error'); return false;
       }
       Object.assign(g,{board:result.board,visible:result.visible,opened:g.opened+result.opened,judgment:null});
@@ -761,10 +766,12 @@
     if (g.visible[i] >= 0) {
       const action = engine.numberAction(g.board.ns,g.visible,g.flags,i,marking,g.manual?.marked);
       if(action) void recordManual(g,action.cells,action.kind==='flag'?'mine':'safe');
+      else feedback.sound('click');
     } else if(marking && g.flags.has(i)) {
       removeFlag(g,i);
       g.current=undefined; scheduleVerification();
       say(`已撤销 ${coord(i)} 的旗子。`);
+      feedback.sound('erase');
     } else void recordManual(g,[i],marking?'mine':'safe');
     render();
   }
@@ -1282,16 +1289,20 @@
     const g=game, {board:b}=g, n=g.visible[i], tool=marking?'flag':g.numbers?'number':editTool;
     g.focus=i;
     if(tool==='flag') {
-      if(n>=0) return;
-      if(!g.flags.delete(i)) g.flags.add(i);
+      if(n>=0) {feedback.sound('click');return;}
+      const removed=g.flags.delete(i);
+      if(!removed) g.flags.add(i);
+      feedback.sound(removed?'erase':'flag');
       refreshDraftMarks();
       render(); return;
     }
     if(tool==='number') {
-      if(n===value) return;
+      if(n===value) {feedback.sound('click');return;}
       g.visible[i]=value;
+      feedback.sound(value<0?'erase':'ink');
     } else if(tool==='mine') {
       b.bombs[i]=!b.bombs[i];
+      feedback.sound(b.bombs[i]?'ink':'erase');
       const delta=b.bombs[i]?1:-1;
       b.mines+=delta; g.p.mines=b.mines;
       if(b.bombs[i]) g.visible[i]=-1;
@@ -1300,9 +1311,10 @@
         if(g.visible[v]>=0) g.visible[v]=b.clues[v];
       }
       boardSize();
-    } else if(b.bombs[i]) {say('有雷的格子不能设为已开。','error');return;}
+    } else if(b.bombs[i]) {feedback.sound('rejected');say('有雷的格子不能设为已开。','error');return;}
     else {
       g.visible[i]=n>=0?-1:b.clues[i];
+      feedback.sound(n>=0?'erase':'open');
     }
     if(n<0 && g.visible[i]>=0) discardOpenedMarks(g,[i]);
     b.opening=g.visible.flatMap((v,at)=>v>=0?[at]:[]);
@@ -1641,10 +1653,12 @@
     seedFeedback('已复制。','success');
   };
 
-  const input = makeBoardInput({$,icon,say,canAct:()=>!!game && !worker && !pending && !auto && (editing || ready()),getGame:()=>game,changed:i=>{
+  const input = makeBoardInput({$,icon,say,sound:feedback.sound,canAct:()=>!!game && !worker && !pending && !auto && (editing || ready()),getGame:()=>game,changed:(cells,kind)=>{
     if(game) {
       if(editing) refreshDraftMarks();
-      render(); feedback.tile(editing?'ink':'blue',buttons[i]); feedback.sound('ink');
+      render();
+      if(cells.length) feedback.tile(editing?'ink':'blue',buttons[cells.at(-1)]);
+      feedback.sound(kind,cells.length || 1);
     }
   },
     menu:setRadial,closeReason:()=>showReason(false)});
@@ -1680,6 +1694,7 @@
     if (manualStepAction(game?.manual)==='commit') void commitBatch(game);
     else void requestHint(stageStep,$('apply'));
   };
+  $('commitMarks').dataset.soundHandled='';
   $('commitMarks').onclick = () => {if(!auto) void commitBatch(game);};
   $('solve').onclick = solve;
   $('answers').onclick = toggleAnswers;
@@ -1738,6 +1753,7 @@
         skipDragClick=true;
         board.setPointerCapture(e.pointerId);
         cell.focus({preventScroll:true});
+        if(game.visible[i]>=0) feedback.sound('click');
         input.drawStroke([i]);
       }
       return;
@@ -1773,10 +1789,11 @@
     const i=cellAt(e.clientX,e.clientY);
     if(i===undefined || game.visible[i]>=0) {
       if(drag.from!==undefined) play(drag.from,true);
+      else feedback.sound('click');
     } else if(!game.flags.has(i)) {
       clearHint(); game.focus=i;
       void recordManual(game,[i],'mine',drag.from);
-    }
+    } else feedback.sound('click');
   }
   document.addEventListener('pointerup',e=>{stopInk(e,true);stopFlagDrag(e,true);});
   document.addEventListener('pointercancel',e=>{stopInk(e);stopFlagDrag(e);});
