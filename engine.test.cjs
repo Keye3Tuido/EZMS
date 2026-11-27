@@ -614,7 +614,7 @@ test('seed routes produce different first-proof overlap graphs without history',
       for(const [name,sign] of [['positive',1],['negative',-1]]) {
         assert.deepEqual(geometry[name].sort((a,b)=>a-b),r.terms.filter(([,k])=>Math.sign(k)===sign).map(([v])=>v));
       }
-      assert.deepEqual(roots[1].terms,roots[0].terms,'both conclusions share the same combined equation');
+      assert.equal(roots.length,1,'both conclusions share the same combined equation');
       assert.ok(move.safe.length && move.mines.length);
       assert.ok(roots.every(r=>format.fixedCells(r.terms,'=',r.rhs).length===r.terms.length),
         'one combined equation is the conclusion for both safe and mined cells');

@@ -40,12 +40,12 @@ class Node {
   }
 }
 
-function render(seed) {
+function render(seed, confirmed=[], target) {
   const game=seeds.decode(seed), {board,visible,flags}=game;
-  const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true});
+  const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true,confirmed,target});
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   const rows=renderer.runInNewContext({
-    game, move, engine, format, document:{createElement:()=>new Node()},
+    game:{...game,manual:{marked:new Map(confirmed)}}, move, engine, format, document:{createElement:()=>new Node()},
     proofTargets, proofRows,
     coord:v=>format.coordinate(v,board.w), source:v=>v<0?'total':format.coordinate(v,board.w)
   }).children.map(row=>({
@@ -64,11 +64,35 @@ function render(seed) {
   return {move,rows};
 }
 
+test('nine clue regions cancel in one equality after confirming C1:C3', () => {
+  const seed='J:eVyiz!}';
+  const first=render(seed).move;
+  assert.deepEqual(first.safe,[2,8,14]);
+  const confirmed=first.safe.map(v=>[v,'safe']);
+  const {move,rows}=render(seed,confirmed);
+  assert.equal(move.positionMinimum,true);
+  assert.equal(move.sources.length,9);
+  assert.deepEqual(move.safe,[0,1,7,29,30,35]);
+  assert.deepEqual(move.mines,[19]);
+  assert.deepEqual(move.proofs.map(proof=>proof.kind),['linear']);
+  assert.equal(rows.length,10);
+  const conclusion=rows.at(-1);
+  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[conclusion]);
+  assert.deepEqual([conclusion.safe,conclusion.mine],[true,true]);
+  assert.deepEqual(conclusion.signedAreas,[[19],[0,1,7,29,30,35]]);
+  assert.equal(conclusion.formula,'1 =B4−A1:B2−F5:F6−A6');
+  assert.deepEqual(conclusion.refs.slice().sort((a,b)=>a-b),[1,2,3,4,5,6,7,8,9]);
+  const mineHint=render(seed,confirmed,19);
+  assert.equal(mineHint.move.sources.length,9);
+  assert.deepEqual(mineHint.move.proofs.map(proof=>proof.kind),['linear']);
+  assert.deepEqual(mineHint.rows,rows);
+});
+
 test('one mixed equality replaces a separate rounding proof of the same cells', () => {
   const {move,rows}=render('>&;a6&r');
   assert.deepEqual(move.safe,[12,16,17,18]);
   assert.deepEqual(move.mines,[0]);
-  assert.deepEqual(move.proofs.map(p=>p.kind),['linear','cut']);
+  assert.deepEqual(move.proofs.map(p=>p.kind),['linear']);
   assert.equal(rows.length,5);
   const conclusion=rows[4];
   assert.deepEqual(rows.filter(row=>row.safe||row.mine),[rows[4]]);

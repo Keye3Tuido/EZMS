@@ -1389,7 +1389,9 @@
       rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,note,row).id);
     }
     for(const m of batch.proofs) {
-    if(m.symmetric.every(v=>covered.has(v))) continue;
+    const saturated=m.kind==='linear' && m.slack===0;
+    if(m.symmetric.every(v=>covered.has(v)) &&
+      (!saturated || m.inequality.terms.every(([v])=>covered.has(v)))) continue;
     if (m.kind === 'difference') {
       const shared = new Set(m.shared);
       const capacity = row => row.vs.filter(v => !shared.has(v)).length;

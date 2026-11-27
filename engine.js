@@ -357,7 +357,13 @@ function makeMinesEngine() {
       const component=[first], links=new Map();
       seen.add(first);
       for(const row of component) {
-        const shared=new Set(row.vs.flatMap(v=>incident.get(v)));
+        // The ring pass requires the full overlap graph to be a cycle. For
+        // branched graphs, only two-region overlaps force opposite signs;
+        // higher-order overlaps are accounted for in the final coefficients.
+        const shared=new Set(row.vs.flatMap(v=>{
+          const memberships=incident.get(v);
+          return !allowBranches || memberships.length===2 ? memberships : [];
+        }));
         shared.delete(row);
         links.set(row,shared);
         for(const other of shared) if(!seen.has(other)) {
@@ -402,6 +408,7 @@ function makeMinesEngine() {
           const move=step(vs,value,2,{kind:'linear',sources:sum.sources,inequality:sum,min,slack:0});
           if(move) return move;
         }
+        // The opposite direction can also attain its minimum only for an empty sum.
         break;
       }
     }
@@ -458,8 +465,8 @@ function makeMinesEngine() {
     const result=(status,move=null)=>({status,move,frontier:frontier.size});
     const step=(vs,value,level,proof)=>vs.some(v=>!options.skip?.has(v)) ? result('move',{vs,value,level,...proof}) : null;
     if(invalid) return result('invalid');
-    const move=elementary(rows,step) || overlapProof(local,step) || weightedProof(local,step) || resolution(local,step,{budget:9000}) ||
-      (options.useTotal && totalProof(rows,step)) || overlapProof(local,step,true);
+    const move=elementary(rows,step) || overlapProof(local,step) || weightedProof(local,step) ||
+      overlapProof(local,step,true) || resolution(local,step,{budget:9000}) || (options.useTotal && totalProof(rows,step));
     return move || result('stuck');
   }
 
@@ -595,7 +602,7 @@ function makeMinesEngine() {
     const step=(vs,v,level,proof)=>v===value && vs.includes(target)?{vs,value,level,...proof}:null;
     const local=rows.filter(row=>row.source!==-1);
     return elementary(rows,step) || overlapProof(local,step) || weightedProof(rows,step) ||
-      totalProof(rows,step,target) || resolution(rows,step,{target,budget:120000}) || overlapProof(local,step,true);
+      totalProof(rows,step,target) || overlapProof(local,step,true) || resolution(rows,step,{target,budget:120000});
   }
 
   // 线索缺失时，沿两块共用的交集交替传递 ±1，直到缺口。若每个交集都能向两侧
@@ -696,6 +703,15 @@ function makeMinesEngine() {
     const groups=equivalentGroups(rows), equivalent=new Map(groups.flatMap(g=>g.map(v=>[v,g])));
     const symmetric=[...new Set(move.vs.flatMap(v=>equivalent.get(v)??[v]))].sort((a,b)=>a-b);
     const proofs=[{...move,symmetric}], covered=new Set(symmetric);
+    // At its minimum, a linear sum fixes all its terms. The proof panel
+    // shows the safe and mined cells together on that equation.
+    function coverSaturatedSum(proof) {
+      if(proof.kind!=='linear' || proof.slack!==0) return;
+      for(const [v,c] of proof.inequality.terms) {
+        if(judged.state[v]===(c<0?'mine':'safe')) covered.add(v);
+      }
+    }
+    coverSaturatedSum(move);
     for(const group of groups) {
       const v=group[0], state=judged.state[v];
       if(state!=='safe' && state!=='mine' || group.every(i=>covered.has(i))) continue;
@@ -704,6 +720,7 @@ function makeMinesEngine() {
       if(!proof) return null;
       const symmetric=[...new Set(proof.vs.flatMap(i=>equivalent.get(i)??[i]))].sort((a,b)=>a-b);
       for(const i of symmetric) covered.add(i);
+      coverSaturatedSum(proof);
       proofs.push({...proof,symmetric});
     }
     return covered.size===safe.length+mines.length ? {...move,safe,mines,proofs} : null;
