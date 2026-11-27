@@ -443,7 +443,7 @@
       path.setAttribute('stroke-width',weight);
       paths.append(path);
     };
-    const weight=Math.max(1.2,Math.min(3,tile*.067));
+    const weight=Math.max(1.2,tile*.054);
     for(const [color,ink] of layers) {
       const lines=new Map();
       for(const [i,{symbol,level}] of ink) {

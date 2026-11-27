@@ -23,7 +23,7 @@ button, input, select { color: var(--ink); }
 [hidden] { display: none !important; }
 .symbols { position: absolute; width: 0; height: 0; overflow: hidden; }
 .icon { width: 1.15em; height: 1.15em; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-main { max-width: 1100px; padding: 26px 24px 42px; margin: 0 auto; }
+main { padding: 26px 24px 42px; margin: 0 auto; }
 header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; padding-bottom: 19px; }
 h1 { display: flex; align-items: center; gap: 11px; margin: 0; font-size: 28px; line-height: 1.2; }
 h1 .icon { color: var(--green); }
@@ -65,10 +65,8 @@ dialog .status { margin: 7px 0; }
 .counter { display: inline-flex; justify-content: center; align-items: center; gap: 5px; min-width: 54px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .counter b { min-width: 3ch; text-align: start; }
 .icon-button { width: 37px; padding: 0; color: var(--muted); }
-.board-scroll { overflow: auto; padding: 10px 12px 16px; }
-.board { --tile: clamp(25px, calc((100vw - 74px) / var(--cols) - 2px), 44px); display: grid; grid-template-columns: 22px repeat(var(--cols),var(--tile)); grid-template-rows: 22px; grid-auto-rows: var(--tile); gap: 2px; width: max-content; margin: 0 auto; }
-.axis { display: grid; place-items: center; color: var(--muted); font-size: 11px; font-weight: 700; }
-.cell { min-width: 0; min-height: 0; padding: 0; border: 1px solid #adbbb4; border-radius: 4px; font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
+.axis { display: grid; place-items: center; color: var(--muted); font-weight: 700; }
+.cell { min-width: 0; min-height: 0; padding: 0; border: 1px solid #adbbb4; font-weight: 800; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
 .cell.covered { background: #cbd8d2; border-bottom: 2px solid #a7b8af; }
 .cell.edit-mine { color: #9c2440; background: #f5d8df; border-color: #c98d9c; }
 .cell.edit-mine:hover { background: #f1c6d1; }
@@ -77,7 +75,6 @@ dialog .status { margin: 7px 0; }
 .cell.first.open { box-shadow: inset 0 0 0 1px #92b8a9; }
 .cell.flagged { color: var(--red); }
 .cell.wrong { color: var(--red); background: #f9dce2; border-color: #d58294; }
-.cell .icon { width: 17px; height: 17px; }
 .cell.n1 { color: #1c64a5; }
 .cell.n2 { color: #1a7549; }
 .cell.n3 { color: #b13f31; }
@@ -152,14 +149,10 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 }
 
 .layout { --stage: max(240px, calc(100dvh - 315px)); }
-.board-scroll { container-type: inline-size; max-height: var(--stage); }
-.board { --axis: 22px; --grid-gap: 2px; --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 50px) / var(--rows) - var(--grid-gap))), 44px); grid-template-columns: var(--axis) repeat(var(--cols),var(--tile)); grid-template-rows: var(--axis); gap: var(--grid-gap); }
 .cell { position: relative; }
 .cell.covered:not(.flagged) { touch-action: pan-x pan-y; }
 .mark-history button { touch-action: none; }
 .mark-history .icon { pointer-events: none; }
-.cell .icon { width: min(17px,80%); height: min(17px,80%); }
-.board { position: relative; isolation: isolate; }
 .board-proof { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; overflow: visible; pointer-events: none; fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .board-proof path { vector-effect: non-scaling-stroke; }
 .board-ink { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; pointer-events: none; fill: none; stroke-linecap: round; stroke-linejoin: round; }
@@ -229,7 +222,7 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 100dvh;
-  max-width: 1180px;
+  max-width: 1600px;
   padding-bottom: max(82px, env(safe-area-inset-bottom));
 }
 main > * { flex-shrink: 0; }
@@ -288,16 +281,52 @@ input, select { background: #fcfcfe; }
 .board-head { background: var(--paper); padding-block: 9px; }
 .board-title { display: flex; align-items: center; gap: 8px; margin-inline-end: auto; font-weight: 750; }
 .board-title strong { color: var(--muted); font-size: 12px; font-weight: 600; }
-.board-scroll { min-height: 150px; padding-block: 18px 24px; background: #e7ebef; }
-.board { --grid-gap: 4px; --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 65px) / var(--rows) - var(--grid-gap))), 56px); }
-.cell { --press: .92; border-radius: 5px; font-size: min(21px, calc(var(--tile) * .5)); }
+.board-scroll {
+  --board-pad-top: 18px;
+  --board-pad-bottom: 24px;
+  --board-pitch-limit: 22cqw;
+  container-type: inline-size;
+  overflow: auto;
+  min-height: 150px;
+  max-height: var(--stage);
+  padding: var(--board-pad-top) 12px var(--board-pad-bottom);
+  background: #e7ebef;
+}
+.board {
+  --axis-min: 22px;
+  --axis-scale: .4;
+  --board-height: calc(var(--stage) - var(--board-pad-top) - var(--board-pad-bottom));
+  /* 每格含一个间隙。宽高分别为坐标轴和方格留空间，超大棋盘可滚动。 */
+  --pitch: max(12px, min(
+    var(--board-pitch-limit),
+    calc((100cqw - var(--axis-min)) / var(--cols)),
+    calc(100cqw / (var(--cols) + var(--axis-scale))),
+    calc((var(--board-height) - var(--axis-min)) / var(--rows)),
+    calc(var(--board-height) / (var(--rows) + var(--axis-scale)))
+  ));
+  --axis: max(var(--axis-min), calc(var(--pitch) * var(--axis-scale)));
+  --grid-gap: calc(var(--pitch) * .067);
+  --tile: calc(var(--pitch) - var(--grid-gap));
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: var(--axis) repeat(var(--cols),var(--tile));
+  grid-template-rows: var(--axis);
+  grid-auto-rows: var(--tile);
+  gap: var(--grid-gap);
+  width: max-content;
+  margin: 0 auto;
+}
+.axis { font-size: max(10px, calc(var(--pitch) * .185)); }
+.cell { --press: .92; border-radius: max(2px, calc(var(--tile) * .09)); font-size: max(5px, calc(var(--tile) * .375)); }
+.cell .icon { width: min(80%, calc(var(--tile) * .375)); height: min(80%, calc(var(--tile) * .375)); }
 .cell.covered { background: #c6d0e4; border: 1px solid #98a7c1; box-shadow: inset 0 -3px #aab8d2; }
 .cell.covered:hover:not(:is(.clue,.edit-mine,.target-safe,.target-mine,.proof-preview)) { background: #d6dfef; }
 .cell.open { background: #fff; border-color: #c8d1df; }
 .cell.open:hover:not(:is(.clue,.edit-mine,.target-safe,.target-mine,.proof-preview)) { background: #f1f5ff; }
 .cell.first.open { box-shadow: inset 0 0 0 1px #a6b5cf; }
 .cell.flagged:not(.edit-mine) { color: #a02443; }
-.cell.flagged > .icon { width: min(21px, 75%); height: min(21px, 75%); fill: #b73f5b32; }
+.cell.flagged > .icon { fill: #b73f5b32; }
 .board-footer { display: grid; justify-items: start; grid-template-columns: minmax(0,1fr); gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .board-footer:not(:has(> :not([hidden]))) { padding: 0; border: 0; }
 .board-footer:focus { outline: none; }
@@ -505,7 +534,7 @@ input, select { background: #fcfcfe; }
 .board-proof .element { fill: #91c0ff; fill-opacity: .52; }
 .board-proof .element-hatch { fill: url(#proof-hatch); }
 #proof-hatch rect { fill: #168971; fill-opacity: .36; }
-.board-proof .boundary { fill: none; stroke-width: 2px; }
+.board-proof .boundary { fill: none; stroke-width: max(1.25px, calc(var(--tile) * .036)); }
 .board-proof .boundary:is(.positive,.selection-positive) { stroke: #7b35c2; }
 .board-proof .boundary:is(.negative,.selection-negative) { stroke: #a87909; }
 .board-proof .boundary.cancelled { stroke: #697781; stroke-opacity: .78; }
@@ -552,6 +581,7 @@ input, select { background: #fcfcfe; }
   position: relative;
   min-height: 0;
   height: 100%;
+  max-width: none;
   overflow: auto;
   overscroll-behavior: contain;
   scroll-padding-block-start: var(--fullscreen-header-height, 54px);
@@ -583,14 +613,13 @@ input, select { background: #fcfcfe; }
 @media (max-height: 500px) {
   [data-fullscreen-mode] .setup-bar { padding-block: 5px; margin-bottom: 6px; }
   [data-fullscreen-mode] .board-head { min-height: 43px; padding-block: 3px; }
-  [data-fullscreen-mode] .board-scroll { padding-block: 7px 9px; }
-  [data-fullscreen-mode] .board {
-    --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 42px) / var(--rows) - var(--grid-gap))), 56px);
-  }
+  [data-fullscreen-mode] .board-scroll { --board-pad-top: 7px; --board-pad-bottom: 9px; }
   [data-fullscreen-mode] .board-footer:has(> :not([hidden])) { padding-block: 5px; }
 }
 
 @media (min-width: 761px) and (pointer: fine), (min-width: 1001px) {
-  [data-fullscreen-mode] .layout:not(.reason-collapsed) { --reason-width: calc((100% - var(--reason-gap)) / 2.2); }
+  /* 推理区展开时为小棋盘保留边距，折叠后棋盘可使用多出的空间。 */
+  .layout:not(.reason-collapsed) .board-scroll { --board-pitch-limit: min(12cqw, calc(var(--stage) * .16)); }
+  [data-fullscreen-mode] .layout:not(.reason-collapsed) .board-scroll { --board-pitch-limit: min(14cqw, calc(var(--stage) * .16)); }
   [data-fullscreen-mode] .current-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
