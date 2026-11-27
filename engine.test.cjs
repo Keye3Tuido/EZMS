@@ -1558,3 +1558,168 @@ test('选区动态规划保留大幅正负系数产生的稀疏取值',()=>{
   assert.deepEqual(engine.selectionTotals(position,visible,new Map(),weights),
     {status:'complete',values:[-9502,-1,50500,60001]});
 });
+
+test('区域传递按公开条件判定，与穷举的小盘布雷一致', () => {
+  const w=3,h=2,ns=engine.adj(w,h),size=w*h;
+  const layouts=Array.from({length:1<<size},(_,mask)=>ns.map((_,i)=>(mask>>i)&1));
+  for(const bombs of layouts) for(let opened=0;opened<1<<size;opened++) {
+    if(bombs.some((mine,i)=>mine && (opened>>i&1))) continue;
+    const mines=bombs.reduce((a,b)=>a+b),p={w,h,mines};
+    const visible=ns.map((row,i)=>opened>>i&1?row.reduce((sum,v)=>sum+bombs[v],0):-1);
+    const possible=layouts.filter(layout=>layout.reduce((a,b)=>a+b)===mines && visible.every((clue,i)=>
+      clue<0 || !layout[i] && clue===ns[i].reduce((sum,v)=>sum+layout[v],0)));
+    const expected=visible.map((clue,i)=>clue>=0?'open':possible.every(a=>a[i])?'mine':
+      possible.every(a=>!a[i])?'safe':'either');
+    const result=engine.transfer(p,visible);
+    assert.equal(result.status,'complete');
+    assert.deepEqual(result.state,expected);
+  }
+  const p={w:6,h:1,mines:2}, visible=[-1,1,-1,-1,1,-1];
+  assert.deepEqual(engine.transfer(p,visible).state,['either','open','either','either','open','either']);
+  assert.equal(engine.transfer({...p,mines:1},visible).status,'invalid');
+  assert.equal(engine.transfer(p,visible,{nodeBudget:0}).status,'budget');
+});
+
+test('前向传递和反向核验在同一预算内完成 12×12 的公开局面判定', () => {
+  const p={w:12,h:12,mines:59};
+  const visible=[
+    '001.3.3.3.3.',
+    '002.........',
+    '235.6.6.6.3.',
+    '............',
+    '4.6.4.4.4.3.',
+    '............',
+    '2.4.3.3.3.3.',
+    '............',
+    '3.5.2.3.6.6.',
+    '............',
+    '2.4.3.4.6.6.',
+    '............',
+  ].join('').split('').map(cell=>cell==='.'?-1:Number(cell));
+  const nodeBudget=120000;
+  const result=engine.classify(p,visible,{nodeBudget});
+  assert.equal(result.status,'complete');
+  assert.ok(result.nodes<=nodeBudget);
+  assert.deepEqual(result.state.flatMap((status,v)=>status==='safe'?[v]:[]),[3]);
+  assert.deepEqual(result.state.flatMap((status,v)=>status==='mine'?[v]:[]),[15,27,36,37,38,39]);
+  const smallBudget=1000;
+  const partial=engine.classify(p,visible,{nodeBudget:smallBudget});
+  assert.equal(partial.status,'budget');
+  assert.ok(partial.nodes<=smallBudget);
+  assert.ok(partial.state.every((status,v)=>status==='unknown' || status===result.state[v]));
+});
+
+test('完整枚举保留不同开局，并排除同一个初始信息下必须猜的布局', () => {
+  const boards=[...engine.enumerateNoGuess({w:3,h:1,mines:1})];
+  assert.equal(boards.length,5);
+  const identities=boards.map(board=>`${board.bombs.findIndex(Boolean)}:${engine.opening(board).join(',')}`);
+  assert.equal(new Set(identities).size,boards.length);
+  assert.ok(boards.every(board=>board.opening.length!==1 || board.opening[0]!==1));
+});
+
+test('修改筛选回调或返回值收到的棋盘，不影响后续逆向枚举', () => {
+  const p={w:3,h:2,mines:2};
+  const identity=board=>`${board.bombs}:${board.clues}:${board.opening}:${board.ns.map(row=>row.join(',')).join(';')}`;
+  const expected=[...engine.enumerateNoGuess(p)].map(identity);
+  function modify(board) {
+    board.opening.length=0;
+    board.bombs.fill(false);
+    board.clues.fill(0);
+    board.ns[0].length=0;
+    board.ns.pop();
+  }
+  const filtered=[];
+  Array.from(engine.enumerateNoGuess(p,{accept:board=>{
+    filtered.push(identity(board));
+    modify(board);
+    return true;
+  }}));
+  assert.deepEqual(filtered,expected);
+
+  const consumed=[];
+  for(const board of engine.enumerateNoGuess(p)) {
+    consumed.push(identity(board));
+    modify(board);
+  }
+  assert.deepEqual(consumed,expected);
+});
+
+test('十线索递归拼接考虑五种拆分，并能在同一图中得到环和分支', () => {
+  const histogram=Array(5).fill(0), identities=new Set();
+  let mixed=false;
+  const w=16,h=16,ns=engine.adj(w,h);
+  for(let seed=0;seed<60;seed++) {
+    const shape=engine.composeClues({w,h},10,seed);
+    assert.ok(shape);
+    const {givens,split}=shape;
+    histogram[split[0]-1]++;
+    assert.equal(split[0]+split[1],10);
+    assert.equal(new Set(givens).size,10);
+    assert.ok(givens.every(v=>Number.isInteger(v) && v>=0 && v<w*h));
+    const opened=new Set(givens), covered=givens.map(v=>ns[v].filter(u=>!opened.has(u)));
+    const edges=covered.map((a,i)=>covered.flatMap((b,j)=>i!==j && a.some(v=>b.includes(v))?[j]:[]));
+    const queue=[0], seen=new Set(queue);
+    for(const i of queue) for(const j of edges[i]) if(!seen.has(j)) { seen.add(j);queue.push(j); }
+    assert.equal(seen.size,10);
+    const terminals=edges.some(a=>a.length===1), branching=edges.some(a=>a.length>=3);
+    mixed||=terminals && branching && edges.reduce((sum,a)=>sum+a.length,0)>=2*givens.length;
+    const x=Math.min(...givens.map(v=>v%w)),y=Math.min(...givens.map(v=>Math.floor(v/w)));
+    identities.add(givens.map(v=>v-x-y*w).sort((a,b)=>a-b).join(','));
+  }
+  assert.ok(histogram.every(n=>n>=5 && n<=20),JSON.stringify(histogram));
+  assert.ok(identities.size>=40);
+  assert.ok(mixed);
+});
+
+test('逆向构造与独立的 3×2 穷举回放得到同一批可通关开局', () => {
+  const w=3,h=2,ns=engine.adj(w,h),size=w*h;
+  const layouts=Array.from({length:1<<size},(_,mask)=>ns.map((_,i)=>Boolean(mask>>i&1)));
+  const expected=new Set();
+  for(const [mask,bombs] of layouts.entries()) {
+    const mines=bombs.filter(Boolean).length;
+    const clues=ns.map(row=>row.filter(v=>bombs[v]).length);
+    for(let bits=1;bits<1<<size;bits++) {
+      const opening=ns.flatMap((_,v)=>bits>>v&1?[v]:[]);
+      if(opening.some(v=>bombs[v] || clues[v]===0 && ns[v].some(u=>!(bits>>u&1)))) continue;
+      const visible=ns.map((_,v)=>bits>>v&1?clues[v]:-1);
+      for(;;) {
+        const possible=layouts.filter(layout=>layout.filter(Boolean).length===mines && visible.every((n,v)=>
+          n<0 || !layout[v] && ns[v].filter(u=>layout[u]).length===n));
+        const safe=ns.flatMap((_,v)=>visible[v]<0 && possible.every(layout=>!layout[v])?[v]:[]);
+        if(!safe.length) break;
+        for(const v of safe) visible[v]=clues[v];
+      }
+      if(visible.filter(n=>n>=0).length===size-mines) expected.add(`${mask}:${opening}`);
+    }
+  }
+  const actual=[...engine.enumerateNoGuess({w,h})].map(board=>
+    `${board.bombs.reduce((bits,mine,i)=>bits+(Number(mine)<<i),0)}:${board.opening}`);
+  assert.equal(new Set(actual).size,actual.length);
+  assert.deepEqual(new Set(actual),expected);
+  assert.deepEqual([...engine.enumerateNoGuess({w,h},{accept:()=>false})],[]);
+});
+
+test('普通生成入口可拼出 20×20 的十五线索混合图开局，去掉任何一条后都没有固定格', () => {
+  const p={w:20,h:20,minAverage:1,minMultiPercent:0,minPeakClues:15};
+  const result=engine.generate(p,2).next().value;
+  const {board,report}=result;
+  assert.equal(result.route,'composed-transfer');
+  assert.equal(report.status,'passed');
+  assert.equal(report.openingClues,15);
+  assert.equal(report.clues,15);
+  const givens=new Set(board.opening);
+  const degree=board.opening.map(v=>board.opening.filter(u=>u!==v &&
+    board.ns[v].some(x=>!givens.has(x) && board.ns[u].includes(x))).length);
+  assert.ok(degree.some(n=>n>=3));
+  assert.ok(degree.reduce((sum,n)=>sum+n,0)>=2*givens.size);
+  const replay=engine.verify(board,p,{certify:true,trace:true});
+  assert.deepEqual({...replay,trace:[]},report);
+  assert.equal(replay.trace[0].positionMinimum,true);
+  for(const v of board.opening) {
+    const view=engine.opening(board);
+    view[v]=-1;
+    const weakened=engine.transfer({...p,mines:board.mines},view,{knownSafe:new Set([v]),nodeBudget:Infinity});
+    assert.equal(weakened.status,'complete');
+    assert.ok(weakened.state.every(state=>state!=='safe' && state!=='mine'));
+  }
+});

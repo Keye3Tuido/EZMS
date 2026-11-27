@@ -344,8 +344,8 @@ function makeMinesEngine() {
     return null;
   }
 
-  function cycleProof(local,step) {
-    if(local.length<6) return null;
+  function overlapProof(local,step,allowBranches=false) {
+    if(local.length<(allowBranches?3:6)) return null;
     const incident=new Map();
     for(const row of local) for(const v of row.vs) {
       if(!incident.has(v)) incident.set(v,[]);
@@ -365,15 +365,28 @@ function makeMinesEngine() {
           component.push(other);
         }
       }
-      if(component.length<6 || component.length%2 || component.some(row=>links.get(row).size!==2)) continue;
-      const ordered=[first];
-      while(ordered.length<component.length) {
-        ordered.push([...links.get(ordered.at(-1))].find(row=>row!==first && row!==ordered.at(-2)));
+      const ring=component.length>=6 && component.length%2===0 && component.every(row=>links.get(row).size===2);
+      if(!ring && (!allowBranches || component.length<3)) continue;
+      const ordered=[first], signs=new Map([[first,1]]);
+      if(ring) {
+        while(ordered.length<component.length) {
+          const next=[...links.get(ordered.at(-1))].find(row=>row!==first && row!==ordered.at(-2));
+          signs.set(next,ordered.length%2?-1:1);
+          ordered.push(next);
+        }
+      } else {
+        let valid=true;
+        for(const row of ordered) for(const other of links.get(row)) {
+          const sign=-signs.get(row);
+          if(!signs.has(other)) {signs.set(other,sign);ordered.push(other);}
+          else if(signs.get(other)!==sign) valid=false;
+        }
+        if(!valid) continue;
       }
       for(const direction of [1,-1]) {
         let sum;
-        for(const [i,row] of ordered.entries()) {
-          const k=i%2?-direction:direction;
+        for(const row of ordered) {
+          const k=direction*signs.get(row);
           const b={kind:'equation',row,k,terms:row.vs.map(v=>[v,k]),rhs:k*row.rhs,sources:[row.source]};
           if(!sum) {sum=b;continue;}
           const terms=new Map(sum.terms);
@@ -445,8 +458,8 @@ function makeMinesEngine() {
     const result=(status,move=null)=>({status,move,frontier:frontier.size});
     const step=(vs,value,level,proof)=>vs.some(v=>!options.skip?.has(v)) ? result('move',{vs,value,level,...proof}) : null;
     if(invalid) return result('invalid');
-    const move=elementary(rows,step) || cycleProof(local,step) || weightedProof(local,step) || resolution(local,step,{budget:9000}) ||
-      (options.useTotal && totalProof(rows,step));
+    const move=elementary(rows,step) || overlapProof(local,step) || weightedProof(local,step) || resolution(local,step,{budget:9000}) ||
+      (options.useTotal && totalProof(rows,step)) || overlapProof(local,step,true);
     return move || result('stuck');
   }
 
@@ -580,16 +593,72 @@ function makeMinesEngine() {
 
   function targetProof(rows,target,value) {
     const step=(vs,v,level,proof)=>v===value && vs.includes(target)?{vs,value,level,...proof}:null;
-    return elementary(rows,step) || cycleProof(rows.filter(row=>row.source!==-1),step) ||
-      weightedProof(rows,step) || totalProof(rows,step,target) || resolution(rows,step,{target,budget:120000});
+    const local=rows.filter(row=>row.source!==-1);
+    return elementary(rows,step) || overlapProof(local,step) || weightedProof(rows,step) ||
+      totalProof(rows,step,target) || resolution(rows,step,{target,budget:120000}) || overlapProof(local,step,true);
+  }
+
+  // 线索缺失时，沿两块共用的交集交替传递 ±1，直到缺口。若每个交集都能向两侧
+  // 调整，所有私有格都需要完整线索图。全盘总雷数最多需在图外调整一格。
+  function transferMinimum({rows,local,unknown,frontier},move) {
+    const {sources,inequality}=move;
+    if(sources.length<3 || sources.length!==local.length || move.kind!=='linear' ||
+      move.slack!==0 || !inequality?.terms?.length) return false;
+    const bySource=new Set(local.map(row=>row.source));
+    if(sources.some(source=>!bySource.has(source)) || new Set(sources).size!==local.length) return false;
+    const terms=new Map(inequality.terms), memberships=new Map();
+    for(const [i,row] of local.entries()) for(const v of row.vs) {
+      if(!memberships.has(v)) memberships.set(v,[]);
+      memberships.get(v).push(i);
+    }
+    const inset=local.map(({rhs,source})=>({rhs,source,vs:[]})), joints=new Map();
+    let fixed=0;
+    for(const [v,ids] of memberships) {
+      if(ids.length===1) {
+        if(Math.abs(terms.get(v))!==1) return false;
+        const mine=Number(terms.get(v)<0);
+        fixed+=mine;
+        inset[ids[0]].rhs-=mine;
+      } else {
+        if(ids.length!==2 || terms.has(v)) return false;
+        const key=ids.join(',');
+        if(!joints.has(key)) joints.set(key,{ids,size:0});
+        joints.get(key).size++;
+      }
+    }
+    let length=0;
+    const links=local.map(()=>[]);
+    for(const {ids:[a,b],size} of joints.values()) {
+      if(size<2) return false;
+      links[a].push(b);links[b].push(a);
+      inset[a].rhs--;inset[b].rhs--;fixed++;
+      for(let k=2;k<size;k++) {
+        inset[a].vs.push(length);inset[b].vs.push(length);length++;
+      }
+    }
+    const queue=[0], seen=new Set(queue);
+    for(const i of queue) for(const j of links[i]) if(!seen.has(j)) {seen.add(j);queue.push(j);}
+    if(seen.size!==local.length || inset.some(row=>row.rhs<0 || row.rhs>row.vs.length)) return false;
+    const global=rows.find(row=>row.source===-1), free=unknown.length-frontier.size;
+    if(global && free<2) return false;
+    const active=inset.filter(row=>row.vs.length), abstractRows=active.slice();
+    if(global) length+=free-2;
+    const ids=range(length);
+    if(global) {
+      const rhs=global.rhs-fixed-1;
+      if(rhs<0 || rhs>length) return false;
+      abstractRows.push({source:-1,rhs,vs:ids});
+    }
+    return transferRows(ids.map(()=>-1),{rows:abstractRows,local:active,unknown:ids},16000).status==='complete';
   }
 
   function minimizeMove(p,visible,marks,move,ns,judgment,{minimumBudget=120000,skip,knownSafe}={}) {
     // The elementary pass checks every one- and two-row deduction first.
     if(move.level<=1) return {...move,minimum:true,positionMinimum:true};
+    const context=constraints(p,visible,marks,ns,knownSafe);
+    if(transferMinimum(context,move)) return {...move,minimum:true,positionMinimum:true};
     let best=minimumProof(p,visible,marks,move,{ns,budget:minimumBudget,target:move.vs.find(v=>!skip?.has(v)),knownSafe});
     if(best.minimum && best.sources.length<=2) return {...best,positionMinimum:true};
-    const context=constraints(p,visible,marks,ns,knownSafe);
     judgment??=classifyRows(visible,context,minimumBudget,true);
     let minimum=best.minimum && judgment.status==='complete';
     const {rows,unknown}=context;
@@ -670,10 +739,189 @@ function makeMinesEngine() {
 
   // Classify the current public position, independently of the hidden witness.
   function classify(p,visible,{nodeBudget=35000,proven=new Set()}={}) {
-    return classifyRows(visible,constraints(p,visible,proven,adj(p.w,p.h)),nodeBudget);
+    return classifyRows(visible,constraints(p,visible,proven,adj(p.w,p.h)),nodeBudget,true);
   }
 
-  function classifyRows(visible,{rows,local,unknown,frontier,invalid},nodeBudget,grouped=false,witnessOnly=false) {
+  function transfer(p,visible,{nodeBudget=120000,proven=new Set(),knownSafe}={}) {
+    return transferRows(visible,constraints(p,visible,proven,adj(p.w,p.h),knownSafe),nodeBudget);
+  }
+
+  function transferRows(visible,{rows,local,unknown,invalid},budget) {
+    const state=visible.map(v=>v>=0?'open':'unknown');
+    let nodes=0, reverseEdges=0;
+    const result=status=>({status,state,nodes,depth:0,maxDepth:0});
+    if(invalid) return result('invalid');
+    if(budget<=0) return result('budget');
+    const total=rows.find(row=>row.source===-1)?.rhs;
+    const membership=new Map(unknown.map(v=>[v,[]]));
+    for(const [i,row] of local.entries()) for(const v of row.vs) membership.get(v).push(i);
+    const grouped=new Map(), byRow=local.map(()=>[]);
+    for(const [v,ids] of membership) {
+      const key=ids.join(',');
+      if(!grouped.has(key)) {
+        const group={cells:[],rows:ids};
+        grouped.set(key,group);
+        for(const id of ids) byRow[id].push(group);
+      }
+      grouped.get(key).cells.push(v);
+    }
+    const outside=grouped.get('')?.cells??[];
+    grouped.delete('');
+    const pending=new Set(grouped.values()), components=[];
+    for(const start of pending) {
+      pending.delete(start);
+      const groups=[start], ids=new Set();
+      for(const group of groups) for(const id of group.rows) {
+        if(ids.has(id)) continue;
+        ids.add(id);
+        for(const next of byRow[id]) if(pending.delete(next)) groups.push(next);
+      }
+      components.push(groups);
+    }
+    const allCounts=size=>(2n<<BigInt(size))-1n;
+    const countMask=total===undefined ? -1n : allCounts(total);
+    const counts=bits=>{
+      const values=[];
+      for(let n=0;bits;bits>>=1n,n++) if(bits&1n) values.push(n);
+      return values;
+    };
+    function combine(a,b) {
+      let joined=0n;
+      if(!a || !b) return joined;
+      if(a>b) [a,b]=[b,a];
+      for(const n of counts(a)) {
+        if(nodes+reverseEdges>=budget) return null;
+        nodes++;
+        joined|=b<<BigInt(n);
+      }
+      return joined&countMask;
+    }
+    const tables=[];
+    for(const groups of components) {
+      // 优先选使待完成线索最少的分组。宽分区可直接使用棋盘顺序，避免二次扫描。
+      const capacity=new Map();
+      for(const group of groups) for(const id of group.rows) {
+        capacity.set(id,(capacity.get(id)??0)+group.cells.length);
+      }
+      const waiting=new Set(groups), layers=[];
+      let active=[], states=new Map([['',{counts:1n,values:[],edges:[]}]]);
+      while(waiting.size) {
+        const slots=new Map(active.map((id,i)=>[id,i]));
+        let choice=waiting.values().next().value;
+        if(groups.length<=128) {
+          let best=Infinity;
+          for(const group of waiting) {
+            const delta=group.rows.reduce((sum,id)=>sum+(capacity.get(id)===group.cells.length ?
+              -Number(slots.has(id)) : Number(!slots.has(id))),0);
+            if(delta<best) {choice=group;best=delta;}
+          }
+        }
+        waiting.delete(choice);
+        const {cells,rows:ids}=choice, size=cells.length;
+        const affected=new Set(ids);
+        for(const id of ids) capacity.set(id,capacity.get(id)-size);
+        const boundary=active.concat(ids.filter(id=>!slots.has(id)));
+        const nextActive=boundary.filter(id=>capacity.get(id)>0);
+        const next=new Map();
+        for(const from of states.values()) {
+          const need=id=>slots.has(id)?from.values[slots.get(id)]:local[id].rhs;
+          let min=0,max=size;
+          for(const id of ids) {
+            min=Math.max(min,need(id)-capacity.get(id));
+            max=Math.min(max,need(id));
+          }
+          for(let k=min;k<=max;k++) {
+            if(nodes+reverseEdges>=budget) return result('budget');
+            nodes++;
+            const support=(from.counts<<BigInt(k))&countMask;
+            if(!support) continue;
+            // 每条前向保留的边都会在反向扫描时再访问一次，提前留出这一节点。
+            if(nodes+reverseEdges>=budget) return result('budget');
+            reverseEdges++;
+            const values=nextActive.map(id=>need(id)-(affected.has(id)?k:0));
+            const key=values.join(',');
+            if(!next.has(key)) next.set(key,{counts:0n,values,edges:[]});
+            const to=next.get(key);
+            to.counts|=support;
+            from.edges.push({to,k});
+          }
+        }
+        if(!next.size) return result('invalid');
+        layers.push({states,cells});
+        states=next;
+        active=nextActive;
+      }
+      tables.push({layers,end:states.get('')});
+    }
+    const prefix=[1n], suffix=Array(tables.length+1);
+    suffix[tables.length]=allCounts(outside.length)&countMask;
+    if(total!==undefined) {
+      for(const table of tables) {
+        const support=combine(prefix.at(-1),table.end.counts);
+        if(support===null) return result('budget');
+        prefix.push(support);
+      }
+      for(let i=tables.length-1;i>=0;i--) {
+        const support=combine(suffix[i+1],tables[i].end.counts);
+        if(support===null) return result('budget');
+        suffix[i]=support;
+      }
+      if(!(suffix[0]&(1n<<BigInt(total)))) return result('invalid');
+    }
+    // 后向只保留能抵达整盘合法总雷数的路径，逐组汇总可行取值。
+    const projections=[];
+    for(const [i,{layers,end}] of tables.entries()) {
+      end.valid=end.counts;
+      if(total!==undefined) {
+        const rest=combine(prefix[i],suffix[i+1]);
+        if(rest===null) return result('budget');
+        end.valid=0n;
+        for(const localCount of counts(end.counts)) if(rest&(1n<<BigInt(total-localCount))) {
+          end.valid|=1n<<BigInt(localCount);
+        }
+      }
+      for(let j=layers.length-1;j>=0;j--) {
+        const {states,cells}=layers[j];
+        let safe=false,mine=false;
+        for(const from of states.values()) {
+          from.valid=0n;
+          for(const {to,k} of from.edges) {
+            reverseEdges--;
+            nodes++;
+            const through=from.counts&(to.valid>>BigInt(k));
+            if(!through) continue;
+            from.valid|=through;
+            safe||=k<cells.length;
+            mine||=k>0;
+          }
+        }
+        projections.push({cells,safe,mine});
+      }
+    }
+    let safe=total===undefined,mine=safe;
+    if(total!==undefined) for(const count of counts(prefix.at(-1))) {
+      const rest=total-count;
+      if(rest>=0 && rest<=outside.length) {
+        safe||=rest<outside.length;
+        mine||=rest>0;
+      }
+    }
+    projections.push({cells:outside,safe,mine});
+    for(const {cells,safe,mine} of projections) for(const v of cells) {
+      state[v]=safe && mine?'either':safe?'safe':'mine';
+    }
+    return result('complete');
+  }
+
+  function classifyRows(visible,context,nodeBudget,grouped=false,witnessOnly=false) {
+    if(!grouped || nodeBudget<=0) return searchRows(visible,context,nodeBudget,grouped,witnessOnly);
+    const result=transferRows(visible,context,Math.min(nodeBudget,120000));
+    if(result.status!=='budget') return result;
+    const fallback=searchRows(visible,context,nodeBudget-result.nodes,grouped,witnessOnly);
+    return {...fallback,nodes:fallback.nodes+result.nodes};
+  }
+
+  function searchRows(visible,{rows,local,unknown,frontier,invalid},nodeBudget,grouped,witnessOnly) {
     const n=visible.length, total=rows.find(row=>row.source===-1);
     const state=visible.map(x=>x<0?'unknown':'open');
     let nodes=0, branchDepth=0, depth=Infinity, maxDepth=0;
@@ -1275,6 +1523,190 @@ function makeMinesEngine() {
     return ns[a].some(v=>view[v]<0 && ns[b].includes(v));
   }
 
+  function composeClues({w,h},count,seed,{balanced=false,preferLoops=false,placementBudget=Infinity}={}) {
+    if(!Number.isInteger(count) || count<1 || count>w*h) return null;
+    const r=random(seed), uniform=n=>{
+      const limit=4294967296-4294967296%n;
+      let value;
+      do {value=r(4294967296);} while(value>=limit);
+      return value%n;
+    };
+    const key=(x,y)=>`${x},${y}`;
+    function normalize(points) {
+      const left=Math.min(...points.map(([x])=>x)), top=Math.min(...points.map(([,y])=>y));
+      const shifted=points.map(([x,y])=>[x-left,y-top]).sort(([a,b],[c,d])=>b-d || a-c);
+      return {points:shifted,w:Math.max(...shifted.map(([x])=>x))+1,h:shifted.at(-1)[1]+1};
+    }
+    function covered(x,y,clipped=false) {
+      const cells=[];
+      for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++) if(dx || dy) {
+        const a=x+dx,b=y+dy;
+        if(!clipped || a>=0 && a<w && b>=0 && b<h) cells.push(key(a,b));
+      }
+      return cells;
+    }
+    function connected(points,clipped=false) {
+      const occupied=new Set(points.map(([x,y])=>key(x,y))), owners=new Map();
+      const links=points.map(()=>new Map());
+      for(const [i,[x,y]] of points.entries()) for(const cell of covered(x,y,clipped)) {
+        if(occupied.has(cell)) continue;
+        if(!owners.has(cell)) owners.set(cell,[i]);
+        else {
+          const group=owners.get(cell);
+          if(balanced && group.length>1) return false;
+          const other=group[0], count=(links[i].get(other)??0)+1;
+          links[i].set(other,count);links[other].set(i,count);
+          group.push(i);
+        }
+      }
+      const queue=[0], signs=new Map([[0,1]]);
+      for(const i of queue) for(const [j,count] of links[i]) {
+        const sign=-signs.get(i);
+        if(balanced && (count<2 || signs.has(j) && signs.get(j)!==sign)) return false;
+        if(!signs.has(j)) {signs.set(j,sign);queue.push(j);}
+      }
+      return signs.size===points.length;
+    }
+    function join(left,right) {
+      const occupied=new Set(left.points.map(([x,y])=>key(x,y)));
+      const leftCells=new Map();
+      for(const [i,[x,y]] of left.points.entries()) for(const cell of covered(x,y)) {
+        if(!leftCells.has(cell)) leftCells.set(cell,i);
+      }
+      const oriented=new Set(), placements=[], multiple=[];
+      for(const swap of [false,true]) for(const sx of [1,-1]) for(const sy of [1,-1]) {
+        const block=normalize(right.points.map(([x,y])=>swap?[sx*y,sy*x]:[sx*x,sy*y]));
+        const id=block.points.join(';');
+        if(oriented.has(id)) continue;
+        oriented.add(id);
+        if(block.w>w || block.h>h) continue;
+        for(let dy=Math.max(-block.h-1,left.h-h);dy<=Math.min(left.h+1,h-block.h);dy++) {
+          for(let dx=Math.max(-block.w-1,left.w-w);dx<=Math.min(left.w+1,w-block.w);dx++) {
+            if(placementBudget--<=0) return null;
+            const points=block.points.map(([x,y])=>[x+dx,y+dy]);
+            const open=new Set(points.map(([x,y])=>key(x,y)));
+            if([...open].some(cell=>occupied.has(cell))) continue;
+            // 位置有效时，至少存在一个两块共用、拼接后仍未打开的格子。
+            const shared=([x,y])=>covered(x,y).filter(cell=>leftCells.has(cell) && !occupied.has(cell) && !open.has(cell));
+            if(preferLoops) {
+              const ports=new Set();
+              for(const [i,point] of points.entries()) for(const cell of shared(point)) {
+                ports.add(`${i},${leftCells.get(cell)}`);
+              }
+              if(ports.size>1) multiple.push(points);
+              else if(ports.size) placements.push(points);
+            } else if(points.some(point=>shared(point).length)) placements.push(points);
+          }
+        }
+      }
+      // 在所有候选对接位置中随机选，允许多接缝，不能让新线索截断传递图。
+      for(const options of [multiple,placements]) while(options.length) {
+        const i=uniform(options.length), merged=left.points.concat(options[i]);
+        options[i]=options.at(-1);
+        options.pop();
+        if(connected(merged)) return normalize(merged);
+      }
+      return null;
+    }
+    function build(size) {
+      if(size===1) return {points:[[0,0]],w:1,h:1};
+      const a=1+uniform(Math.floor(size/2)), b=size-a;
+      const left=build(a);
+      if(!left) return null;
+      const right=build(b);
+      if(!right) return null;
+      const merged=join(left,right);
+      return merged && {...merged,split:[a,b]};
+    }
+    const shape=build(count);
+    if(!shape) return null;
+    const x=uniform(w-shape.w+1), y=uniform(h-shape.h+1);
+    const givens=shape.points.map(([dx,dy])=>x+dx+(y+dy)*w);
+    if(!connected(shape.points.map(([dx,dy])=>[x+dx,y+dy]),true)) return null;
+    return {givens,split:shape.split??[]};
+  }
+
+  function seedComposed(p,ns,seed,mines,length) {
+    if(!mines || length>=ns.length-mines) return [];
+    const balanced=seed%2===0;
+    const preferLoops=balanced && Boolean(seed&8);
+    const shape=composeClues(p,length,seed,{balanced,preferLoops,placementBudget:30000});
+    if(!shape) return [];
+    const {givens}=shape, opened=new Set(givens), config={...p,mines};
+    const neighbors=givens.map(v=>ns[v].filter(u=>!opened.has(u)));
+    const frontier=new Set(neighbors.flat()), outside=ns.length-givens.length-frontier.size;
+    const memberships=new Map([...frontier].map(v=>[v,[]]));
+    for(const [i,row] of neighbors.entries()) for(const v of row) memberships.get(v).push(i);
+    const r=random(seed^0xbc1);
+    for(let attempt=0;attempt<8;attempt++) {
+      const signs=givens.map(()=>r(2)?1:-1), coefficients=new Int8Array(ns.length);
+      if(balanced) {
+        const queue=[0], seen=new Set(queue);
+        for(const i of queue) for(const v of neighbors[i]) for(const j of memberships.get(v)) {
+          if(!seen.has(j)) {signs[j]=-signs[i];seen.add(j);queue.push(j);}
+        }
+      }
+      for(const [i,row] of neighbors.entries()) for(const v of row) coefficients[v]+=signs[i];
+      // 改善接缝上的相消，同时用不同初值探索环和分支上的不同取向。
+      for(let i=r(givens.length),n=0;n<2*givens.length;n++,i=(i+1)%givens.length) {
+        const direction=2*signs[i], row=neighbors[i];
+        const delta=row.reduce((sum,v)=>sum+Math.abs(coefficients[v]-direction)-Math.abs(coefficients[v]),0);
+        if(delta<0) {
+          signs[i]*=-1;
+          for(const v of row) coefficients[v]-=direction;
+        }
+      }
+      const map=new Int8Array(ns.length).fill(-1), view=Array(ns.length).fill(-1);
+      for(const v of givens) map[v]=0;
+      const joints=new Map();
+      let forced=0, safe=0;
+      for(const v of frontier) {
+        const coefficient=coefficients[v];
+        if(coefficient) {
+          map[v]=Number(coefficient<0);
+          forced+=map[v];
+          safe+=1-map[v];
+        } else {
+          const key=memberships.get(v).join(',');
+          if(!joints.has(key)) joints.set(key,[]);
+          joints.get(key).push(v);
+        }
+      }
+      if(!forced || !safe) continue;
+      const adjustable=[];
+      for(const cells of joints.values()) {
+        const first=r(cells.length);
+        if(cells.length>1) {
+          map[cells[first]]=1;
+          map[cells[(first+1)%cells.length]]=0;
+          forced++;
+        }
+        adjustable.push(...cells.filter(v=>map[v]<0));
+      }
+      // 图外保留雷和空位，减少公开总雷数引入的短解。
+      const margin=Number(outside>=2);
+      const min=Math.max(0,mines-forced-outside+margin), max=Math.min(adjustable.length,mines-forced-margin);
+      if(min>max) continue;
+      const extra=min+r(max-min+1);
+      for(let i=0;i<extra;i++) {
+        const j=i+r(adjustable.length-i);
+        [adjustable[i],adjustable[j]]=[adjustable[j],adjustable[i]];
+      }
+      for(const [i,v] of adjustable.entries()) map[v]=Number(i<extra);
+      for(const [i,v] of givens.entries()) view[v]=neighbors[i].filter(u=>map[u]===1).length;
+      if(givens.some(v=>view[v]===0)) continue;
+      const context=constraints(config,view,new Set(),ns);
+      if(context.invalid || elementary(context.rows,()=>true)) continue;
+      const judgment=transferRows(view,context,16000);
+      if(judgment.status!=='complete') continue;
+      const move=analyze(config,view,new Set(),{ns}).move;
+      if(!move) continue;
+      const proof=openingProof(config,view,move,ns,judgment,{minimumBudget:24000});
+      if(proof.positionMinimum && proof.sources.length>=3) return [{map,view,judgment,givens,composed:true}];
+    }
+    return [];
+  }
+
   function seedCycle(p,ns,near,seed,mines,length,interior) {
     if(length>=ns.length-mines || length>mines) return [];
     const r=random(seed), n=ns.length, config={...p,mines}, marks=new Set();
@@ -1324,9 +1756,9 @@ function makeMinesEngine() {
       for(const v of givens) view[v]=ns[v].filter(u=>map[u]===1).length;
       const context=constraints(config,view,marks,ns);
       if(context.invalid || elementary(context.rows,()=>true)) return;
-      const move=cycleProof(context.local,(vs,value,level,proof)=>({vs,value,level,...proof}));
+      const move=overlapProof(context.local,(vs,value,level,proof)=>({vs,value,level,...proof}));
       if(!move) return;
-      const judgment=classifyRows(view,context,120000);
+      const judgment=classifyRows(view,context,120000,true);
       if(judgment.status!=='complete') return;
       const proof=openingProof(config,view,move,ns,judgment);
       if(proof.positionMinimum && proof.sources.length===length) starts.push({map,view,judgment,givens});
@@ -1339,6 +1771,35 @@ function makeMinesEngine() {
         if(closes && !links[v].includes(first) || path.slice(closes?1:0,-1).some(u=>shared(u,v).length)) continue;
         extend([...path,v]);
         if(starts.length || budget<=0) return;
+      }
+    }
+    // 四条直链用斜向接缝闭合。先尝试按长度直接摆放，余下尺寸交给局部搜索。
+    if(length>=12) {
+      const directions=[[1,0],[0,1],[-1,0],[0,-1]];
+      const half=(length-4)/2;
+      for(const width of shuffle(range(half-1).map(v=>v+1))) {
+        const height=half-width;
+        const path=[[0,0]];
+        function step(dx,dy) {
+          const [x,y]=path.at(-1);
+          path.push([x+dx,y+dy]);
+        }
+        for(const [i,[dx,dy]] of directions.entries()) {
+          for(let j=0;j<(i%2?height:width);j++) step(2*dx,2*dy);
+          const [nx,ny]=directions[(i+1)%4];
+          step(2*dx+nx,2*dy+ny);
+        }
+        path.pop();
+        const minX=Math.min(...path.map(([x])=>x)), minY=Math.min(...path.map(([,y])=>y));
+        const spanX=Math.max(...path.map(([x])=>x))-minX, spanY=Math.max(...path.map(([,y])=>y))-minY;
+        const margin=Number(interior), roomX=p.w-spanX-2*margin, roomY=p.h-spanY-2*margin;
+        if(roomX<=0 || roomY<=0) continue;
+        const flipX=r(2),flipY=r(2), ox=margin+r(roomX),oy=margin+r(roomY);
+        plant(path.map(([x,y])=>{
+          x-=minX;y-=minY;
+          return ox+(flipX?spanX-x:x)+p.w*(oy+(flipY?spanY-y:y));
+        }));
+        if(starts.length) return starts;
       }
     }
     for(const first of shuffle(range(n).filter(allowed))) {
@@ -1728,6 +2189,32 @@ function makeMinesEngine() {
     return null;
   }
 
+  // 在线索图外尝试可通过零格连片展开的续局。已有线索的邻域保持原样。
+  function* shapedCompletions(p,ns,mines,{map,givens},seed) {
+    const {w,h}=p;
+    const free=range(ns.length).filter(v=>map[v]<0);
+    const remaining=mines-map.reduce((sum,v)=>sum+Number(v===1),0);
+    if(remaining<=0 || remaining>=free.length) return;
+    const r=random(seed^0x6dc);
+    const corners=[0,w-1,(h-1)*w,ns.length-1], first=r(corners.length);
+    const seen=new Set();
+    for(const rectangular of [false,true]) for(let i=0;i<corners.length;i++) {
+      const corner=corners[(i+first)%corners.length];
+      function distance(v) {
+        const dx=Math.abs(v%w-corner%w),dy=Math.abs(Math.floor(v/w)-Math.floor(corner/w));
+        return rectangular ? Math.max(dx,dy)*(w+h)+dx+dy : dx+dy;
+      }
+      const extra=free.slice().sort((a,b)=>distance(a)-distance(b) || a-b).slice(0,remaining);
+      const key=extra.slice().sort((a,b)=>a-b).join(',');
+      if(seen.has(key)) continue;
+      seen.add(key);
+      const bombs=Array.from(map,v=>v===1);
+      for(const v of extra) bombs[v]=true;
+      const clues=ns.map(row=>row.reduce((sum,v)=>sum+Number(bombs[v]),0));
+      yield {w,h,ns,mines,seed,bombs,clues,opening:givens,first:givens[0]};
+    }
+  }
+
   function refine(p,board,report,start,compare,fits,hard,evaluate) {
     const {ns,mines,seed}=board, r=random(seed^0x579a);
     let best={board,report};
@@ -1932,10 +2419,25 @@ function makeMinesEngine() {
         if(k%4===1) starts=seedCycle(p,ns,near,id,mines,length,false);
         if(!starts.length) starts=seedCycle(p,ns,near,id,mines,length+2*(k%5),k%4===1);
       }
+      const ringStarts=starts;
+      // 保留长环和传统构造的轮次，同时让不同种子探索不同拼接拓扑。
+      const balancedRound=target.peak>=10 && k%4===1;
+      const composed=target.peak>=6 && Math.min(p.w,p.h)>=5 && (balancedRound || k%4===3) ?
+        seedComposed(p,ns,balancedRound?id-id%2:id,mines,target.peak) : [];
       if(!starts.length && (compact || directed && k%2===0)) starts=compactOverlap(p,ns,near,id,mines,!!directed);
       if(!starts.length && (!compact || k%3===0 || directed)) starts=seedOpening(p,ns,near,id,mines,route,interior,compact);
       if(compact && !starts.length) starts=seedCompact(p,ns,id,mines);
-      for(const start of starts) {
+      // 先尝试几种低成本续局，再交给通用构造器补足更高的多步难度。
+      for(const start of [...composed,...(target.peak>=12?ringStarts:[])]) for(const board of shapedCompletions(p,ns,mines,start,id)) {
+        if(duplicate(board)) continue;
+        constructed++;
+        const report=certify(board,k);
+        if(report.status==='passed' && report.steps && fits(report)) {
+          yield {board,report,target,tried:k,passed,constructed,route:start.composed?'composed-transfer':'cycle-transfer'};
+          return;
+        }
+      }
+      for(const start of [...composed,...starts]) {
         const board=construct(p,id,ns,mines,start,undefined,directed);
         if(!board) continue;
         constructed++;
@@ -1947,7 +2449,7 @@ function makeMinesEngine() {
             if(!duplicate(refined)) return certify(refined,k,true);
           });
           if(fits(candidate.report)) {
-            yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,route:compact?'compact':route.kind};
+            yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,route:start.composed?'composed-transfer':compact?'compact':route.kind};
             return;
           }
         }
@@ -1956,7 +2458,57 @@ function makeMinesEngine() {
     }
   }
 
-  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,selectionTotals,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generationRanking,generationSchedule,generate};
+  // 从全开状态逆向构造。只撤回一个能用余下线索重新证明安全的格。
+  function* enumerateNoGuess({w,h,mines},{accept=()=>true}={}) {
+    const ns=adj(w,h), size=ns.length, cells=range(size);
+    if(mines!==undefined && (!Number.isInteger(mines) || mines<0 || mines>=size)) return;
+    function* combinations(count) {
+      const indices=range(count);
+      for(;;) {
+        yield indices;
+        let i=count-1;
+        while(i>=0 && indices[i]===size-count+i) i--;
+        if(i<0) return;
+        indices[i]++;
+        for(let j=i+1;j<count;j++) indices[j]=indices[j-1]+1;
+      }
+    }
+    const bits=cells.map(v=>1n<<BigInt(v));
+    for(let count=mines??0;count<=(mines??size-1);count++) for(const layout of combinations(count)) {
+      const bombs=Array(size).fill(false);
+      for(const v of layout) bombs[v]=true;
+      const clues=ns.map(row=>row.reduce((sum,v)=>sum+Number(bombs[v]),0));
+      const safe=cells.filter(v=>!bombs[v]);
+      const full=safe.reduce((mask,v)=>mask|bits[v],0n);
+      const pending=[full], reached=new Set(pending), proofs=new Map();
+      while(pending.length) {
+        const open=pending.pop(), givens=safe.filter(v=>open&bits[v]);
+        // 实际开局的零格会自动展开。中间状态可逐格逆推，交付的开局必须已经展开。
+        if(givens.every(v=>clues[v]!==0 || ns[v].every(u=>open&bits[u]))) {
+          const board={w,h,ns:ns.map(row=>row.slice()),mines:count,bombs:bombs.slice(),clues:clues.slice(),
+            opening:givens.slice(),first:givens[0]};
+          if(accept(board)) yield board;
+        }
+        for(const v of givens) {
+          const previous=open^bits[v];
+          if(!previous || reached.has(previous)) continue;
+          if(!proofs.has(previous)) {
+            const visible=cells.map(u=>previous&bits[u]?clues[u]:-1);
+            const {state}=transfer({w,h,mines:count},visible,{nodeBudget:Infinity});
+            const proven=state.reduce((mask,status,u)=>status==='safe'?mask|bits[u]:mask,0n);
+            proofs.set(previous,proven);
+          }
+          if(proofs.get(previous)&bits[v]) {
+            proofs.delete(previous);
+            reached.add(previous);
+            pending.push(previous);
+          }
+        }
+      }
+    }
+  }
+
+  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,transfer,enumerateNoGuess,composeClues,selectionTotals,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generationRanking,generationSchedule,generate};
 }
 
 if(typeof module!=='undefined') module.exports=makeMinesEngine();
