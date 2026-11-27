@@ -959,7 +959,7 @@ test('all three difficulty floors filter the certified path', () => {
   for(const [key,value] of [
     ['minAverage',20],
     ['minMultiPercent',100],
-    ['minPeakClues',25],
+    ['minPeakClues',24],
   ]) {
     const miss=search({...p,[key]:value},0,12);
     assert.equal(miss.board,undefined);
@@ -1103,8 +1103,15 @@ test('high difficulty generation rechecks options without a verified batch', () 
   } else assert.equal(result.tried,12);
 });
 
-test('generation keeps searching past the former limit and can be stopped', () => {
-  const rounds=engine.generate({w:2,h:3,mines:5,minPeakClues:6},12345);
+test('峰值或平均线索门槛超出可用线索上界时立即拒绝搜索', () => {
+  const p={w:5,h:5,minAverage:1,minMultiPercent:0,minPeakClues:1};
+  for(const options of [{minPeakClues:25},{mines:20,minPeakClues:6},{mines:20,minAverage:5.1}]) {
+    assert.throws(()=>engine.generate({...p,...options},2).next(),/请调低难度或增大棋盘/);
+  }
+});
+
+test('未触及线索上界的搜索可超过旧轮次限制，也可手动停止', () => {
+  const rounds=engine.generate({w:2,h:3,mines:4,minPeakClues:2,minAverage:2,minMultiPercent:0},12345);
   for(let i=1;i<=3001;i++) {
     const {value,done}=rounds.next();
     assert.equal(done,false);
@@ -1644,6 +1651,55 @@ test('修改筛选回调或返回值收到的棋盘，不影响后续逆向枚�
   assert.deepEqual(consumed,expected);
 });
 
+test('高峰值拼接复用前轮结构，严格超过下限后在可用区间选目标', () => {
+  const p={w:20,h:20,minPeakClues:8};
+  const next=engine.composeClueSearch(p,2);
+  const initial=Array.from({length:4},()=>next());
+  assert.deepEqual(initial.map(({shape})=>shape.givens.length),[2,4,8,16]);
+  assert.deepEqual(initial.map(({shape})=>shape.split),[[1,1],[2,2],[4,4],[8,8]]);
+  for(let i=1;i<initial.length;i++) assert.ok(initial[i].shape.parts.every(part=>part===initial[i-1].shape));
+  const targets=Array.from({length:12},()=>next().target);
+  assert.ok(targets.every(target=>target>=8 && target<=16));
+  assert.ok(new Set(targets).size>1);
+});
+
+test('最大拼接目标放不下时保留已有结构，再尝试较大的可行规模', () => {
+  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},2);
+  next();
+  next();
+  const previous=next();
+  const missed=next();
+  assert.equal(missed.target,16);
+  assert.equal(missed.shape,previous.shape);
+  const improved=next();
+  assert.ok(improved.target<missed.target);
+  assert.ok(improved.shape.givens.length>8);
+  assert.ok(improved.shape.parts.includes(previous.shape));
+});
+
+test('棋盘边缘截断接缝时重新放置同一结构', () => {
+  const shape=engine.composeClues({w:3,h:6},4,3302644519,{balanced:true,preferLoops:true});
+  assert.ok(shape);
+  const {givens}=shape;
+  const ns=engine.adj(3,6), opened=new Set(givens);
+  const rows=givens.map(v=>ns[v].filter(u=>!opened.has(u)));
+  assert.equal(givens.length,4);
+  assert.ok(givens.every(v=>v>=3 && v<15));
+  assert.ok(rows.every(row=>rows.some(other=>other!==row && row.filter(v=>other.includes(v)).length>=2)));
+
+  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},3);
+  const {target,shape:scheduled}=Array.from({length:6},next).at(-1);
+  assert.equal(target,10);
+  assert.equal(scheduled.givens.length,10);
+});
+
+test('候选结构在所有偏移均不连通时继续检查其他接缝', () => {
+  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},0);
+  const {target,shape}=Array.from({length:10},next).at(-1);
+  assert.equal(target,11);
+  assert.equal(shape.givens.length,11);
+});
+
 test('十线索递归拼接考虑五种拆分，并能在同一图中得到环和分支', () => {
   const histogram=Array(5).fill(0), identities=new Set();
   let mixed=false;
@@ -1669,6 +1725,14 @@ test('十线索递归拼接考虑五种拆分，并能在同一图中得到环�
   assert.ok(histogram.every(n=>n>=5 && n<=20),JSON.stringify(histogram));
   assert.ok(identities.size>=40);
   assert.ok(mixed);
+});
+
+test('近半拆分将偶数线索等分，奇数线索两边只差一条', () => {
+  for(const count of [10,11]) {
+    const shape=engine.composeClues({w:20,h:20},count,0,{splitNearHalf:true});
+    assert.deepEqual(shape.split,[5,count-5]);
+    assert.equal(new Set(shape.givens).size,count);
+  }
 });
 
 test('逆向构造与独立的 3×2 穷举回放得到同一批可通关开局', () => {
@@ -1699,21 +1763,41 @@ test('逆向构造与独立的 3×2 穷举回放得到同一批可通关开局',
   assert.deepEqual([...engine.enumerateNoGuess({w,h},{accept:()=>false})],[]);
 });
 
-test('普通生成入口可拼出 20×20 的十五线索混合图开局，去掉任何一条后都没有固定格', () => {
+test('高峰值搜索保留较低的已验证候选，并采用超过峰值下限的合成棋局', () => {
   const p={w:20,h:20,minAverage:1,minMultiPercent:0,minPeakClues:15};
-  const result=engine.generate(p,2).next().value;
-  const {board,report}=result;
-  assert.equal(result.route,'composed-transfer');
-  assert.equal(report.status,'passed');
-  assert.equal(report.openingClues,15);
-  assert.equal(report.clues,15);
+  const generator=engine.generate(p,2);
+  const before=Array.from({length:3},()=>generator.next().value);
+  assert.ok(before.every(result=>!result.board));
+  const {candidate}=before.at(-1);
+  assert.ok(candidate.report.clues<p.minPeakClues);
+  assert.deepEqual(engine.verify(candidate.board,p,{certify:true}),candidate.report);
+  const {board,report,route}=generator.next().value;
+  assert.equal(route,'composed-transfer');
+  assert.equal(report.clues,16);
+  assert.deepEqual(engine.verify(board,p,{certify:true}),report);
+});
+
+test('20×20 的十五线索混合图开局，去掉任何一条后都没有固定格', () => {
+  const p={w:20,h:20,minAverage:1,minMultiPercent:0,minPeakClues:15};
+  const bombs=[
+    '00000000111000000000000000001010000000000000000010001100000000000000110100011000',
+    '10000000101101001000111111100100101010001111111000000100000011111111101111011000',
+    '11111000011111001000111110011111111010001111100111111100000011111110111111100000',
+    '11111111111111100000111111111111111000001111111111111110000011111111111111100000',
+    '11111111111111100000111111111111111000001111111111111110000011111111111111100000',
+  ].join('').split('').map(v=>v==='1');
+  const ns=engine.adj(p.w,p.h), opening=[29,50,72,74,89,95,111,128,132,134,168,175,186,195,227];
+  const clues=ns.map(row=>row.filter(v=>bombs[v]).length);
+  const board={w:p.w,h:p.h,ns,opening,bombs,clues,mines:bombs.filter(Boolean).length};
+  const replay=engine.verify(board,p,{certify:true,trace:true});
+  assert.equal(replay.status,'passed');
+  assert.equal(replay.openingClues,15);
+  assert.equal(replay.clues,15);
   const givens=new Set(board.opening);
   const degree=board.opening.map(v=>board.opening.filter(u=>u!==v &&
     board.ns[v].some(x=>!givens.has(x) && board.ns[u].includes(x))).length);
   assert.ok(degree.some(n=>n>=3));
   assert.ok(degree.reduce((sum,n)=>sum+n,0)>=2*givens.size);
-  const replay=engine.verify(board,p,{certify:true,trace:true});
-  assert.deepEqual({...replay,trace:[]},report);
   assert.equal(replay.trace[0].positionMinimum,true);
   for(const v of board.opening) {
     const view=engine.opening(board);
@@ -1722,4 +1806,35 @@ test('普通生成入口可拼出 20×20 的十五线索混合图开局，去掉
     assert.equal(weakened.status,'complete');
     assert.ok(weakened.state.every(state=>state!=='safe' && state!=='mine'));
   }
+});
+
+test('高峰值生成续接困难回合，新揭示的数字使原本不确定的格可推导', () => {
+  const p={w:20,h:20,minPeakClues:15,minAverage:2,minMultiPercent:30};
+  const candidates=[];
+  const generator=engine.generate(p,2,({candidate})=>candidates.push(candidate));
+  for(let round=0;round<5;round++) generator.next();
+  const anchor=candidates.find(({report})=>report.clues>=p.minPeakClues);
+  assert.ok(anchor);
+  assert.ok(candidates.some(({board,report})=>board.mines===anchor.board.mines &&
+    engine.opening(board).join()===engine.opening(anchor.board).join() && report.clues===anchor.report.clues &&
+    report.averageClues>anchor.report.averageClues && report.advancedDensity>anchor.report.advancedDensity));
+  const linked=candidates.find(({report})=>report.clues===15);
+  assert.ok(linked);
+  const {board}=linked, rounds=[];
+  const {trace,...report}=engine.verify(board,p,{certify:true,trace:true,observeRound:(visible,flags,state)=>{
+    rounds.push({visible:visible.slice(),flags:new Set(flags),state});
+  }});
+  assert.deepEqual({...report,trace:[]},linked.report);
+  const source=168, target=184;
+  const firstCommit=trace.findIndex(move=>move.commit);
+  const followUp=trace.slice(firstCommit+1,trace.findIndex((move,i)=>i>firstCommit && move.commit)+1);
+  assert.ok(trace[0].safe.includes(source) && trace[0].sources.length===15);
+  assert.equal(rounds[0].state[target],'either');
+  assert.ok(followUp.some(move=>move.safe.includes(target) && move.sources.includes(source) && move.sources.length===4));
+  const {visible,flags}=rounds[1];
+  assert.ok(visible[source]>=0);
+  visible[source]=-1;
+  const withoutDigit=engine.transfer(board,visible,{knownSafe:new Set([source]),proven:flags});
+  assert.equal(withoutDigit.status,'complete');
+  assert.equal(withoutDigit.state[target],'either');
 });

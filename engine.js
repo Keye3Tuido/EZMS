@@ -1266,6 +1266,20 @@ function makeMinesEngine() {
     return new Map(state.flatMap((kind,v)=>kind==='safe' || kind==='mine' && !flags.has(v)?[[v,kind]]:[]));
   }
 
+  function summarizeSupports(supports) {
+    const multiSteps=supports.filter(count=>count>=3).length;
+    let shallowRun=0, longestShallowRun=0;
+    for(const count of supports) {
+      shallowRun=count>=3?0:shallowRun+1;
+      longestShallowRun=Math.max(longestShallowRun,shallowRun);
+    }
+    return {multiSteps,longestShallowRun,averageClues:supports.reduce((sum,count)=>sum+count,0)/supports.length,
+      advancedDensity:multiSteps/supports.length,sections:range(3).map(i=>{
+        const steps=supports.slice(Math.ceil(i*supports.length/3),Math.ceil((i+1)*supports.length/3));
+        return {steps:steps.length,advanced:steps.filter(count=>count>=3).length};
+      })};
+  }
+
   function verify(board,p,options={}) {
     p={...p,mines:board.mines};
     const visible=options.visible?.slice()??opening(board), marks=new Set(options.marks), {ns}=board;
@@ -1298,6 +1312,7 @@ function makeMinesEngine() {
       if(options.certify && !round) {
         const publicState=classifyRows(visible,constraints(p,visible,new Set(),ns),120000,true);
         if(publicState.status!=='complete') return {...report,status:publicState.status,opened};
+        options.observeRound?.(visible,flags,publicState.state);
         const targets=confirmationTargets(publicState.state,flags);
         const confirmed=new Map([...initialConfirmed].filter(([v,kind])=>targets.get(v)===kind));
         initialConfirmed.clear();
@@ -1358,14 +1373,7 @@ function makeMinesEngine() {
       }
       if(options.trace) report.trace.push({...m,...(commit?{commit}:{})});
     }
-    if(supports.length) {
-      report.averageClues=supports.reduce((sum,count)=>sum+count,0)/supports.length;
-      report.advancedDensity=report.multiSteps/supports.length;
-      report.sections=range(3).map(i=>{
-        const steps=supports.slice(Math.ceil(i*supports.length/3),Math.ceil((i+1)*supports.length/3));
-        return {steps:steps.length,advanced:steps.filter(count=>count>=3).length};
-      });
-    }
+    if(supports.length) Object.assign(report,summarizeSupports(supports));
     return {...report,status:'passed',opened,...(point?{point}:{}),...(openingPoint?{openingPoint}:{})};
   }
 
@@ -1523,7 +1531,7 @@ function makeMinesEngine() {
     return ns[a].some(v=>view[v]<0 && ns[b].includes(v));
   }
 
-  function composeClues({w,h},count,seed,{balanced=false,preferLoops=false,placementBudget=Infinity}={}) {
+  function composeClues({w,h},count,seed,{balanced=false,preferLoops=false,splitNearHalf=false,placementBudget=Infinity,blocks}={}) {
     if(!Number.isInteger(count) || count<1 || count>w*h) return null;
     const r=random(seed), uniform=n=>{
       const limit=4294967296-4294967296%n;
@@ -1567,14 +1575,14 @@ function makeMinesEngine() {
       }
       return signs.size===points.length;
     }
-    function join(left,right) {
+    function join(left,right,onBoard) {
       const occupied=new Set(left.points.map(([x,y])=>key(x,y)));
       const leftCells=new Map();
       for(const [i,[x,y]] of left.points.entries()) for(const cell of covered(x,y)) {
         if(!leftCells.has(cell)) leftCells.set(cell,i);
       }
       const oriented=new Set(), placements=[], multiple=[];
-      for(const swap of [false,true]) for(const sx of [1,-1]) for(const sy of [1,-1]) {
+      orientations: for(const swap of [false,true]) for(const sx of [1,-1]) for(const sy of [1,-1]) {
         const block=normalize(right.points.map(([x,y])=>swap?[sx*y,sy*x]:[sx*x,sy*y]));
         const id=block.points.join(';');
         if(oriented.has(id)) continue;
@@ -1582,7 +1590,7 @@ function makeMinesEngine() {
         if(block.w>w || block.h>h) continue;
         for(let dy=Math.max(-block.h-1,left.h-h);dy<=Math.min(left.h+1,h-block.h);dy++) {
           for(let dx=Math.max(-block.w-1,left.w-w);dx<=Math.min(left.w+1,w-block.w);dx++) {
-            if(placementBudget--<=0) return null;
+            if(placementBudget--<=0) break orientations;
             const points=block.points.map(([x,y])=>[x+dx,y+dy]);
             const open=new Set(points.map(([x,y])=>key(x,y)));
             if([...open].some(cell=>occupied.has(cell))) continue;
@@ -1604,34 +1612,64 @@ function makeMinesEngine() {
         const i=uniform(options.length), merged=left.points.concat(options[i]);
         options[i]=options.at(-1);
         options.pop();
-        if(connected(merged)) return normalize(merged);
+        if(!connected(merged)) continue;
+        const shape=normalize(merged);
+        if(!onBoard) return shape;
+        const givens=place(shape);
+        if(givens) return {...shape,givens};
       }
       return null;
     }
-    function build(size) {
+    function build(size,reuse=true) {
+      const cached=reuse && blocks?.get(size);
+      if(cached) return {...cached.geometry,cached};
       if(size===1) return {points:[[0,0]],w:1,h:1};
-      const a=1+uniform(Math.floor(size/2)), b=size-a;
-      const left=build(a);
-      if(!left) return null;
-      const right=build(b);
+      const half=Math.floor(size/2);
+      let a=splitNearHalf?half:1+uniform(half);
+      if(blocks) {
+        const sizes=[...blocks.keys()].sort((a,b)=>b-a);
+        // 优先选两边都能复用的拆分。否则用最大的已有子块，递归补齐余下部分。
+        const pairs=sizes.filter(n=>n<size && n>=size-n && blocks.has(size-n));
+        if(pairs.length) a=size-(splitNearHalf?pairs.at(-1):pairs[uniform(pairs.length)]);
+        else a=size-sizes.find(n=>n<size);
+      }
+      const b=size-a, left=build(a), right=left && build(b);
       if(!right) return null;
-      const merged=join(left,right);
-      return merged && {...merged,split:[a,b]};
+      const merged=join(left,right,!reuse);
+      if(!merged) return null;
+      const split=[a,b];
+      if(!blocks) return {...merged,split};
+      const parts=[left.cached,right.cached];
+      if(reuse) {
+        const child={geometry:merged,split,parts};
+        blocks.set(size,child);
+        return {...merged,cached:child};
+      }
+      return {...merged,split,parts};
     }
-    const shape=build(count);
+    function place(shape) {
+      const spareX=w-shape.w, spareY=h-shape.h;
+      const firstX=uniform(spareX+1), firstY=uniform(spareY+1);
+      // 每轴只比较贴两侧边缘和留一格边距，其他偏移裁去的邻格相同。
+      function offsets(first,spare) {
+        const choices=new Set([first,0,spare]);
+        if(spare>1 && (first===0 || first===spare)) choices.add(1);
+        return choices;
+      }
+      const xs=offsets(firstX,spareX), ys=offsets(firstY,spareY);
+      for(const y of ys) for(const x of xs) {
+        const placed=shape.points.map(([dx,dy])=>[x+dx,y+dy]);
+        if(connected(placed,true)) return placed.map(([a,b])=>a+b*w);
+      }
+    }
+    const shape=build(count,false);
     if(!shape) return null;
-    const x=uniform(w-shape.w+1), y=uniform(h-shape.h+1);
-    const givens=shape.points.map(([dx,dy])=>x+dx+(y+dy)*w);
-    if(!connected(shape.points.map(([dx,dy])=>[x+dx,y+dy]),true)) return null;
-    return {givens,split:shape.split??[]};
+    const {points,w:width,h:height,split=[],parts,givens=place(shape)}=shape;
+    return blocks?{givens,split,parts,geometry:{points,w:width,h:height}}:{givens,split};
   }
 
-  function seedComposed(p,ns,seed,mines,length) {
-    if(!mines || length>=ns.length-mines) return [];
-    const balanced=seed%2===0;
-    const preferLoops=balanced && Boolean(seed&8);
-    const shape=composeClues(p,length,seed,{balanced,preferLoops,placementBudget:30000});
-    if(!shape) return [];
+  function seedComposed(p,ns,seed,mines,shape,balanced) {
+    if(!shape || !mines || shape.givens.length>=ns.length-mines) return [];
     const {givens}=shape, opened=new Set(givens), config={...p,mines};
     const neighbors=givens.map(v=>ns[v].filter(u=>!opened.has(u)));
     const frontier=new Set(neighbors.flat()), outside=ns.length-givens.length-frontier.size;
@@ -2215,10 +2253,10 @@ function makeMinesEngine() {
     }
   }
 
-  function refine(p,board,report,start,compare,fits,hard,evaluate) {
+  function refine(p,board,report,start,compare,fits,hard,evaluate,maxTrials=5) {
     const {ns,mines,seed}=board, r=random(seed^0x579a);
     let best={board,report};
-    for(let trial=0;trial<5 && !fits(best.report);trial++) {
+    for(let trial=0;trial<maxTrials && !fits(best.report);trial++) {
       const view=opening(best.board), marks=new Set(), checkpoints=[];
       let run=0;
       for(const move of best.report.trace) {
@@ -2236,7 +2274,7 @@ function makeMinesEngine() {
           }
         }
         for(const v of move.commit?.mines??[]) marks.add(v);
-        for(const v of move.commit?.safe??[]) view[v]=best.board.clues[v];
+        for(const v of move.commit?.safe??[]) reveal(best.board,view,v,marks);
       }
       if(!checkpoints.length) break;
       checkpoints.sort((a,b)=>b.weight-a.weight);
@@ -2311,6 +2349,144 @@ function makeMinesEngine() {
     return {minAverage:2,minMultiPercent:30,minPeakClues:5};
   }
 
+  function continuationReplay(p,board,previous,point) {
+    const rounds=[], prefix=[];
+    let start;
+    if(point) {
+      const visible=point.visible.slice(), flags=new Set(point.flags);
+      for(const v of point.commit.mines) flags.add(v);
+      for(const v of point.commit.safe) {
+        flags.delete(v);
+        reveal(board,visible,v,flags);
+      }
+      start={visible,marks:flags};
+      // 交换保持检查点的公开数字和已确定格，因此到该轮提交为止可以复用原证明。
+      prefix.push(...previous.report.trace.slice(0,point.end));
+      for(const round of previous.rounds) {
+        rounds.push({...round});
+        if(round===point) break;
+      }
+    }
+    const replay=verify(board,p,{certify:true,trace:true,measureDifficulty:!point,...start,
+      observeRound:(visible,flags,state)=>rounds.push({visible:visible.slice(),flags:new Set(flags),state})});
+    if(replay.status!=='passed') return;
+    const trace=[...prefix,...replay.trace];
+    let roundIndex=0, stepStart=0, depth=0, linkedRounds=0, linked=false, currentLinks=new Map(), priorLinks=new Map();
+    let clues=0;
+    for(const [step,move] of trace.entries()) {
+      const round=rounds[roundIndex], prior=rounds[roundIndex-1], count=move.sources.length;
+      clues=Math.max(clues,count);
+      if(count>=3) {
+        for(const v of move.safe) {
+          let length=1;
+          // 只有上一轮尚不确定的格，才计入新数字解锁的下一层。
+          if(prior?.state[v]==='either') for(const source of move.sources) {
+            const previous=priorLinks.get(source);
+            if(previous && prior.visible[source]<0 && round.visible[source]>=0) length=Math.max(length,previous+1);
+          }
+          currentLinks.set(v,Math.max(currentLinks.get(v)??0,length));
+          linked||=length>1;
+          depth=Math.max(depth,length);
+        }
+      }
+      if(move.commit) {
+        Object.assign(round,{start:stepStart,end:step+1,commit:move.commit});
+        linkedRounds+=Number(linked);
+        priorLinks=currentLinks;
+        currentLinks=new Map();
+        linked=false;
+        stepStart=step+1;
+        roundIndex++;
+      }
+    }
+    const report=point?{...previous.report,trace,clues,steps:trace.length,
+      ...summarizeSupports(trace.map(move=>move.sources.length))}:replay;
+    return {board,report,rounds,depth,linkedRounds};
+  }
+
+  function continuationSwaps(board,{visible,flags,state}) {
+    const near=new Set(), groups=new Map(), signatures=[], mines=[], safe=[];
+    for(const [v,kind] of state.entries()) if(kind==='safe') for(const u of board.ns[v]) near.add(u);
+    for(const [v,kind] of state.entries()) {
+      if(kind!=='either' || flags.has(v)) continue;
+      // 每条线索占两位。两格相加不会进位，可查找互相抵消的两组交换。
+      const signature=board.ns[v].reduce((key,u)=>visible[u]>=0?key+(1n<<(2n*BigInt(u))):key,0n);
+      if(!groups.has(signature)) groups.set(signature,{mines:[],safe:[]});
+      const side=board.bombs[v]?'mines':'safe';
+      groups.get(signature)[side].push(v);
+      (board.bombs[v]?mines:safe).push(v);
+      signatures[v]=signature;
+    }
+    const singles=[...groups.values()].filter(g=>g.mines.length && g.safe.length);
+    const around=singles.filter(g=>g.mines.some(v=>near.has(v)) || g.safe.some(v=>near.has(v)));
+    const nearMines=mines.filter(v=>near.has(v)), nearSafe=safe.filter(v=>near.has(v));
+    return r=>{
+      const pick=list=>list[r(list.length)];
+      if(mines.length>=2 && safe.length>=2 && (!singles.length || r(3)===0)) {
+        for(let i=0;i<12;i++) {
+          const a=pick(nearMines.length && r(3)?nearMines:mines);
+          const b=pick(nearSafe.length && r(3)?nearSafe:safe);
+          const delta=signatures[a]-signatures[b];
+          if(!delta) continue;
+          // 小池遍历全部雷格，大池只抽样，限制单次交换成本。
+          const offset=r(mines.length);
+          for(let j=0;j<Math.min(24,mines.length);j++) {
+            const c=mines[(offset+j)%mines.length];
+            if(c===a) continue;
+            const other=groups.get(signatures[c]+delta)?.safe;
+            if(!other?.length || other.length===1 && other[0]===b) continue;
+            const index=r(other.length);
+            const d=other[index]===b?other[(index+1)%other.length]:other[index];
+            return [a,b,c,d];
+          }
+        }
+      }
+      if(!singles.length) return;
+      const group=pick(around.length && r(5)?around:singles);
+      const localMines=group.mines.filter(v=>near.has(v)), localSafe=group.safe.filter(v=>near.has(v));
+      if(localMines.length && (!localSafe.length || r(2))) return [pick(localMines),pick(group.safe)];
+      return [pick(group.mines),pick(localSafe.length?localSafe:group.safe)];
+    };
+  }
+
+  function* extendContinuations(p,board,seed,peak,known) {
+    const r=random(seed), base=continuationReplay(p,board);
+    if(!base) return;
+    const score=({report,depth,linkedRounds})=>5*report.advancedDensity+report.averageClues/2+
+      .26*Math.max(0,depth-1)+.08*Math.min(linkedRounds,6);
+    let current=base, currentScore=score(base);
+    const baseScore=currentScore;
+    const swaps=new WeakMap(), tried=new Set();
+    // 保留若干早期检查点，给开局解出来的第一批数字和后续数字都留出调整机会。
+    for(let trial=0;trial<240;trial++) {
+      const rounds=current.rounds.filter(round=>round.start<=current.report.steps*.65 && round.commit?.safe.length);
+      if(!rounds.length) return;
+      const count=trial%5===0?rounds.length:Math.min(rounds.length,6);
+      const point=rounds[trial%4===0?0:r(count)];
+      if(!swaps.has(point)) swaps.set(point,continuationSwaps(current.board,point));
+      const swap=swaps.get(point)(r);
+      if(!swap) {yield;continue;}
+      const bombs=current.board.bombs.slice(), clues=current.board.clues.slice();
+      for(const v of swap) {
+        bombs[v]=!bombs[v];
+        for(const u of board.ns[v]) clues[u]+=bombs[v]?1:-1;
+      }
+      const candidate={...current.board,bombs,clues};
+      const key=bombs.map(Number).join('');
+      if(tried.has(key) || known(candidate)) {yield;continue;}
+      tried.add(key);
+      const next=continuationReplay(p,candidate,current,point);
+      if(!next || next.report.clues<peak) {yield;continue;}
+      const nextScore=score(next);
+      if(nextScore>currentScore || trial%7===6 && nextScore>=currentScore-.12) {
+        current=next;
+        currentScore=nextScore;
+      }
+      if(trial%36===35 && currentScore<baseScore) {current=base;currentScore=baseScore;}
+      yield next;
+    }
+  }
+
   function generationRanking(p) {
     const defaults=difficultyDefaults();
     const target={average:p.minAverage??defaults.minAverage,multiPercent:p.minMultiPercent??defaults.minMultiPercent,
@@ -2345,12 +2521,44 @@ function makeMinesEngine() {
     return {initial,limit,lanesAt};
   }
 
+  function composeClueSearch(p,seed) {
+    const {peak}=generationRanking(p).target;
+    const area=p.w*p.h, maxSize=area-(p.mines??Math.max(1,Math.ceil(area*.16)))-1;
+    if(peak<6 || Math.min(p.w,p.h)<5 || maxSize<2 || p.mines===0) return;
+    const r=random(seed), blocks=new Map([[1,{geometry:{points:[[0,0]],w:1,h:1}}]]);
+    let largest=1, round=0, best, retryCeiling;
+    return ()=>{
+      const climbing=largest<=peak;
+      const ceiling=Math.min(maxSize,2*largest);
+      const target=climbing?retryCeiling??ceiling:peak+r(largest-peak+1);
+      const floor=climbing?Math.min(largest+1,target):peak;
+      const splitNearHalf=round++%3===2;
+      for(let count=target;count>=Math.max(floor,target-2);count--) {
+        const id=r(4294967296);
+        for(const balanced of [true,false]) {
+          const shape=composeClues(p,count,id,{blocks,balanced,preferLoops:balanced && Boolean(id&8),
+            splitNearHalf,placementBudget:30000});
+          if(!shape) continue;
+          const entry={target,shape,balanced};
+          blocks.set(count,shape);
+          if(count>=largest) {largest=count;best=entry;}
+          retryCeiling=undefined;
+          return entry;
+        }
+      }
+      // 一批最大目标放不下时，下轮从更小的未尝试规模继续，已拼出的子块保留。
+      if(climbing) retryCeiling=target-3>=floor?target-3:undefined;
+      return {target,shape:best?.shape,balanced:best?.balanced};
+    };
+  }
+
   function* generate(p,seed,onCandidate) {
     const {target,fits,compare,compareClosest}=generationRanking(p);
     const area=p.w*p.h, tiny=area===2 || p.w===2 && p.h===2;
     const required=Math.max(target.peak,Math.ceil(target.average),target.multiPercent>0?3:1);
-    // Besides opened digits, only the total mine count can add a clue.
-    if(area===1 || required>area || tiny && (required>1 || p.mines>0))
+    // 还有安全格未开时，可用的线索至多是已开数字加公开总雷数。
+    const maxClues=p.mines===0?1:area-(p.mines??1);
+    if(area===1 || required>maxClues || tiny && (required>1 || p.mines>0))
       throw Error('该尺寸和难度下限无法构造需要推理的棋局。请调低难度或增大棋盘。');
     const ns=adj(p.w,p.h), r=random(seed), seen=new Set();
     if(tiny) {
@@ -2369,9 +2577,13 @@ function makeMinesEngine() {
     const hard=target.average>standard.minAverage || target.multiPercent>standard.minMultiPercent || target.peak>standard.minPeakClues ?
       {multi:4*multi,peak:target.peak>standard.minPeakClues?.75:0} : null;
     const min=Math.max(1,Math.ceil(ns.length*.16)), max=Math.max(min,Math.floor(ns.length*.28));
+    const composeNext=composeClueSearch(p,seed^0x2795);
+    const linkRounds=target.peak>=10 && (target.multiPercent>=20 || target.average>=1.8);
     let passed=0, constructed=0, closest, closestMetrics;
+    let continuation, continuationAnchor;
+    const layoutKey=board=>board.opening.slice().sort((a,b)=>a-b)+':'+board.bombs.map(Number).join('');
     function duplicate(board) {
-      const key=board.opening.slice().sort((a,b)=>a-b)+':'+board.bombs.map(Number).join('');
+      const key=layoutKey(board);
       if(seen.has(key)) return true;
       if(seen.size>=4096) seen.delete(seen.values().next().value);
       seen.add(key);
@@ -2390,9 +2602,33 @@ function makeMinesEngine() {
       }
       return report;
     }
+    function improveLaterRounds(tried) {
+      if(!linkRounds || !closest || closest.report.clues<target.peak) return;
+      if(!continuation && continuationAnchor!==closest.board) {
+        continuationAnchor=closest.board;
+        continuation=extendContinuations(p,continuationAnchor,seed^tried,target.peak,board=>seen.has(layoutKey(board)));
+      }
+      if(!continuation) return;
+      // 高峰值构造与续接交替推进，让停止搜索仍可采用已经通过完整验证的候选。
+      for(let i=0;i<12;i++) {
+        const {value,done}=continuation.next();
+        if(done) {continuation=undefined;break;}
+        if(!value || !fits(value.report) && compareClosest(value.report,closest.report)>=0) continue;
+        const {board}=value;
+        if(duplicate(board)) continue;
+        constructed++;
+        const report=certify(board,tried);
+        if(report.status==='passed' && report.steps && fits(report)) {
+          return {board,report,target,tried,passed,constructed,route:'linked-rounds'};
+        }
+      }
+    }
     for(let k=1;;k++) {
       const id=r(4294967296), natural=min+r(max-min+1);
-      if(p.w===5 && p.h===5 && target.peak>=10 && target.peak<=11 && k%4!==0) {
+      const composition=composeNext?.();
+      const clueSize=composition?.shape?.givens.length??0;
+      const useStencil=target.peak<=11 || clueSize>=10 && k%4===1;
+      if(p.w===5 && p.h===5 && target.peak>=10 && useStencil && k%4!==0) {
         const shape=((seed>>>0)+k-1)%compactStencils.length;
         for(const board of compactCancellation(ns,id,p.mines,k,shape)) {
           constructed++;
@@ -2406,37 +2642,63 @@ function makeMinesEngine() {
       }
       const dense=random(id^0xd3ab);
       const denseRound=hard && k%4!==0 && k%3!==0;
-      const cycleRound=denseRound && target.peak>=6 && Math.min(p.w,p.h)>=5;
+      const cycleRound=denseRound && !!composeNext;
+      const cycleSize=target.peak<10?target.peak:Math.max(6,clueSize);
       const density=cycleRound ? .34+dense(41)/100 : .23+dense(26)/100;
-      const mines=p.mines??(denseRound?Math.round(ns.length*density):natural);
+      const sampledMines=denseRound?Math.round(ns.length*density):natural;
+      const mines=p.mines??(clueSize?Math.min(sampledMines,area-clueSize-1):sampledMines);
       // Give interior geometry most of the budget without forbidding edge patterns.
       const interior=!compact && k%4!==0;
       const route=compact || k>96 && k%8===0 ? openingPlans[((seed>>>0)+k-1)%openingPlans.length]:plan;
       const directed=hard && k%4!==0 ? hard : null;
       let starts=[];
       if(cycleRound) {
-        const length=2*Math.ceil(target.peak/2);
-        if(k%4===1) starts=seedCycle(p,ns,near,id,mines,length,false);
-        if(!starts.length) starts=seedCycle(p,ns,near,id,mines,length+2*(k%5),k%4===1);
+        const length=2*Math.ceil(cycleSize/2);
+        if(k%4===1 || target.peak>=10) starts=seedCycle(p,ns,near,id,mines,length,false);
+        if(!starts.length && target.peak<10) starts=seedCycle(p,ns,near,id,mines,length+2*(k%5),k%4===1);
       }
       const ringStarts=starts;
-      // 保留长环和传统构造的轮次，同时让不同种子探索不同拼接拓扑。
-      const balancedRound=target.peak>=10 && k%4===1;
-      const composed=target.peak>=6 && Math.min(p.w,p.h)>=5 && (balancedRound || k%4===3) ?
-        seedComposed(p,ns,balancedRound?id-id%2:id,mines,target.peak) : [];
-      if(!starts.length && (compact || directed && k%2===0)) starts=compactOverlap(p,ns,near,id,mines,!!directed);
-      if(!starts.length && (!compact || k%3===0 || directed)) starts=seedOpening(p,ns,near,id,mines,route,interior,compact);
-      if(compact && !starts.length) starts=seedCompact(p,ns,id,mines);
+      const composed=clueSize>=3 ? seedComposed(p,ns,id,mines,composition.shape,composition.balanced) : [];
       // 先尝试几种低成本续局，再交给通用构造器补足更高的多步难度。
-      for(const start of [...composed,...(target.peak>=12?ringStarts:[])]) for(const board of shapedCompletions(p,ns,mines,start,id)) {
+      const refineShaped=!linkRounds && directed && (target.average>1 || target.multiPercent>0);
+      function evaluateRefinement(refined) {
+        constructed++;
+        if(!duplicate(refined)) return certify(refined,k,true);
+      }
+      let shapedCandidate;
+      for(const start of [...composed,...(clueSize>=12?ringStarts:[])]) for(const board of shapedCompletions(p,ns,mines,start,id)) {
         if(duplicate(board)) continue;
         constructed++;
-        const report=certify(board,k);
-        if(report.status==='passed' && report.steps && fits(report)) {
-          yield {board,report,target,tried:k,passed,constructed,route:start.composed?'composed-transfer':'cycle-transfer'};
+        const report=certify(board,k,!!refineShaped);
+        if(report.status!=='passed' || !report.steps) continue;
+        if(fits(report)) {
+          yield {board,report:{...report,trace:[]},target,tried:k,passed,constructed,route:start.composed?'composed-transfer':'cycle-transfer'};
+          return;
+        }
+        if(refineShaped && report.clues>=target.peak &&
+          (!shapedCandidate || compareClosest(report,shapedCandidate.report)<0)) shapedCandidate={board,report,start};
+      }
+      const linked=improveLaterRounds(k);
+      if(linked) {yield linked;return;}
+      if(shapedCandidate) {
+        const {board,report,start}=shapedCandidate;
+        const candidate=refine(p,board,report,start,(a,b)=>Number(fits(b))-Number(fits(a)) || compareClosest(a,b),
+          fits,directed,evaluateRefinement,1);
+        if(fits(candidate.report)) {
+          yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,
+            route:start.composed?'composed-transfer':'cycle-transfer'};
           return;
         }
       }
+      // 大棋盘已有峰值达标的候选时，部分拼接轮只做快验和续接，通用轮仍深入构造。
+      const deferConstruction=continuation && area>256 && k%4!==1;
+      if(!compact && clueSize>0 && k%4!==0 && closest && (clueSize<target.peak || deferConstruction)) {
+        yield progress(k);
+        continue;
+      }
+      if(!starts.length && (compact || directed && k%2===0)) starts=compactOverlap(p,ns,near,id,mines,!!directed);
+      if(!starts.length && (!compact || k%3===0 || directed)) starts=seedOpening(p,ns,near,id,mines,route,interior,compact);
+      if(compact && !starts.length) starts=seedCompact(p,ns,id,mines);
       for(const start of [...composed,...starts]) {
         const board=construct(p,id,ns,mines,start,undefined,directed);
         if(!board) continue;
@@ -2444,10 +2706,7 @@ function makeMinesEngine() {
         if(duplicate(board) || start.givens.some(v=>start.view[v]!==board.clues[v])) continue;
         const report=certify(board,k,true);
         if(report.status==='passed' && report.steps) {
-          const candidate=fits(report)?{board,report}:refine(p,board,report,start,compare,fits,directed,refined=>{
-            constructed++;
-            if(!duplicate(refined)) return certify(refined,k,true);
-          });
+          const candidate=fits(report)?{board,report}:refine(p,board,report,start,compare,fits,directed,evaluateRefinement);
           if(fits(candidate.report)) {
             yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,route:start.composed?'composed-transfer':compact?'compact':route.kind};
             return;
@@ -2508,7 +2767,7 @@ function makeMinesEngine() {
     }
   }
 
-  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,transfer,enumerateNoGuess,composeClues,selectionTotals,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generationRanking,generationSchedule,generate};
+  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,transfer,enumerateNoGuess,composeClues,selectionTotals,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generationRanking,generationSchedule,composeClueSearch,generate};
 }
 
 if(typeof module!=='undefined') module.exports=makeMinesEngine();
