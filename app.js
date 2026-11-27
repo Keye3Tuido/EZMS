@@ -2119,6 +2119,7 @@
 
   const input = makeBoardInput({$,icon,say,sound:feedback.sound,canAct:()=>!!game && !worker && !pending && !auto && (editing || ready()),getGame:()=>game,changed:(cells,kind)=>{
     if(game) {
+      dismissSearchResult();
       if(editing) refreshDraftMarks();
       render();
       if(cells.length) feedback.tile(editing?'ink':'blue',buttons[cells.at(-1)]);
