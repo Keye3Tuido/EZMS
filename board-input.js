@@ -361,7 +361,8 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,confirmationChanged,s
       endStroke();
       if(symbol==='+' || symbol==='−') {level=Math.min(99,Math.max(2,level+(symbol==='+'?1:-1)));say(`拟定层级 ${level}`);}
       else {
-        selected=symbol;say(button.title);
+        selected=selected===symbol?'':symbol;
+        say(selected?button.title:'已取消记号工具。');
       }
       refresh();
     };

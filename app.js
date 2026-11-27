@@ -2039,8 +2039,8 @@
     suppressSelectionClick=false;
     if(!blocked) setRadial('selection',$('selectionFlower').inert);
   };
-  $('selectionAdd').onclick=()=>setSelectionMode('add');
-  $('selectionSubtract').onclick=()=>setSelectionMode('subtract');
+  $('selectionAdd').onclick=()=>setSelectionMode(selectionMode==='add'?'':'add');
+  $('selectionSubtract').onclick=()=>setSelectionMode(selectionMode==='subtract'?'':'subtract');
   $('selectionUndo').onclick=()=>{if(selectionHistory.undo()) refreshSelection();};
   $('selectionRedo').onclick=()=>{if(selectionHistory.redo()) refreshSelection();};
   $('closeProof').onclick = closeProof;
