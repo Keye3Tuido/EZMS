@@ -199,3 +199,36 @@ test('求解一步刷新提示时继续显示当前选中的提示类型',async(
     stageStep({status:'confirmed'});`).runInNewContext({display:(_a,weak)=>displays.push(weak)});
   assert.deepEqual(displays,[true]);
 });
+
+test('求解一步保持推理区折叠，主动查看推导仍可展开',async()=>{
+  const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
+  const runStep=new Script([
+    section('  async function requestHint(', '  function showReason('),
+    section("  $('apply').onclick =", "  $('commitMarks').dataset"),
+    `const game={};
+    let run=0, auto=false, pending, reasonCollapsed=true, proofMode, proofReturn;
+    let proofVisible=initiallyVisible;
+    const compactReason={matches:false};
+    function setReasonCollapsed(value){reasonCollapsed=value;}
+    function clearHint(visible){proofVisible=visible;}
+    async function next(){return {status:'confirmed'};}
+    async function stageStep(result){events.push(result.status);}
+    async function previewNextProof(mode){events.push(mode);}
+    ({collapsed:()=>reasonCollapsed,visible:()=>proofVisible,
+      showProof:()=>requestHint({},'hint')})`
+  ].join('\n'),{filename:'app.js'});
+  for(const initiallyVisible of [false,true]) {
+    const apply={}, events=[];
+    const state=runStep.runInNewContext({initiallyVisible,events,$:()=>apply,
+      ready:()=>true,manualStepAction:()=> 'stage',dismissSearchResult(){},clearSelection(){},render(){}});
+    apply.onclick();
+    await Promise.resolve();
+    assert.deepEqual(events,['confirmed']);
+    assert.equal(state.collapsed(),true);
+    assert.equal(state.visible(),initiallyVisible);
+    await state.showProof();
+    assert.equal(state.collapsed(),false);
+    assert.equal(state.visible(),true);
+    assert.deepEqual(events,['confirmed','hint']);
+  }
+});

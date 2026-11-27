@@ -1610,9 +1610,11 @@
     if(!ready() || auto || pending) return;
     dismissSearchResult();
     clearSelection();
-    if(!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
-    if(mode) proofMode=mode;
-    proofReturn=trigger;
+    if(mode) {
+      if(!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
+      proofMode=mode;
+      proofReturn=trigger;
+    }
     clearHint(!!mode || proofVisible);
     render();
     if(compactReason.matches && mode==='hint') $('closeProof').focus({preventScroll:true});
