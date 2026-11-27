@@ -75,7 +75,6 @@
   }
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
   const coord = i => format.coordinate(i,game.board.w);
-  const source = s => s === -1 ? '总雷数' : coord(s);
 
   function batchControls() {
     const batch=game?.manual, complete=!!batch?.done, live=ready();
@@ -1209,22 +1208,25 @@
     return node;
   }
 
-  function chip(indices, label, {clueRegion, description, weights} = {}) {
-    const vs = Array.isArray(indices) ? indices : [indices];
+  function chip(indices, label, {clueRegion, description, weights, total = indices === -1} = {}) {
+    const vs = indices === -1 ? [] : Array.isArray(indices) ? indices : [indices];
     const {w,h} = game.board;
-    const text = label ?? (vs[0] === -1 ? '总雷数' : format.label(vs,w,h,game.visible));
-    const button = element('button','proof-cell',text);
+    const text = label ?? (total ? '总雷数' : format.label(vs,w,h,game.visible));
+    const button = element('button','proof-cell');
     button.type = 'button';
-    if (clueRegion) button.classList.add('clue-region');
-    const total = vs[0] === -1;
-    proofTargets.set(button,proofPreview([[],[],[],total?[]:vs],total,weights));
+    if (clueRegion) {
+      button.classList.add('clue-region');
+      button.append(element('span','clue-coordinate',text));
+    } else button.textContent = text;
+    proofTargets.set(button,proofPreview([[],[],[],vs],total,weights));
     if (description) {
       button.title = description;
       button.setAttribute('aria-label',description);
     } else if (vs.length > 1) button.title = `${vs.length} 格的雷数`;
     button.onclick = () => {
-      if (total) { $('totalMines').scrollIntoView({block:'nearest'}); return; }
-      buttons[game.focus].tabIndex = -1;
+      if (total) { $('totalMines')?.scrollIntoView({block:'nearest'}); return; }
+      if (!buttons[vs[0]]) return;
+      if (buttons[game.focus]) buttons[game.focus].tabIndex = -1;
       game.focus = vs[0];
       buttons[game.focus].tabIndex = 0;
       buttons[game.focus].focus();
@@ -1286,45 +1288,78 @@
         return [prefix,term];
       });
     }
-    function appendIsolation(raw,sign,rhs,cell,value,sourceId) {
-      const {divisor,constant,terms,relation,bound,limit}=format.isolateConclusion(raw,sign,rhs,cell,value);
-      const isolated=format.terms(terms,groups);
-      const weights=new Map(terms);
-      const useUpperBound=value===0;
-      const factor=divisor===1?'':`1/${divisor} × `;
-      const formula=element('div','formula isolated-formula');
-      function step(symbol,...parts) {
-        const row=element('div','isolation-row');
-        const expression=element('div','isolation-expression');
-        expression.append(...parts);
-        row.append(element('span','operator',symbol),expression);
-        formula.append(row);
-      }
-      const start=`${factor}(${constant}`;
-      const symbolic=[start];
-      const bounded=[start];
-      for(const {coefficient,cells} of isolated) {
-        const operator=coefficient<0?'−':'+', magnitude=Math.abs(coefficient);
+    function chainRow(formula,operator,...parts) {
+      const row=element('div','formula-chain-row');
+      const expression=element('div','formula-chain-expression');
+      expression.append(...parts);
+      row.append(element('span','operator',operator),expression);
+      formula.append(row);
+    }
+    function termElements(terms,weights,leadingPlus=false) {
+      return terms.map(({coefficient,cells},i)=>{
         const token=element('span','formula-term');
-        token.append(`${operator} ${magnitude===1?'':magnitude+'·'}`,chip(cells,undefined,{weights}));
-        symbolic.push(token);
-        const boundCount=(coefficient>0)===useUpperBound?cells.length:0;
-        bounded.push(`${operator} ${magnitude*boundCount}`);
-      }
-      const exactLimit=limit%divisor===0?String(limit/divisor):`${limit}/${divisor}`;
-      step('',chip(cell,undefined,{weights:new Map([[cell,divisor]])}));
-      step(relation,...symbolic,')');
-      step(bound,`${bounded.join(' ')})`);
-      step('=',exactLimit);
-      const line=element('li',`proof-line ${value?'conclusion-mine':'conclusion-safe'}`);
-      proofRows.set(line,signedProofPreview(isolated,weights));
-      const marker=equationNumber(list.children.length+1);
+        if(i || leadingPlus || coefficient<0) token.append(element('span','operator',coefficient<0?'−':'+'));
+        if(Math.abs(coefficient)!==1) token.append(element('span','operator',`${Math.abs(coefficient)}·`));
+        token.append(chip(cells,undefined,{weights}));
+        return token;
+      });
+    }
+    function appendDerived(formula,kind,terms,weights,note,refs) {
+      const line=element('li',`proof-line conclusion-${kind}`);
+      proofRows.set(line,signedProofPreview(terms,weights));
+      const id=list.children.length+1, marker=equationNumber(id);
       marker.classList.add('equation-marker');
-      const note=element('small','proof-note');
-      note.append('由 ',equationNumber(sourceId),'，格子取值为 0 或 1');
-      line.append(marker,formula,note);
+      const explanation=element('small','proof-note');
+      explanation.append(...note);
+      line.append(marker,formula,explanation);
       list.append(line);
-      lines.push({keep:true,refs:[sourceId]});
+      lines.push({keep:true,refs});
+    }
+    function appendMixed(terms,weights,constant,fresh,sourceId) {
+      const a=terms.filter(term=>term.coefficient>0);
+      const b=terms.filter(term=>term.coefficient<0).map(term=>({...term,coefficient:-term.coefficient}));
+      if(fresh.some(([,value])=>value===1)) {
+        const aResult=element('div','formula formula-chain');
+        chainRow(aResult,'',...termElements(a,weights));
+        chainRow(aResult,'=',String(constant),...termElements(b,weights,true));
+        chainRow(aResult,'≥',String(constant));
+        appendDerived(aResult,'mine',terms,weights,
+          ['由 ',equationNumber(sourceId),`，减项非负，正项至多为 ${constant}`],[sourceId]);
+      }
+      if(fresh.some(([,value])=>value===0)) {
+        const reversedTerms=terms.map(term=>({...term,coefficient:-term.coefficient}));
+        const reversedWeights=new Map([...weights].map(([v,weight])=>[v,-weight]));
+        const bResult=element('div','formula formula-chain');
+        chainRow(bResult,'',...termElements(b,reversedWeights));
+        chainRow(bResult,'=',...termElements(a,reversedWeights),element('span','operator',`− ${constant}`));
+        chainRow(bResult,'≤','0');
+        appendDerived(bResult,'safe',reversedTerms,reversedWeights,
+          ['由 ',equationNumber(sourceId),`，正项至多为 ${constant}，减项非负，故为 0`],[sourceId]);
+      }
+    }
+    function appendIsolation(raw,sign,rhs,cells,value,sourceId) {
+      const {divisor,constant,terms,relation,bound,limit}=format.isolateConclusion(raw,sign,rhs,cells,value);
+      const isolated=format.terms(terms,groups.map(group=>group.filter(v=>!cells.includes(v))));
+      const signedTerms=[{cells,coefficient:divisor},
+        ...isolated.map(term=>({...term,coefficient:-term.coefficient}))];
+      const weights=new Map([...cells.map(v=>[v,divisor]),...terms.map(([v,c])=>[v,-c])]);
+      const factor=divisor===1?'':`1/${divisor} × `;
+      const formula=element('div','formula formula-chain');
+      const exactLimit=limit%divisor===0?String(limit/divisor):`${limit}/${divisor}`;
+      chainRow(formula,'',chip(cells,undefined,{weights}));
+      chainRow(formula,relation,`${factor}(${constant}`,...termElements(isolated,weights,true),')');
+      if(isolated.length) {
+        const substitutions=isolated.map(({coefficient,cells})=>{
+          const count=(coefficient>0)===(value===0)?cells.length:0;
+          return `${coefficient<0?'−':'+'} ${Math.abs(coefficient)*count}`;
+        });
+        chainRow(formula,bound,`${factor}(${[constant,...substitutions].join(' ')})`);
+        chainRow(formula,'=',exactLimit);
+      } else {
+        chainRow(formula,bound,exactLimit);
+      }
+      appendDerived(formula,value?'mine':'safe',signedTerms,weights,
+        ['由 ',equationNumber(sourceId),`，雷数为 0 至 ${cells.length} 的整数`],[sourceId]);
     }
     function add(raw, sign, rhs, note, sourceRow) {
       const {key,flipped}=format.lineIdentity(raw,sign,rhs);
@@ -1338,7 +1373,12 @@
       const grouping=fresh.length ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
       const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
       const weights=new Map(terms.flatMap(({cells,coefficient})=>cells.map(v=>[v,coefficient])));
-      const expanded=fresh.some(([v])=>Math.abs(weights.get(v))>1);
+      const mixed=sign==='=' && constant>0 && terms.some(t=>t.coefficient>0) && terms.some(t=>t.coefficient<0);
+      const positiveCapacity=terms.reduce((sum,{coefficient,cells})=>sum+Math.max(0,coefficient)*cells.length,0);
+      // When the positive side is at capacity, the subtracted side has to be zero.
+      const mixedConclusion=mixed && fresh.length>0 && positiveCapacity===constant;
+      const isolate=!mixedConclusion && fresh.some(([v])=>Math.abs(weights.get(v))>1);
+      const expanded=mixedConclusion || isolate;
       const line=element('li','proof-line'), formula=element('div','formula');
       for(const [v,value] of fresh) {
         if(!expanded) line.classList.add(value?'conclusion-mine':'conclusion-safe');
@@ -1349,20 +1389,15 @@
       const marker=equationNumber(id);
       marker.classList.add('equation-marker');
       if (sourceRow) {
+        formula.classList.add('clue-equation');
         const s=sourceRow.source, clueRegion=s>=0, name=clueRegion?coord(s):'全盘';
         const scope=clueRegion?`${name} 的邻域`:name;
-        formula.append(chip(sourceRow.vs,name,{clueRegion,
+        formula.append(chip(sourceRow.vs,name,{clueRegion,total:!clueRegion,
           description:`${scope}：${sourceRow.vs.length} 个格子计入本式`}),element('span','operator',`${sign} ${rhs}`));
       } else {
         if (constantFirst) formula.append(element('span','operator',`${constant} ${comparison}`));
         if (!terms.length) formula.append('0');
-        for (const [i,{coefficient,cells}] of terms.entries()) {
-          const token = element('span','formula-term');
-          if (i || coefficient < 0) token.append(element('span','operator',coefficient < 0 ? '−' : '+'));
-          if (Math.abs(coefficient) !== 1) token.append(element('span','operator',`${Math.abs(coefficient)}·`));
-          token.append(chip(cells,undefined,{weights}));
-          formula.append(token);
-        }
+        formula.append(...termElements(terms,weights));
         if (!constantFirst) formula.append(element('span','operator',`${comparison} ${constant}`));
       }
       proofRows.set(line,signedProofPreview(terms,weights));
@@ -1375,18 +1410,29 @@
       list.append(line);
       lines.push({keep:!expanded && fresh.length>0,refs:[...line.querySelectorAll('.proof-note [data-equation]')]
         .map(number=>Number(number.dataset.equation))});
-      if(expanded) for(const [v,value] of fresh) appendIsolation(raw,sign,rhs,v,value,id);
+      if(mixedConclusion) appendMixed(terms,weights,constant,fresh,id);
+      if(isolate) {
+        for(const value of [0,1]) {
+          const sameValue=fresh.filter(([,fixedValue])=>fixedValue===value);
+          const targetTerms=sameValue.map(([v])=>[v,weights.get(v)]);
+          const targetCells=new Set(targetTerms.map(([v])=>v));
+          const targetGroups=groups.map(group=>group.filter(v=>targetCells.has(v)));
+          for(const {cells} of format.terms(targetTerms,targetGroups)) {
+            appendIsolation(raw,sign,rhs,cells,value,id);
+          }
+        }
+      }
       const ref={id,reflected:constantFirst,exact:comparison==='=',flipped};
       emitted.set(key,ref);
       return ref;
     }
     for (const row of rows.values()) {
       const shown = row.source < 0 ? game.board.mines : game.visible[row.source];
-      const clue = chip(row.source,`${source(row.source)} · ${shown}`);
-      const note = [clue,shown === row.rhs ? '' : ` − ${shown-row.rhs} 雷`];
+      const details=[];
+      if (shown!==row.rhs) details.push(`扣除 ${shown-row.rhs} 个已知雷`);
       if ([...game.manual?.marked??[]].some(([v,kind])=>kind==='safe' &&
-        (row.source<0 || game.board.ns[row.source].includes(v)))) note.push('，已确认安全格计 0');
-      rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,note,row).id);
+        (row.source<0 || game.board.ns[row.source].includes(v)))) details.push('已确认安全格计 0');
+      rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,details.join('，'),row).id);
     }
     for(const m of batch.proofs) {
     const saturated=m.kind==='linear' && m.slack===0;
@@ -1478,7 +1524,8 @@
     panel.replaceChildren();
     if (!m) {
       game.highlight = null;
-      panel.textContent = a.status === 'confirmed' ? '本轮已无新的确定格。'
+      panel.textContent = a.status === 'confirmed' && game.manual?.done ? '本轮已标记完毕，可以开格并插旗。'
+        : a.status === 'confirmed' ? '本轮已无新的确定格。'
         : a.status === 'error' ? '推理提示计算失败，请重试。'
         : a.status === 'minimum-unavailable' ? '本次未能完成最少线索验证。'
         : a.status === 'batch-unavailable' ? '本次未能为这组线索的全部结论写出技巧证明。' : '现有技巧未找到下一步。';
@@ -1539,7 +1586,7 @@
 
   async function stageStep(a) {
     const g=game, task=run;
-    if(proofVisible) display(a,proofMode==='focus');
+    if(auto && proofVisible) display(a,proofMode==='focus');
     if(!a.move) return false;
     const judgment=await judge(g);
     if(task!==run || g!==game || !ready()) return false;
@@ -1621,8 +1668,13 @@
     render();
     if(compactReason.matches && mode==='hint') $('closeProof').focus({preventScroll:true});
     if(mode) return previewNextProof(mode);
-    const task=run, a=await next();
-    if(task===run && ready() && a) return stageStep(a);
+    const g=game, task=run, a=await next();
+    if(task!==run || g!==game || !ready() || !a) return;
+    const staged=await stageStep(a);
+    if(task!==run || g!==game || !ready() || !proofVisible) return;
+    if(!staged) { display(a,proofMode==='focus'); return; }
+    if(g.manual.done) { display({status:'confirmed'},proofMode==='focus'); return; }
+    return previewNextProof(proofMode);
   }
 
   function showReason(open,focus=false) {

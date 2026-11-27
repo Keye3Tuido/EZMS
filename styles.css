@@ -123,12 +123,17 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .formula { display: inline-flex; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; vertical-align: baseline; }
 .formula-term { display: inline-flex; align-items: baseline; gap: 3px; }
 .formula .proof-cell { color: #233e5c; background: #f0f5fb; font-size: 13px; overflow-wrap: anywhere; }
-.formula .clue-region { display: inline-grid; place-items: center; min-width: 2.4em; min-height: 2.4em; padding: 0 4px; border: 1px solid currentColor; border-radius: 50%; white-space: nowrap; }
+.proof-line .clue-region { gap: 3px; padding: 0; border: 0; background: transparent; }
+.clue-coordinate { display: inline-grid; place-items: center; min-inline-size: 2.2em; block-size: 2.2em; padding-inline: .3em; border: 1px solid currentColor; border-radius: 50%; white-space: nowrap; }
+.formula.clue-equation { padding: 2px 6px; border: 1px solid #be8b24; border-radius: 3px; background: #fff6dc; }
+.clue-equation .proof-cell { background: transparent; }
+.clue-region:hover .clue-coordinate, .clue-region:focus-visible .clue-coordinate { background: #f6e4ad; }
 .formula .operator { white-space: nowrap; }
-.isolated-formula { display: grid; align-items: start; gap: 3px; }
-.isolation-row { display: grid; grid-template-columns: 1em minmax(0,1fr); align-items: baseline; gap: 4px; }
-.isolation-expression { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; overflow-wrap: anywhere; }
-.isolation-expression .formula-term { min-width: 0; }
+.formula.formula-chain { display: grid; gap: 3px; }
+.formula-chain-row { display: grid; grid-template-columns: 1em minmax(0,1fr); align-items: baseline; gap: 4px; }
+.formula-chain-expression { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; overflow-wrap: anywhere; }
+.formula-chain-expression .formula-term { min-width: 0; }
+.formula-chain + .proof-note { display: inline-block; }
 .proof-note { margin-inline-start: 9px; color: var(--muted); font-size: 11px; }
 .proof-note .proof-cell { padding: 0 3px; font-size: inherit; }
 .proof-note .cancellation-chip { background: #f0f3f5; border-color: #c2ccd3; color: #4c5b65; }

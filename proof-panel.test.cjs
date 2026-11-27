@@ -43,25 +43,38 @@ class Node {
 function render(seed, confirmed=[], target) {
   const game=seeds.decode(seed), {board,visible,flags}=game;
   const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true,confirmed,target});
+  return {move,rows:renderMove(game,move,confirmed)};
+}
+
+function renderMove(game,move,confirmed=[]) {
+  const {board}=game;
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
+  const descendants=node=>node.children.flatMap(child=>[child,...descendants(child)]);
   const rows=renderer.runInNewContext({
     game:{...game,manual:{marked:new Map(confirmed)}}, move, engine, format, document:{createElement:()=>new Node()},
     proofTargets, proofRows,
-    coord:v=>format.coordinate(v,board.w), source:v=>v<0?'total':format.coordinate(v,board.w)
+    coord:v=>format.coordinate(v,board.w)
   }).children.map(row=>({
     formula:row.children[1].textContent,
+    chain:row.children[1].children.filter(node=>node.classes.has('formula-chain-row'))
+      .map(node=>node.children.map(part=>part.textContent)),
     note:row.children[2]?.textContent??'',
+    clueEquation:row.children[1].classes.has('clue-equation'),
+    clueCircles:row.children.slice(1).map(part=>part.children.flatMap(button=>
+      button.children.filter(child=>child.classes.has('clue-coordinate')).map(child=>({
+        coordinate:child.textContent,
+        preview:[...proofTargets.get(button).cells].sort((a,b)=>a-b)
+      })))),
     refs:row.querySelectorAll('.proof-note [data-equation]').map(ref=>Number(ref.textContent)),
     signedAreas:proofRows.has(row)?[...proofRows.get(row).areas.slice(1,3)].map(area=>[...area].sort((a,b)=>a-b)):undefined,
     weights:proofRows.has(row)?[...proofRows.get(row).weights].map(([v,c])=>[v,c]).sort(([a],[b])=>a-b):undefined,
-    derivation:row.children[1].children.filter(node=>node.classes.has('isolation-row')).map(node=>{
-      const [relation,expression]=node.children;
-      const chips=expression.children.flatMap(child=>proofTargets.has(child)?[child]:child.children.filter(child=>proofTargets.has(child)));
-      return {relation:relation.textContent,expression:expression.textContent,chips:chips.map(chip=>chip.textContent)};
-    }),
+    totalTargets:descendants(row.children[1]).filter(node=>proofTargets.get(node)?.total).map(node=>node.textContent),
+    formulaTargets:descendants(row.children[1]).filter(node=>proofTargets.has(node)).map(node=>({
+        label:node.textContent,cells:[...proofTargets.get(node).cells].sort((a,b)=>a-b)
+      })),
     safe:row.classes.has('conclusion-safe'), mine:row.classes.has('conclusion-mine')
   }));
-  return {move,rows};
+  return rows;
 }
 
 test('nine clue regions cancel in one equality after confirming C1:C3', () => {
@@ -75,17 +88,70 @@ test('nine clue regions cancel in one equality after confirming C1:C3', () => {
   assert.deepEqual(move.safe,[0,1,7,29,30,35]);
   assert.deepEqual(move.mines,[19]);
   assert.deepEqual(move.proofs.map(proof=>proof.kind),['linear']);
-  assert.equal(rows.length,10);
-  const conclusion=rows.at(-1);
-  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[conclusion]);
-  assert.deepEqual([conclusion.safe,conclusion.mine],[true,true]);
-  assert.deepEqual(conclusion.signedAreas,[[19],[0,1,7,29,30,35]]);
-  assert.equal(conclusion.formula,'1 =B4−A1:B2−F5:F6−A6');
-  assert.deepEqual(conclusion.refs.slice().sort((a,b)=>a-b),[1,2,3,4,5,6,7,8,9]);
+  assert.equal(rows.length,12);
+  for (const row of rows.slice(0,9)) {
+    assert.equal(row.clueEquation,true);
+    const [formulaClues,noteClues=[]]=row.clueCircles;
+    assert.equal(formulaClues.length,1);
+    assert.deepEqual(noteClues,[]);
+    const [{coordinate,preview}]=formulaClues;
+    assert.match(row.formula,new RegExp(`^${coordinate}= [0-8]$`));
+    assert.ok(row.note==='' || row.note==='已确认安全格计 0');
+    assert.ok(preview.length>0);
+    assert.deepEqual(preview,row.signedAreas[0]);
+  }
+  const [cancellation,mine,safe]=rows.slice(9);
+  assert.equal(cancellation.clueEquation,false);
+  assert.deepEqual(cancellation.clueCircles,[[],[]]);
+  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[mine,safe]);
+  assert.deepEqual(cancellation.signedAreas,[[19],[0,1,7,29,30,35]]);
+  assert.equal(cancellation.formula,'1 =B4−A1:B2−F5:F6−A6');
+  assert.deepEqual(cancellation.refs.slice().sort((a,b)=>a-b),[1,2,3,4,5,6,7,8,9]);
+  assert.equal(mine.mine,true);
+  assert.deepEqual(mine.chain,[['','B4'],['=','1+A1:B2+F5:F6+A6'],['≥','1']]);
+  assert.deepEqual(mine.signedAreas,cancellation.signedAreas);
+  assert.deepEqual(mine.refs,[10]);
+  assert.equal(safe.safe,true);
+  assert.deepEqual(safe.chain,[['','A1:B2+F5:F6+A6'],['=','B4− 1'],['≤','0']]);
+  assert.deepEqual(safe.signedAreas,[[0,1,7,29,30,35],[19]]);
+  assert.deepEqual(safe.weights,[[0,1],[1,1],[7,1],[19,-1],[29,1],[30,1],[35,1]]);
+  assert.deepEqual(safe.formulaTargets.map(({label})=>label),['A1:B2','F5:F6','A6','B4']);
+  assert.deepEqual(safe.refs,[10]);
+  assert.match(safe.note,/正项至多为 1/);
   const mineHint=render(seed,confirmed,19);
   assert.equal(mineHint.move.sources.length,9);
   assert.deepEqual(mineHint.move.proofs.map(proof=>proof.kind),['linear']);
   assert.deepEqual(mineHint.rows,rows);
+});
+
+test('equivalent weighted targets share one isolation formula and one region preview', () => {
+  const {move,rows}=render('J:eVyiz!}');
+  assert.deepEqual(move.safe,[2,8,14]);
+  const conclusion=rows.at(-1);
+  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[conclusion]);
+  assert.deepEqual(conclusion.chain.map(([operator])=>operator),['','=','≤','=']);
+  assert.equal(conclusion.chain[0][1],'C1:C3');
+  assert.match(conclusion.chain[1][1],/^1\/2 × \(1.*\)$/);
+  assert.match(conclusion.chain[2][1],/^1\/2 × \(1(?: [−+] 0)+\)$/);
+  assert.equal(conclusion.chain[3][1],'1/2');
+  assert.deepEqual(conclusion.formulaTargets[0],{label:'C1:C3',cells:[2,8,14]});
+  assert.ok(conclusion.formulaTargets.slice(1).every(({cells})=>cells.every(v=>!move.safe.includes(v))));
+  assert.deepEqual(conclusion.refs,[rows.length-1]);
+  assert.equal(rows[0].formula,'全盘= 8');
+  assert.deepEqual(rows[0].totalTargets,['全盘']);
+  assert.deepEqual(rows[0].formulaTargets,[{label:'全盘',cells:rows[0].signedAreas[0]}]);
+  assert.ok(rows.slice(1).every(row=>!row.totalTargets.length));
+  assert.equal(rows[0].note,'');
+  assert.equal(rows[0].clueEquation,true);
+});
+
+test('a clue that subtracts a confirmed mine states only the adjustment', () => {
+  const {rows}=render('J:eVyiz!}',[[2,'safe'],[8,'safe'],[14,'safe'],[19,'mine']]);
+  const clue=rows.find(row=>row.formula.startsWith('A4='));
+  assert.equal(clue.formula,'A4= 2');
+  assert.equal(clue.note,'扣除 1 个已知雷');
+  assert.deepEqual(clue.clueCircles[1],[]);
+  assert.ok(!clue.clueCircles[0][0].preview.includes(19));
 });
 
 test('one mixed equality replaces a separate rounding proof of the same cells', () => {
@@ -93,32 +159,32 @@ test('one mixed equality replaces a separate rounding proof of the same cells', 
   assert.deepEqual(move.safe,[12,16,17,18]);
   assert.deepEqual(move.mines,[0]);
   assert.deepEqual(move.proofs.map(p=>p.kind),['linear']);
-  assert.equal(rows.length,5);
-  const conclusion=rows[4];
-  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[rows[4]]);
-  assert.equal(conclusion.formula,'1 =A1−A4:C5');
-  assert.deepEqual([conclusion.safe,conclusion.mine],[true,true]);
-  assert.deepEqual(conclusion.refs.slice().sort(),[1,2,3,4]);
+  assert.equal(rows.length,7);
+  const [cancellation,mine,safe]=rows.slice(4);
+  assert.deepEqual(rows.filter(row=>row.safe||row.mine),[mine,safe]);
+  assert.equal(cancellation.formula,'1 =A1−A4:C5');
+  assert.deepEqual(cancellation.refs.slice().sort(),[1,2,3,4]);
+  assert.deepEqual(mine.chain,[['','A1'],['=','1+A4:C5'],['≥','1']]);
+  assert.deepEqual(safe.chain,[['','A4:C5'],['=','A1− 1'],['≤','0']]);
   assert.ok(rows.every(row=>!row.note.includes('÷ 2')));
 });
 
-test('a weighted conclusion previews the symbolic right-hand side and ends at the numeric bound', () => {
+test('a weighted conclusion previews all signed cells and ends at the numeric bound', () => {
   const {rows}=render("C('JKn6a1FFf31{");
   const [original,isolated]=rows.slice(-2);
   assert.match(original.formula,/2·E2/);
   assert.deepEqual([original.safe,original.mine],[false,false]);
   assert.deepEqual(original.signedAreas,[[3,4,8,9,15,20,21],[11]]);
   assert.deepEqual([isolated.safe,isolated.mine],[true,false]);
-  assert.deepEqual(isolated.signedAreas,[[11],[3,4,8,15,20,21]]);
-  assert.deepEqual(isolated.weights,[[3,-1],[4,-1],[8,-1],[11,1],[15,-1],[20,-1],[21,-1]]);
-  assert.deepEqual(isolated.derivation.map(row=>row.relation),['', '=', '≤', '=']);
-  const [target,symbolic,bound,limit]=isolated.derivation;
-  assert.deepEqual(target.chips,['E2']);
-  assert.match(symbolic.expression,/^1\/2 × \(0.*\)$/);
-  assert.ok(symbolic.chips.includes('B3'));
-  assert.match(bound.expression,/^1\/2 × \(0.*\)$/);
-  assert.deepEqual(bound.chips,[]);
-  assert.equal(limit.expression,'1/2');
+  assert.deepEqual(isolated.signedAreas,original.signedAreas);
+  assert.deepEqual(isolated.weights,[[3,1],[4,1],[8,1],[9,2],[11,-1],[15,1],[20,1],[21,1]]);
+  assert.deepEqual(isolated.formulaTargets[0],{label:'E2',cells:[9]});
+  assert.ok(isolated.formulaTargets.some(({label})=>label==='B3'));
+  assert.deepEqual(isolated.chain.map(([operator])=>operator),['','=','≤','=']);
+  assert.equal(isolated.chain[0][1],'E2');
+  assert.match(isolated.chain[1][1],/^1\/2 × \(0.*\)$/);
+  assert.match(isolated.chain[2][1],/^1\/2 × \(0 \+ 1(?: − 0)+\)$/);
+  assert.equal(isolated.chain[3][1],'1/2');
   assert.deepEqual(isolated.refs,[rows.length-1]);
 });
 
@@ -215,44 +281,44 @@ test('提交后自动刷新的线索可立即关闭，取消后不渲染旧结�
   assert.deepEqual(events,['terminate']);
 });
 
-test('求解一步刷新提示时继续显示当前选中的提示类型',async()=>{
+test('求解一步落红标后按新局面刷新，并保留原模式和折叠状态',async()=>{
+  const request=source.slice(source.indexOf('  async function requestHint('),source.indexOf('  function showReason('));
   const stage=source.slice(source.indexOf('  async function stageStep('),source.indexOf('  function pauseSolve()'));
-  const displays=[];
-  await new Script(`${stage}
-    let game, run=0, proofVisible=true, proofMode='focus';
-    stageStep({status:'confirmed'});`).runInNewContext({display:(_a,weak)=>displays.push(weak)});
-  assert.deepEqual(displays,[true]);
-});
-
-test('求解一步保持推理区折叠，主动查看推导仍可展开',async()=>{
-  const section=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
-  const runStep=new Script([
-    section('  async function requestHint(', '  function showReason('),
-    section("  $('apply').onclick =", "  $('commitMarks').dataset"),
-    `const game={};
-    let run=0, auto=false, pending, reasonCollapsed=true, proofMode, proofReturn;
+  const script=new Script([request,stage,
+    `const game={flags:new Set()}, events=[];
+    let run=0, auto=false, pending, reasonCollapsed=true, proofMode=initialMode, proofReturn;
     let proofVisible=initiallyVisible;
     const compactReason={matches:false};
     function setReasonCollapsed(value){reasonCollapsed=value;}
-    function clearHint(visible){proofVisible=visible;}
-    async function next(){return {status:'confirmed'};}
-    async function stageStep(result){events.push(result.status);}
-    async function previewNextProof(mode){events.push(mode);}
-    ({collapsed:()=>reasonCollapsed,visible:()=>proofVisible,
-      showProof:()=>requestHint({},'hint')})`
+    function clearHint(visible){proofVisible=visible;events.push(['clear',visible]);}
+    async function next(){return {move:{safe:[0],mines:[]}};}
+    async function judge(){return {status:'complete',state:['safe']};}
+    function makeManualBatch(){
+      return {done:false,marked:new Map(),recordStep(safe){this.marked.set(safe[0],'safe');this.done=roundDone;}};
+    }
+    function showMarks(){events.push(['marked', [...game.manual.marked]]);if(closeWhileStaging) proofVisible=false;}
+    function display(result,weak){events.push(['display',result.status,weak]);}
+    async function previewNextProof(mode){events.push(['preview',mode,[...game.manual.marked]]);}
+    ({events, collapsed:()=>reasonCollapsed, visible:()=>proofVisible, request:mode=>requestHint({},mode)})`
   ].join('\n'),{filename:'app.js'});
-  for(const initiallyVisible of [false,true]) {
-    const apply={}, events=[];
-    const state=runStep.runInNewContext({initiallyVisible,events,$:()=>apply,
-      ready:()=>true,manualStepAction:()=> 'stage',dismissSearchResult(){},clearSelection(){},render(){}});
-    apply.onclick();
-    await Promise.resolve();
-    assert.deepEqual(events,['confirmed']);
+  const scenarios=[
+    {initiallyVisible:true,initialMode:'hint',expected:[['clear',true],['marked',[[0,'safe']]],['preview','hint',[[0,'safe']]]]},
+    {initiallyVisible:true,initialMode:'focus',expected:[['clear',true],['marked',[[0,'safe']]],['preview','focus',[[0,'safe']]]]},
+    {initiallyVisible:true,initialMode:'hint',roundDone:true,expected:[['clear',true],['marked',[[0,'safe']]],['display','confirmed',false]]},
+    {initiallyVisible:false,expected:[['clear',false],['marked',[[0,'safe']]]]},
+    {initiallyVisible:true,closeWhileStaging:true,expected:[['clear',true],['marked',[[0,'safe']]]]}
+  ];
+  for(const {expected,...scenario} of scenarios) {
+    const state=script.runInNewContext({roundDone:false,closeWhileStaging:false,initialMode:undefined,engine:{},
+      ready:()=>true,dismissSearchResult(){},clearSelection(){},render(){},...scenario});
+    await state.request();
+    assert.deepEqual(JSON.parse(JSON.stringify(state.events)),expected);
     assert.equal(state.collapsed(),true);
-    assert.equal(state.visible(),initiallyVisible);
-    await state.showProof();
-    assert.equal(state.collapsed(),false);
-    assert.equal(state.visible(),true);
-    assert.deepEqual(events,['confirmed','hint']);
+    assert.equal(state.visible(),scenario.initiallyVisible&&!scenario.closeWhileStaging);
+    if(!scenario.initiallyVisible) {
+      await state.request('hint');
+      assert.equal(state.collapsed(),false);
+      assert.equal(state.visible(),true);
+    }
   }
 });

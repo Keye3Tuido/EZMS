@@ -143,11 +143,12 @@ function makeProofFormat() {
       : Math.abs(c)>above ? [[v,Number(c>0)]] : []);
   }
 
-  function isolateConclusion(raw,sign,rhs,cell,value) {
-    const [,weight]=raw.find(([v])=>v===cell);
+  function isolateConclusion(raw,sign,rhs,cells,value) {
+    const targets=new Set(Array.isArray(cells)?cells:[cells]);
+    const [,weight]=raw.find(([v])=>targets.has(v));
     const direction=Math.sign(weight);
     const divisor=Math.abs(weight), constant=direction*rhs;
-    const terms=raw.filter(([v])=>v!==cell).map(([v,c])=>[v,-direction*c]);
+    const terms=raw.filter(([v])=>!targets.has(v)).map(([v,c])=>[v,-direction*c]);
     const upper=value===0, bound=upper?'≤':'≥';
     const strict=sign==='<' || sign==='>';
     const relation=sign==='='?'=':strict?(upper?'<':'>'):bound;
