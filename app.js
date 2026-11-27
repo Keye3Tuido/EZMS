@@ -426,13 +426,14 @@
     const step=Math.min(tile,height);
     const grid={x:left-dx/2,y:top-dy/2,dx,dy,radius:Math.min(6,step*.16),inset:Math.min(1.75,step*.1)};
     const paths=document.createDocumentFragment();
-    const {areas}=activeAreaPreview;
-    const append=(kind,d)=>{
+    const {areas,selectionWeights}=activeAreaPreview;
+    const append=(kind,d,parent=paths)=>{
       const path=document.createElementNS(proofDrawing.namespaceURI,'path');
       path.setAttribute('class',kind);
       path.setAttribute('d',d);
       path.setAttribute('fill-rule','evenodd');
-      paths.append(path);
+      parent.append(path);
+      return path;
     };
     for(const [i,kind] of proofKinds.entries()) {
       const cells=areas[i];
@@ -440,6 +441,30 @@
       const opposite={positive:2,negative:1,'selection-positive':5,'selection-negative':4}[kind];
       const d=regionSelection.contour(cells,w,h,grid,areas[opposite]);
       append(kind,d);
+      if(selectionWeights) {
+        const shades=new Map();
+        for(const cell of cells) {
+          const magnitude=Math.abs(selectionWeights.get(cell));
+          if(magnitude<=1) continue;
+          const x=grid.x+(cell%w)*dx, y=grid.y+Math.floor(cell/w)*dy;
+          const square=`M${x},${y}H${x+dx}V${y+dy}H${x}Z`;
+          shades.set(magnitude,(shades.get(magnitude)??'')+square);
+        }
+        if(shades.size) {
+          // Clip the shading to the shared contour so adjacent weights do not create extra borders.
+          const clip=document.createElementNS(proofDrawing.namespaceURI,'clipPath');
+          const shading=document.createElementNS(proofDrawing.namespaceURI,'g');
+          const clipId=`${kind}-clip`;
+          clip.setAttribute('id',clipId);
+          append('',d,clip).setAttribute('clip-rule','evenodd');
+          shading.setAttribute('clip-path',`url(#${clipId})`);
+          for(const [magnitude,squares] of shades) {
+            const opacity=.66*(magnitude-1)/(magnitude+1);
+            append(`${kind}-shade`,squares,shading).setAttribute('fill-opacity',opacity);
+          }
+          paths.append(clip,shading);
+        }
+      }
       if(kind==='element') append('element-hatch',d);
       append(`${kind} boundary`,d);
     }
@@ -537,8 +562,9 @@
   }
 
   function selectionPreview() {
-    const {positive,negative}=regionSelection.bounds(selectionUnknownWeights(),new Map());
-    return proofPreview([[],[],[],[],positive,negative]);
+    const selectionWeights=selectionUnknownWeights();
+    const {positive,negative}=regionSelection.bounds(selectionWeights,new Map());
+    return {...proofPreview([[],[],[],[],positive,negative]),selectionWeights};
   }
 
   function selectionKnown() {

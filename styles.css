@@ -518,6 +518,8 @@ input, select { background: #fcfcfe; }
 }
 .board-proof :is(.positive,.selection-positive) { fill: #a975e9; fill-opacity: .38; }
 .board-proof :is(.negative,.selection-negative) { fill: #f1ce46; fill-opacity: .44; }
+.board-proof .selection-positive-shade { fill: #7b35c2; }
+.board-proof .selection-negative-shade { fill: #a87909; }
 .board-proof .cancelled { fill: #8799a6; fill-opacity: .32; }
 .board-proof .element { fill: #91c0ff; fill-opacity: .52; }
 .board-proof .element-hatch { fill: url(#proof-hatch); }
