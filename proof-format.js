@@ -119,11 +119,12 @@ function makeProofFormat() {
       area.both|=c>0?1:2;
       covered.set(cell,area);
     }
-    const result={cancelled:[],positive:[],negative:[]};
+    const result={cancelled:[],positive:[],negative:[],weights:new Map()};
     for (const [cell,{net,both}] of covered) {
-      if (net>0) result.positive.push(cell);
-      else if (net<0) result.negative.push(cell);
-      else if (both===3) result.cancelled.push(cell);
+      if (net) {
+        result.weights.set(cell,net);
+        (net>0?result.positive:result.negative).push(cell);
+      } else if (both===3) result.cancelled.push(cell);
     }
     return result;
   }
@@ -140,6 +141,18 @@ function makeProofFormat() {
     // Leaving either extreme costs the absolute weight of the cell.
     return raw.flatMap(([v,c])=>Math.abs(c)>below ? [[v,Number(c<0)]]
       : Math.abs(c)>above ? [[v,Number(c>0)]] : []);
+  }
+
+  function isolateConclusion(raw,sign,rhs,cell,value) {
+    const [,weight]=raw.find(([v])=>v===cell);
+    const direction=Math.sign(weight);
+    const divisor=Math.abs(weight), constant=direction*rhs;
+    const terms=raw.filter(([v])=>v!==cell).map(([v,c])=>[v,-direction*c]);
+    const upper=value===0, bound=upper?'≤':'≥';
+    const strict=sign==='<' || sign==='>';
+    const relation=sign==='='?'=':strict?(upper?'<':'>'):bound;
+    const limit=terms.reduce((sum,[,c])=>sum+(upper?Math.max(0,c):Math.min(0,c)),constant);
+    return {divisor,constant,terms,relation,bound,limit};
   }
 
   const rounding = reflected => reflected ? '向上取整' : '向下取整';
@@ -176,7 +189,7 @@ function makeProofFormat() {
     return [...needed].sort((a,b)=>a-b);
   }
 
-  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,fixedCells,rounding,simplifyInequality,lineIdentity,usedLines};
+  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,fixedCells,isolateConclusion,rounding,simplifyInequality,lineIdentity,usedLines};
 }
 
 if (typeof module !== 'undefined') module.exports = makeProofFormat();

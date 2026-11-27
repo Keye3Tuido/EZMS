@@ -43,14 +43,22 @@ class Node {
 function render(seed) {
   const game=seeds.decode(seed), {board,visible,flags}=game;
   const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true});
+  const proofTargets=new WeakMap(), proofRows=new WeakMap();
   const rows=renderer.runInNewContext({
     game, move, engine, format, document:{createElement:()=>new Node()},
-    proofTargets:new WeakMap(), proofRows:new WeakMap(),
+    proofTargets, proofRows,
     coord:v=>format.coordinate(v,board.w), source:v=>v<0?'total':format.coordinate(v,board.w)
   }).children.map(row=>({
     formula:row.children[1].textContent,
     note:row.children[2]?.textContent??'',
     refs:row.querySelectorAll('.proof-note [data-equation]').map(ref=>Number(ref.textContent)),
+    answerOnly:row.classes.has('proof-answer-only'),
+    signedAreas:proofRows.get(row)?.areas.slice(1,3).map(area=>area.size),
+    derivation:row.children[1].children.filter(node=>node.classes.has('isolation-row')).map(node=>{
+      const [relation,expression]=node.children;
+      const chips=expression.children.flatMap(child=>proofTargets.has(child)?[child]:child.children.filter(child=>proofTargets.has(child)));
+      return {relation:relation.textContent,expression:expression.textContent,chips:chips.map(chip=>chip.textContent)};
+    }),
     safe:row.classes.has('conclusion-safe'), mine:row.classes.has('conclusion-mine')
   }));
   return {move,rows};
@@ -68,6 +76,25 @@ test('one mixed equality replaces a separate rounding proof of the same cells', 
   assert.deepEqual([conclusion.safe,conclusion.mine],[true,true]);
   assert.deepEqual(conclusion.refs.slice().sort(),[1,2,3,4]);
   assert.ok(rows.every(row=>!row.note.includes('÷ 2')));
+});
+
+test('a weighted conclusion ends its isolation steps at the numeric bound', () => {
+  const {rows}=render("C('JKn6a1FFf31{");
+  const [original,isolated]=rows.slice(-2);
+  assert.match(original.formula,/2·E2/);
+  assert.deepEqual([original.answerOnly,original.safe,original.mine],[false,false,false]);
+  assert.ok(original.signedAreas.every(size=>size>0));
+  assert.deepEqual([isolated.answerOnly,isolated.safe,isolated.mine],[true,true,false]);
+  assert.equal(isolated.signedAreas,undefined);
+  assert.deepEqual(isolated.derivation.map(row=>row.relation),['', '=', '≤', '=']);
+  const [target,symbolic,bound,limit]=isolated.derivation;
+  assert.deepEqual(target.chips,['E2']);
+  assert.match(symbolic.expression,/^1\/2 × \(0.*\)$/);
+  assert.ok(symbolic.chips.includes('B3'));
+  assert.match(bound.expression,/^1\/2 × \(0.*\)$/);
+  assert.deepEqual(bound.chips,[]);
+  assert.equal(limit.expression,'1/2');
+  assert.deepEqual(isolated.refs,[rows.length-1]);
 });
 
 test('a shared bound and separate formulas survive when each conclusion adds cells', () => {

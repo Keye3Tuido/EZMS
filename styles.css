@@ -117,9 +117,8 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .targets .proof-cell { color: inherit; border-color: #a4bfb5; }
 .mine .targets .proof-cell { border-color: #d4a2af; }
 .proof-detail { padding-top: 9px; margin-top: 10px; border-top: 1px solid var(--line); }
-.proof-steps { margin: 9px 0 0; padding: 0 0 0 24px; }
+.proof-steps { margin: 9px 0 0; padding: 0 0 0 24px; list-style: none; }
 .proof-line { position: relative; padding: 4px 0; }
-.proof-line::marker { content: ''; }
 .equation-number { display: inline-block; min-width: 1.25em; height: 1.25em; padding-inline: .13em; border: 1px solid currentColor; border-radius: 1em; text-align: center; font: 600 10px/1.1 ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .equation-marker { position: absolute; inset-inline-end: 100%; margin-inline-end: 3px; top: 8px; color: var(--muted); }
 .equation-ref { white-space: nowrap; }
@@ -129,6 +128,10 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .formula .proof-cell { color: #233e5c; background: #f0f5fb; font-size: 13px; overflow-wrap: anywhere; }
 .formula .clue-region { display: inline-grid; place-items: center; min-width: 2.4em; min-height: 2.4em; padding: 0 4px; border: 1px solid currentColor; border-radius: 50%; white-space: nowrap; }
 .formula .operator { white-space: nowrap; }
+.isolated-formula { display: grid; align-items: start; gap: 3px; }
+.isolation-row { display: grid; grid-template-columns: 1em minmax(0,1fr); align-items: baseline; gap: 4px; }
+.isolation-expression { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; overflow-wrap: anywhere; }
+.isolation-expression .formula-term { min-width: 0; }
 .proof-note { margin-inline-start: 9px; color: var(--muted); font-size: 11px; }
 .proof-note .proof-cell { padding: 0 3px; font-size: inherit; }
 .proof-note .cancellation-chip { background: #f0f3f5; border-color: #c2ccd3; color: #4c5b65; }
@@ -289,7 +292,7 @@ input, select { background: #fcfcfe; }
 .board { --grid-gap: 4px; --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 65px) / var(--rows) - var(--grid-gap))), 56px); }
 .cell { --press: .92; border-radius: 5px; font-size: min(21px, calc(var(--tile) * .5)); }
 .cell.covered { background: #c6d0e4; border: 1px solid #98a7c1; box-shadow: inset 0 -3px #aab8d2; }
-.cell.covered:hover:not(:is(.clue,.edit-mine,.target-safe,.target-mine,.proof-preview)) { background: #d6dfef; }
+.cell.covered:hover:not(:is(.clue,.edit-mine,.target-safe,.target-mine,.proof-preview,.weighted-confirmation)) { background: #d6dfef; }
 .cell.open { background: #fff; border-color: #c8d1df; }
 .cell.open:hover:not(:is(.clue,.edit-mine,.target-safe,.target-mine,.proof-preview)) { background: #f1f5ff; }
 .cell.first.open { box-shadow: inset 0 0 0 1px #a6b5cf; }
@@ -371,6 +374,9 @@ input, select { background: #fcfcfe; }
 .cell.clue { background: #fff1c8; }
 .cell.target-safe:not(.proof-preview) { outline: 3px solid #168971; outline-offset: -3px; background: repeating-linear-gradient(135deg,#16897120 0 2px,transparent 2px 7px), #d3ede1; box-shadow: inset 0 -3px #16897140; }
 .cell.target-mine:not(.proof-preview) { outline: 3px solid #a32b44; outline-offset: -3px; background: repeating-linear-gradient(45deg,#a32b4424 0 2px,transparent 2px 7px), #f7e0e5; box-shadow: inset 0 -3px #a32b4440; }
+.cell.target-safe:not(.proof-preview) { background-color: color-mix(in srgb,#d3ede1,#168971 var(--hint-depth,0%)); }
+.cell.target-mine:not(.proof-preview) { background-color: color-mix(in srgb,#f7e0e5,#a32b44 var(--hint-depth,0%)); }
+.cell.weighted-confirmation:not(.proof-preview,.target-safe,.target-mine) { background-color: color-mix(in srgb,#c6d0e4,#b71b41 var(--hint-depth)); }
 .cell:focus-visible { outline: 2px solid #143e96; outline-offset: -2px; }
 .cell.proof-preview { outline: none; box-shadow: none; }
 .reason-status { border-top: 1px solid #b1bcb2; padding-top: 11px; }
@@ -518,8 +524,9 @@ input, select { background: #fcfcfe; }
 }
 .board-proof :is(.positive,.selection-positive) { fill: #a975e9; fill-opacity: .38; }
 .board-proof :is(.negative,.selection-negative) { fill: #f1ce46; fill-opacity: .44; }
-.board-proof .selection-positive-shade { fill: #7b35c2; }
-.board-proof .selection-negative-shade { fill: #a87909; }
+.board-proof :is(.positive-shade,.selection-positive-shade) { fill: #7b35c2; }
+.board-proof :is(.negative-shade,.selection-negative-shade) { fill: #a87909; }
+.board-proof .element-shade { fill: #2466cf; }
 .board-proof .cancelled { fill: #8799a6; fill-opacity: .32; }
 .board-proof .element { fill: #91c0ff; fill-opacity: .52; }
 .board-proof .element-hatch { fill: url(#proof-hatch); }

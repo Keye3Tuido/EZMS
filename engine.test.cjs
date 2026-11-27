@@ -14,6 +14,8 @@ test('position seed preserves mine positions, open clues, flags and red marks, b
   const manual={marked:new Map([[4,'safe'],[0,'mine']])};
   const seed=positionSeeds.encode({...position,flags:new Set(position.flags),notes,manual});
   assert.equal(seed,positionSeeds.encode({...position,notes:{layers:{red}},manual}));
+  const weighted={...manual,weights:new Map([[4,-2],[0,3]])};
+  assert.equal(positionSeeds.encode({...position,notes,manual:weighted}),seed);
   const restored=positionSeeds.decode(`  ${seed}\n`);
   assert.match(seed,/^[\x21\x23-\x5b\x5d-\x7e]+$/);
   assert.deepEqual(restored.board,position.board);
@@ -1226,9 +1228,13 @@ test('coincident references combine and cancelled terms disappear', () => {
 });
 
 test('only completely cancelled cells get the cancellation pattern', () => {
-  const inputs=[[[0,1],[1,1],[2,2]],[[0,-1],[1,-2],[2,-1],[3,1]]];
-  assert.deepEqual(format.cancellation(inputs),{cancelled:[0],positive:[2,3],negative:[1]});
-  assert.deepEqual(format.cancellation(inputs,true),{cancelled:[0],positive:[1],negative:[2,3]});
+  const inputs=[[[0,1],[1,1],[2,3]],[[0,-1],[1,-4],[2,-1],[3,1]]];
+  assert.deepEqual(format.cancellation(inputs),{
+    cancelled:[0],positive:[2,3],negative:[1],weights:new Map([[1,-3],[2,2],[3,1]])
+  });
+  assert.deepEqual(format.cancellation(inputs,true),{
+    cancelled:[0],positive:[1],negative:[2,3],weights:new Map([[1,3],[2,-2],[3,-1]])
+  });
 });
 
 test('a weighted bound can fix cells while other terms can still vary', () => {
@@ -1237,6 +1243,15 @@ test('a weighted bound can fix cells while other terms can still vary', () => {
   assert.deepEqual(format.fixedCells(terms,'≥',2),[[0,1],[1,0]]);
   assert.deepEqual(format.fixedCells(terms,'≤',0),[]);
   assert.deepEqual(format.fixedCells(terms,'≥',0),[]);
+});
+
+test('isolating a weighted cell chooses the correct bound after moving the other terms', () => {
+  assert.deepEqual(format.isolateConclusion([[1,1],[5,-2],[7,-1]],'=',1,5,0),{
+    divisor:2,constant:-1,terms:[[1,1],[7,-1]],relation:'=',bound:'≤',limit:0
+  });
+  assert.deepEqual(format.isolateConclusion([[2,-3],[3,1],[4,-1]],'≤',-3,2,1),{
+    divisor:3,constant:3,terms:[[3,1],[4,-1]],relation:'≥',bound:'≥',limit:2
+  });
 });
 
 test('an equality from direct cancellation is already the conclusion', () => {
@@ -1450,10 +1465,15 @@ test('staged red batches and flag transfers are atomic and expire when applied',
   notes.redo();
   assert.equal(flags.has(0),false);
   assert.deepEqual(batch.cells('mine'),[1]);
-  batch.recordStep([2],[0,1]);
+  batch.recordStep([2],[0,1],new Map([[0,-3],[1,2],[2,1]]));
   assert.equal(batch.done,true);
+  assert.deepEqual([...batch.weights],[[0,-3]]);
   notes.undo();
   assert.deepEqual([...batch.marked],[[1,'mine']]);
+  assert.equal(batch.weights.size,0);
+  notes.redo();
+  assert.deepEqual([...batch.weights],[[0,-3]]);
+  notes.undo();
   notes.discardCells([2]);
   notes.discardConfirmations();
   assert.equal(notes.canRedo,false);

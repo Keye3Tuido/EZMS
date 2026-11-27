@@ -418,6 +418,11 @@
     return Number.isFinite(left+top+dx+dy) ? {width,boardHeight,tile,height,dx,dy,left,top} : null;
   }
 
+  function coefficientDepth(weight=1) {
+    const magnitude=Math.abs(weight);
+    return magnitude>1 ? .66*(magnitude-1)/(magnitude+1) : 0;
+  }
+
   function paintProofAreas() {
     if(!activeAreaPreview || !game || !buttons.length) { proofDrawing.replaceChildren(); return; }
     const geo=proofGeometry();
@@ -426,7 +431,7 @@
     const step=Math.min(tile,height);
     const grid={x:left-dx/2,y:top-dy/2,dx,dy,radius:Math.min(6,step*.16),inset:Math.min(1.75,step*.1)};
     const paths=document.createDocumentFragment();
-    const {areas,selectionWeights}=activeAreaPreview;
+    const {areas,weights}=activeAreaPreview;
     const append=(kind,d,parent=paths)=>{
       const path=document.createElementNS(proofDrawing.namespaceURI,'path');
       path.setAttribute('class',kind);
@@ -441,10 +446,10 @@
       const opposite={positive:2,negative:1,'selection-positive':5,'selection-negative':4}[kind];
       const d=regionSelection.contour(cells,w,h,grid,areas[opposite]);
       append(kind,d);
-      if(selectionWeights) {
+      if(weights?.size && kind!=='cancelled') {
         const shades=new Map();
         for(const cell of cells) {
-          const magnitude=Math.abs(selectionWeights.get(cell));
+          const magnitude=Math.abs(weights.get(cell)??1);
           if(magnitude<=1) continue;
           const x=grid.x+(cell%w)*dx, y=grid.y+Math.floor(cell/w)*dy;
           const square=`M${x},${y}H${x+dx}V${y+dy}H${x}Z`;
@@ -459,8 +464,7 @@
           append('',d,clip).setAttribute('clip-rule','evenodd');
           shading.setAttribute('clip-path',`url(#${clipId})`);
           for(const [magnitude,squares] of shades) {
-            const opacity=.66*(magnitude-1)/(magnitude+1);
-            append(`${kind}-shade`,squares,shading).setAttribute('fill-opacity',opacity);
+            append(`${kind}-shade`,squares,shading).setAttribute('fill-opacity',coefficientDepth(magnitude));
           }
           paths.append(clip,shading);
         }
@@ -495,6 +499,12 @@
       if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
       let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? `<span class="cell-number">${n}</span>` : '';
       const confirmed=game.manual?.marked.get(i);
+      const markDepth=coefficientDepth(game.manual?.weights.get(i));
+      const hintDepth=coefficientDepth(highlight?.weights?.get(i));
+      if(markDepth) marks.push('weighted-confirmation');
+      const depth=hintDepth||markDepth;
+      if(depth) b.style.setProperty('--hint-depth',`${depth*100}%`);
+      else if(b.style.getPropertyValue('--hint-depth')) b.style.removeProperty('--hint-depth');
       const red=n<0?confirmedInk(game,i):undefined;
       const blue=n<0?game.notes.layers.blue.get(i):undefined;
       const archived=n<0?game.notes.layers.archivedBlue.get(i):undefined;
@@ -525,7 +535,9 @@
 
   function updateProofPreview() {
     const target=hoveredProof??focusedProof??pinnedProof;
-    const row=target?.closest('.proof-line');
+    const answerOnly=target?.classList.contains('proof-answer-only');
+    const targetRow=target?.closest('.proof-line');
+    const row=targetRow?.classList.contains('proof-answer-only')?undefined:targetRow;
     if(row!==activeProofRow) {
       activeProofRow?.classList.remove('proof-active');
       row?.classList.add('proof-active');
@@ -542,7 +554,7 @@
       for(const cell of clues) buttons[cell]?.classList.add('clue');
       activeSelectionClues=clues;
     }
-    const next=proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
+    const next=answerOnly?null:proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
     if(next===activeAreaPreview) return;
     for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
@@ -557,14 +569,14 @@
     updateProofPreview();
   }
 
-  function proofPreview(areas,total=false) {
-    return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total};
+  function proofPreview(areas,total=false,weights) {
+    return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total,weights};
   }
 
   function selectionPreview() {
-    const selectionWeights=selectionUnknownWeights();
-    const {positive,negative}=regionSelection.bounds(selectionWeights,new Map());
-    return {...proofPreview([[],[],[],[],positive,negative]),selectionWeights};
+    const weights=selectionUnknownWeights();
+    const {positive,negative}=regionSelection.bounds(weights,new Map());
+    return proofPreview([[],[],[],[],positive,negative],false,weights);
   }
 
   function selectionKnown() {
@@ -743,8 +755,9 @@
     if(!proofPanel.contains(target)) return;
     const token=target?.closest?.('.proof-cell');
     if(proofTargets.has(token)) return token;
-    const row=includeRow && target?.closest?.('.proof-line');
-    if(proofRows.has(row)) return row;
+    if(!includeRow) return;
+    const row=target?.closest?.('.proof-line');
+    if(row?.classList.contains('proof-answer-only') || proofRows.has(row)) return row;
   }
   function hoverProof(e,target) {
     if(e.pointerType!=='mouse') return;
@@ -978,7 +991,7 @@
     return node;
   }
 
-  function chip(indices, label, {clueRegion, description} = {}) {
+  function chip(indices, label, {clueRegion, description, weights} = {}) {
     const vs = Array.isArray(indices) ? indices : [indices];
     const {w,h} = game.board;
     const text = label ?? (vs[0] === -1 ? '总雷数' : format.label(vs,w,h,game.visible));
@@ -986,7 +999,7 @@
     button.type = 'button';
     if (clueRegion) button.classList.add('clue-region');
     const total = vs[0] === -1;
-    proofTargets.set(button,proofPreview([[],[],[],total?[]:vs],total));
+    proofTargets.set(button,proofPreview([[],[],[],total?[]:vs],total,weights));
     if (description) {
       button.title = description;
       button.setAttribute('aria-label',description);
@@ -1001,28 +1014,29 @@
     return button;
   }
 
-  function regionChips(vs,kind) {
+  function regionChips(vs,kind,weights) {
     const {w,h}=game.board;
     return format.regions(vs,w,h,game.visible).map(group=>{
       const text=format.label(group,w,h,game.visible);
-      return chip(group,text,{description:`${text}：${group.length} 格${kind}`});
+      return chip(group,text,{description:`${text}：${group.length} 格${kind}`,weights});
     });
   }
 
   function cancellationChip(inputs, reflected=false) {
-    const {cancelled,positive,negative}=format.cancellation(inputs,reflected);
+    const {cancelled,positive,negative,weights}=format.cancellation(inputs,reflected);
     if (!cancelled.length) return '';
     const preview=element('button','proof-cell cancellation-chip','相消');
     preview.type='button';
     preview.title=`灰纹：相消 ${cancelled.length} 格；紫：正项 ${positive.length} 格；黄：负项 ${negative.length} 格`;
     preview.setAttribute('aria-label',preview.title);
-    proofTargets.set(preview,proofPreview([cancelled,positive,negative]));
+    proofTargets.set(preview,proofPreview([cancelled,positive,negative],false,weights));
     preview.setAttribute('aria-pressed','false');
     return preview;
   }
 
-  function steps(batch) {
+  function steps(batch,conclusionWeights=new Map()) {
     const list = element('ol','proof-steps'), rows = new Map(), emitted = new Map(), lines = [];
+    list.setAttribute('role','list');
     const targets=new Map([...batch.safe.map(v=>[v,0]),...batch.mines.map(v=>[v,1])]);
     const covered=new Set();
     const visited = new Set();
@@ -1054,6 +1068,46 @@
         return [prefix,term];
       });
     }
+    function appendIsolation(raw,sign,rhs,cell,value,sourceId) {
+      const {divisor,constant,terms,relation,bound,limit}=format.isolateConclusion(raw,sign,rhs,cell,value);
+      const isolated=format.terms(terms,groups);
+      const weights=new Map(terms);
+      weights.set(cell,divisor);
+      const useUpperBound=value===0;
+      const factor=divisor===1?'':`1/${divisor} × `;
+      const formula=element('div','formula isolated-formula');
+      function step(symbol,...parts) {
+        const row=element('div','isolation-row');
+        const expression=element('div','isolation-expression');
+        expression.append(...parts);
+        row.append(element('span','operator',symbol),expression);
+        formula.append(row);
+      }
+      const start=`${factor}(${constant}`;
+      const symbolic=[start];
+      const bounded=[start];
+      for(const {coefficient,cells} of isolated) {
+        const operator=coefficient<0?'−':'+', magnitude=Math.abs(coefficient);
+        const token=element('span','formula-term');
+        token.append(`${operator} ${magnitude===1?'':magnitude+'·'}`,chip(cells,undefined,{weights}));
+        symbolic.push(token);
+        const boundCount=(coefficient>0)===useUpperBound?cells.length:0;
+        bounded.push(`${operator} ${magnitude*boundCount}`);
+      }
+      const exactLimit=limit%divisor===0?String(limit/divisor):`${limit}/${divisor}`;
+      step('',chip(cell,undefined,{weights}));
+      step(relation,...symbolic,')');
+      step(bound,`${bounded.join(' ')})`);
+      step('=',exactLimit);
+      const line=element('li',`proof-line proof-answer-only ${value?'conclusion-mine':'conclusion-safe'}`);
+      const marker=equationNumber(list.children.length+1);
+      marker.classList.add('equation-marker');
+      const note=element('small','proof-note');
+      note.append('由 ',equationNumber(sourceId),'，格子取值为 0 或 1');
+      line.append(marker,formula,note);
+      list.append(line);
+      lines.push({keep:true,refs:[sourceId]});
+    }
     function add(raw, sign, rhs, note, sourceRow) {
       const {key,flipped}=format.lineIdentity(raw,sign,rhs);
       if(emitted.has(key)) {
@@ -1065,10 +1119,13 @@
       const {w,h}=game.board;
       const grouping=fresh.length ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
       const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
-      const line = element('li','proof-line'), formula = element('div','formula');
+      const weights=new Map(terms.flatMap(({cells,coefficient})=>cells.map(v=>[v,coefficient])));
+      const expanded=fresh.some(([v])=>Math.abs(weights.get(v))>1);
+      const line=element('li','proof-line'), formula=element('div','formula');
       for(const [v,value] of fresh) {
-        line.classList.add(value?'conclusion-mine':'conclusion-safe');
+        if(!expanded) line.classList.add(value?'conclusion-mine':'conclusion-safe');
         covered.add(v);
+        if(Math.abs(weights.get(v))>1) conclusionWeights.set(v,weights.get(v));
       }
       const id=list.children.length+1;
       const marker=equationNumber(id);
@@ -1086,7 +1143,7 @@
           const token = element('span','formula-term');
           if (i || coefficient < 0) token.append(element('span','operator',coefficient < 0 ? '−' : '+'));
           if (Math.abs(coefficient) !== 1) token.append(element('span','operator',`${Math.abs(coefficient)}·`));
-          token.append(chip(cells));
+          token.append(chip(cells,undefined,{weights}));
           formula.append(token);
         }
         if (!constantFirst) formula.append(element('span','operator',`${comparison} ${constant}`));
@@ -1096,7 +1153,7 @@
         terms.filter(term=>term.coefficient>0).flatMap(term=>term.cells),
         terms.filter(term=>term.coefficient<0).flatMap(term=>term.cells)
       ];
-      proofRows.set(line,proofPreview(displayedAreas));
+      proofRows.set(line,proofPreview(displayedAreas,false,weights));
       line.append(marker,formula);
       if (note) {
         const small = element('small','proof-note');
@@ -1104,8 +1161,9 @@
         line.append(small);
       }
       list.append(line);
-      lines.push({keep:fresh.length>0,refs:[...line.querySelectorAll('.proof-note [data-equation]')]
+      lines.push({keep:!expanded && fresh.length>0,refs:[...line.querySelectorAll('.proof-note [data-equation]')]
         .map(number=>Number(number.dataset.equation))});
+      if(expanded) for(const [v,value] of fresh) appendIsolation(raw,sign,rhs,v,value,id);
       const ref={id,reflected:constantFirst,exact:comparison==='=',flipped};
       emitted.set(key,ref);
       return ref;
@@ -1192,7 +1250,7 @@
     return list;
   }
 
-  function display(a, weak) {
+  function display(a, weak, weights=new Map()) {
     if(!proofVisible) return;
     const panel=$('proof'), m=a.move;
     clearProofHover();
@@ -1207,14 +1265,15 @@
       const sources=[...new Set([...a.prior.flatMap(p=>p.sources),...m.sources])];
       const safe=m.safe.filter(v=>!game.manual?.marked.has(v));
       const mines=m.mines.filter(v=>!game.manual?.marked.has(v) && !game.flags.has(v));
-      game.highlight = {sources,safe:weak?[]:safe,mines:weak?[]:mines};
+      const stepsList=weak?null:steps(m,weights);
+      game.highlight = {sources,safe:weak?[]:safe,mines:weak?[]:mines,weights};
       const card=element('article','proof-card');
       const top=element('div','proof-top');
       top.append(element('h3','',weak?'相关线索':'本步结论'));
       if (!weak) {
         for(const [vs,kind,label] of [[safe,'safe','安全'],[mines,'mine','必雷']]) if(vs.length) {
           const targets=element('div',`proof-chips targets ${kind}`);
-          targets.append(element('strong','target-label',label),...regionChips(vs,label));
+          targets.append(element('strong','target-label',label),...regionChips(vs,label,weights));
           top.append(targets);
         }
       }
@@ -1224,7 +1283,7 @@
       body.append(element('p','proof-caption',`最少 ${m.sources.length} 条线索`));
       if (weak) body.append(clues);
       if (!weak) {
-        body.append(steps(m));
+        body.append(stepsList);
         if(a.prior.length) {
           const prior=element('div','proof-detail');
           const toggle=element('button','proof-detail-toggle','本步之前证实的旗子');
@@ -1241,9 +1300,10 @@
           };
           fold.append(content);
           for(const p of a.prior) {
+            const previousWeights=new Map(), previousSteps=steps(p,previousWeights);
             const targets=element('div','proof-chips targets mine');
-            targets.append(element('strong','target-label','必雷'),...regionChips(p.mines,'必雷'));
-            content.append(targets,steps(p));
+            targets.append(element('strong','target-label','必雷'),...regionChips(p.mines,'必雷',previousWeights));
+            content.append(targets,previousSteps);
           }
           prior.append(toggle,fold);
           body.append(prior);
@@ -1258,7 +1318,9 @@
 
   async function stageStep(a) {
     const g=game, task=run;
-    display(a,false);
+    const weights=new Map();
+    if(proofVisible) display(a,false,weights);
+    else if(a.move?.proofs.some(proof=>proof.inequality)) steps(a.move,weights);
     if(!a.move) return false;
     const judgment=await judge(g);
     if(task!==run || g!==game || !ready()) return false;
@@ -1270,7 +1332,7 @@
     g.manual??=makeManualBatch(judgment.state,g.flags,engine.confirmationTargets,g.notes);
     const added=[...safe,...mines].filter(i=>!g.manual.marked.has(i));
     const wasDone=g.manual.done;
-    g.manual.recordStep(safe,mines);
+    g.manual.recordStep(safe,mines,weights);
     const confirmed=added.filter(i=>g.manual.marked.has(i));
     if(!confirmed.length) return false;
     showMarks(g,confirmed,wasDone);
