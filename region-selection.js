@@ -140,6 +140,66 @@ function makeRegionSelection(adj) {
       negative:[...weights].filter(([,n])=>n<0).map(([i])=>i)};
   }
 
+  function constrainedBounds(weights, clues) {
+    const positive=new Map(), negative=new Map();
+    for(const [cell,weight] of weights) (weight>0?positive:negative).set(cell,Math.abs(weight));
+
+    function maximum(region, useSafeCells=false) {
+      const uncounted=new Map(region);
+      let max=[...uncounted.values()].reduce((sum,weight)=>sum+weight,0);
+      const capacities=clues.map(({cells,mines})=>({cells,limit:useSafeCells?cells.length-mines:mines}));
+      capacities.sort((a,b)=>a.limit-b.limit);
+      for(const {cells,limit} of capacities) {
+        const selected=cells.filter(cell=>uncounted.has(cell));
+        while(selected.length>limit) {
+          // Assign one or more equal-weight layers to this clue. The unused layers can use other clues.
+          const layer=Math.min(...selected.map(cell=>uncounted.get(cell)));
+          max-=layer*(selected.length-limit);
+          for(let i=selected.length-1;i>=0;i--) {
+            const cell=selected[i];
+            addWeight(uncounted,cell,-layer);
+            if(!uncounted.has(cell)) selected.splice(i,1);
+          }
+        }
+      }
+      return max;
+    }
+
+    const total=region=>[...region.values()].reduce((sum,weight)=>sum+weight,0);
+    const positiveMin=total(positive)-maximum(positive,true);
+    const negativeMin=total(negative)-maximum(negative,true);
+    return {min:positiveMin-maximum(negative),max:maximum(positive)-negativeMin};
+  }
+
+  function readout(selected, clueWeights, visible, neighbors, known) {
+    const weights=new Map([...selected].filter(([cell])=>!known.has(cell)));
+    const clues=[...clueWeights].filter(([cell])=>visible[cell]>=0).sort(([a],[b])=>a-b);
+    const remainder=new Map(weights);
+    let clueTotal=0;
+    function clueAt(cell) {
+      const cells=[];
+      let mines=visible[cell];
+      for(const neighbor of neighbors[cell]) {
+        if(known.has(neighbor)) mines-=known.get(neighbor);
+        else cells.push(neighbor);
+      }
+      return {cells,mines};
+    }
+    for(const [cell,weight] of clues) {
+      const {cells,mines}=clueAt(cell);
+      clueTotal+=weight*mines;
+      for(const neighbor of cells) addWeight(remainder,neighbor,-weight);
+    }
+    const nearby=new Set();
+    for(const region of [weights,remainder]) for(const cell of region.keys()) {
+      for(const neighbor of neighbors[cell]) if(visible[neighbor]>=0) nearby.add(neighbor);
+    }
+    const constraints=[...nearby].sort((a,b)=>a-b).map(clueAt).filter(({cells,mines})=>mines>=0&&mines<=cells.length);
+    const {min,max}=constrainedBounds(weights,constraints);
+    const rest=constrainedBounds(remainder,constraints);
+    return {weights,clues,min,max,remainder,remainderMin:clueTotal+rest.min,remainderMax:clueTotal+rest.max};
+  }
+
   function unknown(cells, known) {
     return cells.filter(cell=>!known.has(cell));
   }
@@ -154,7 +214,7 @@ function makeRegionSelection(adj) {
     return known;
   }
 
-  return {history,bounds,unknown,knownCells,boundaryLoops,contour,area:(cell,opened,width)=>opened[cell]>=0?adj(width,opened.length/width)[cell]:[cell]};
+  return {history,bounds,readout,unknown,knownCells,boundaryLoops,contour,area:(cell,opened,width)=>opened[cell]>=0?adj(width,opened.length/width)[cell]:[cell]};
 }
 
 if(typeof module!=='undefined') module.exports=makeRegionSelection;

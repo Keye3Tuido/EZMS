@@ -52,8 +52,8 @@ function render(seed) {
     formula:row.children[1].textContent,
     note:row.children[2]?.textContent??'',
     refs:row.querySelectorAll('.proof-note [data-equation]').map(ref=>Number(ref.textContent)),
-    answerOnly:row.classes.has('proof-answer-only'),
-    signedAreas:proofRows.get(row)?.areas.slice(1,3).map(area=>area.size),
+    signedAreas:proofRows.has(row)?[...proofRows.get(row).areas.slice(1,3)].map(area=>[...area].sort((a,b)=>a-b)):undefined,
+    weights:proofRows.has(row)?[...proofRows.get(row).weights].map(([v,c])=>[v,c]).sort(([a],[b])=>a-b):undefined,
     derivation:row.children[1].children.filter(node=>node.classes.has('isolation-row')).map(node=>{
       const [relation,expression]=node.children;
       const chips=expression.children.flatMap(child=>proofTargets.has(child)?[child]:child.children.filter(child=>proofTargets.has(child)));
@@ -78,14 +78,15 @@ test('one mixed equality replaces a separate rounding proof of the same cells', 
   assert.ok(rows.every(row=>!row.note.includes('÷ 2')));
 });
 
-test('a weighted conclusion ends its isolation steps at the numeric bound', () => {
+test('a weighted conclusion previews the symbolic right-hand side and ends at the numeric bound', () => {
   const {rows}=render("C('JKn6a1FFf31{");
   const [original,isolated]=rows.slice(-2);
   assert.match(original.formula,/2·E2/);
-  assert.deepEqual([original.answerOnly,original.safe,original.mine],[false,false,false]);
-  assert.ok(original.signedAreas.every(size=>size>0));
-  assert.deepEqual([isolated.answerOnly,isolated.safe,isolated.mine],[true,true,false]);
-  assert.equal(isolated.signedAreas,undefined);
+  assert.deepEqual([original.safe,original.mine],[false,false]);
+  assert.deepEqual(original.signedAreas,[[3,4,8,9,15,20,21],[11]]);
+  assert.deepEqual([isolated.safe,isolated.mine],[true,false]);
+  assert.deepEqual(isolated.signedAreas,[[11],[3,4,8,15,20,21]]);
+  assert.deepEqual(isolated.weights,[[3,-1],[4,-1],[8,-1],[11,1],[15,-1],[20,-1],[21,-1]]);
   assert.deepEqual(isolated.derivation.map(row=>row.relation),['', '=', '≤', '=']);
   const [target,symbolic,bound,limit]=isolated.derivation;
   assert.deepEqual(target.chips,['E2']);

@@ -352,7 +352,7 @@ input, select { background: #fcfcfe; }
 .selection-readout dd { margin: 0; }
 .selection-token { display: inline-block; max-width: 100%; padding-inline: 4px; border-radius: 4px; color: #482368; background: #e9dcf8; }
 .selection-token.negative { color: #674b0b; background: #faecc0; }
-.selection-token.clue-token { color: #6c410a; background: #fce8b9; }
+.selection-token.clue-token { min-inline-size: 1.7em; border: 1px solid currentColor; border-radius: 50%; color: #6c410a; background: #fce8b9; text-align: center; white-space: nowrap; }
 .selection-token:is(:hover,:focus-visible) { outline: 1px solid currentColor; outline-offset: -1px; }
 
 #roundText[data-complete] { color: var(--green); font-weight: 680; }

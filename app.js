@@ -535,9 +535,7 @@
 
   function updateProofPreview() {
     const target=hoveredProof??focusedProof??pinnedProof;
-    const answerOnly=target?.classList.contains('proof-answer-only');
-    const targetRow=target?.closest('.proof-line');
-    const row=targetRow?.classList.contains('proof-answer-only')?undefined:targetRow;
+    const row=target?.closest('.proof-line');
     if(row!==activeProofRow) {
       activeProofRow?.classList.remove('proof-active');
       row?.classList.add('proof-active');
@@ -554,7 +552,7 @@
       for(const cell of clues) buttons[cell]?.classList.add('clue');
       activeSelectionClues=clues;
     }
-    const next=answerOnly?null:proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
+    const next=proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
     if(next===activeAreaPreview) return;
     for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
@@ -573,6 +571,12 @@
     return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total,weights};
   }
 
+  function signedProofPreview(terms,weights) {
+    const positive=terms.filter(term=>term.coefficient>0).flatMap(term=>term.cells);
+    const negative=terms.filter(term=>term.coefficient<0).flatMap(term=>term.cells);
+    return proofPreview([[],positive,negative],false,weights);
+  }
+
   function selectionPreview() {
     const weights=selectionUnknownWeights();
     const {positive,negative}=regionSelection.bounds(weights,new Map());
@@ -589,16 +593,6 @@
     return new Map([...selectionHistory.weights].filter(([cell])=>!known.has(cell)));
   }
 
-  function selectionRemainder(clues,known) {
-    let total=0;
-    for(const [clue,weight] of clues) {
-      let fixedMines=0;
-      for(const cell of game.board.ns[clue]) fixedMines+=known.get(cell)??0;
-      total+=weight*(game.visible[clue]-fixedMines);
-    }
-    return total;
-  }
-
   function selectionTarget(target) {
     const token=target?.closest?.('.selection-token, #selectionClueRow');
     return selectionReadout.contains(token)?token:undefined;
@@ -610,9 +604,10 @@
   }
 
   function updateSelectionReadout() {
-    const weights=selectionHistory.weights.size?selectionUnknownWeights():new Map();
-    const clues=[...selectionHistory.clueWeights].filter(([cell])=>game.visible[cell]>=0).sort(([a],[b])=>a-b);
-    const shown=weights.size>0 || clues.length>0;
+    const readout=game && (selectionHistory.weights.size || selectionHistory.clueWeights.size)
+      ? regionSelection.readout(selectionHistory.weights,selectionHistory.clueWeights,game.visible,game.board.ns,selectionKnown())
+      : null;
+    const shown=!!readout && (readout.weights.size>0 || readout.clues.length>0);
     selectionReadout.hidden=!shown;
     if(!shown) {
       hoveredSelection=focusedSelection=undefined;
@@ -620,14 +615,19 @@
       return;
     }
     const {w,h}=game.board;
-    const groups=[...new Set(weights.values())].flatMap(weight=>
-      format.regions([...weights].filter(([,value])=>value===weight).map(([cell])=>cell),w,h,game.visible));
-    const terms=format.terms([...weights],groups).map(({coefficient,cells})=>({
-      coefficient,cells,label:format.label(cells,w,h,game.visible)
-    })).sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
-    const {min,max}=regionSelection.bounds(weights,new Map());
-    const remaining=clues.length?selectionRemainder(clues,selectionKnown()):null;
-    const key=JSON.stringify([terms,clues,remaining,w]);
+    const {weights,clues,min,max,remainder,remainderMin,remainderMax}=readout;
+    function labeledTerms(region) {
+      const byWeight=new Map();
+      for(const [cell,weight] of region) {
+        if(!byWeight.has(weight)) byWeight.set(weight,[]);
+        byWeight.get(weight).push(cell);
+      }
+      return [...byWeight].flatMap(([coefficient,cells])=>format.regions(cells,w,h,game.visible).map(group=>({
+        coefficient,cells:group,label:format.label(group,w,h,game.visible)
+      }))).sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
+    }
+    const terms=labeledTerms(weights), remainderTerms=labeledTerms(remainder);
+    const key=JSON.stringify([terms,clues,min,max,remainderTerms,remainderMin,remainderMax,w]);
     if(key===selectionReadoutKey) return;
     selectionReadoutKey=key;
     hoveredSelection=focusedSelection=undefined;
@@ -639,14 +639,20 @@
       selectionTargets.set(node,target);
       return node;
     }
-    $('selectionTerms').replaceChildren(...(terms.length?terms.flatMap(({coefficient,cells,label},index)=>[
-      prefix(coefficient,index),token(label,coefficient<0?'negative':'positive',{preview:proofPreview([[],[],[],cells])})
-    ]):['0']));
-    $('selectionBounds').textContent=min===max?String(min):`${min} 至 ${max}`;
-    $('selectionClues').replaceChildren(...(clues.length?[
+    const range=(lo,hi)=>lo===hi?String(lo):`${lo} 至 ${hi}`;
+    function regionTokens(items,region,offset=0) {
+      return items.flatMap(({coefficient,cells,label},index)=>[
+        prefix(coefficient,index+offset),token(label,coefficient<0?'negative':'positive',{
+          preview:proofPreview([[],[],[],cells],false,region)
+        })
+      ]);
+    }
+    $('selectionTerms').replaceChildren(...(terms.length?regionTokens(terms,weights):['0']));
+    $('selectionBounds').textContent=range(min,max);
+    $('selectionClues').replaceChildren(
       ...clues.flatMap(([cell,weight],index)=>[prefix(weight,index),token(format.coordinate(cell,w),'clue-token',{clues:[cell]})]),
-      ` = ${remaining}`
-    ]:['—']));
+      ...regionTokens(remainderTerms,remainder,clues.length),` = ${range(remainderMin,remainderMax)}`
+    );
     selectionTargets.set($('selectionClueRow'),{clues:clues.map(([cell])=>cell)});
   }
 
@@ -757,7 +763,7 @@
     if(proofTargets.has(token)) return token;
     if(!includeRow) return;
     const row=target?.closest?.('.proof-line');
-    if(row?.classList.contains('proof-answer-only') || proofRows.has(row)) return row;
+    if(proofRows.has(row)) return row;
   }
   function hoverProof(e,target) {
     if(e.pointerType!=='mouse') return;
@@ -1072,7 +1078,6 @@
       const {divisor,constant,terms,relation,bound,limit}=format.isolateConclusion(raw,sign,rhs,cell,value);
       const isolated=format.terms(terms,groups);
       const weights=new Map(terms);
-      weights.set(cell,divisor);
       const useUpperBound=value===0;
       const factor=divisor===1?'':`1/${divisor} × `;
       const formula=element('div','formula isolated-formula');
@@ -1095,11 +1100,12 @@
         bounded.push(`${operator} ${magnitude*boundCount}`);
       }
       const exactLimit=limit%divisor===0?String(limit/divisor):`${limit}/${divisor}`;
-      step('',chip(cell,undefined,{weights}));
+      step('',chip(cell,undefined,{weights:new Map([[cell,divisor]])}));
       step(relation,...symbolic,')');
       step(bound,`${bounded.join(' ')})`);
       step('=',exactLimit);
-      const line=element('li',`proof-line proof-answer-only ${value?'conclusion-mine':'conclusion-safe'}`);
+      const line=element('li',`proof-line ${value?'conclusion-mine':'conclusion-safe'}`);
+      proofRows.set(line,signedProofPreview(isolated,weights));
       const marker=equationNumber(list.children.length+1);
       marker.classList.add('equation-marker');
       const note=element('small','proof-note');
@@ -1148,12 +1154,7 @@
         }
         if (!constantFirst) formula.append(element('span','operator',`${comparison} ${constant}`));
       }
-      const displayedAreas = [
-        [],
-        terms.filter(term=>term.coefficient>0).flatMap(term=>term.cells),
-        terms.filter(term=>term.coefficient<0).flatMap(term=>term.cells)
-      ];
-      proofRows.set(line,proofPreview(displayedAreas,false,weights));
+      proofRows.set(line,signedProofPreview(terms,weights));
       line.append(marker,formula);
       if (note) {
         const small = element('small','proof-note');

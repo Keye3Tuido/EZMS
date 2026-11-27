@@ -25,6 +25,41 @@ test('bounds use only public fixed cells and binary bounds for unknown cells',()
   assert.deepEqual(result.negative,[2]);
 });
 
+test('public clues bound both signs of overlapping regions without counting a cell twice in one clue',()=>{
+  const ns=require('./engine').adj(5,5);
+  const visible=Array(25).fill(-1);
+  for(const [cell,count] of [[6,1],[12,1],[15,3],[19,3],[22,2]]) visible[cell]=count;
+  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
+  const history=selection.history();
+  for(const [cell,sign] of [[6,-1],[12,-1],[15,1]]) history.select(selection.unknown(ns[cell],known),cell,sign);
+  const read=()=>selection.readout(history.weights,history.clueWeights,visible,ns,known);
+  const {min,max,remainder,remainderMin,remainderMax}=read();
+  assert.deepEqual([min,max],[-2,2]);
+  assert.deepEqual([...remainder],[]);
+  assert.deepEqual([remainderMin,remainderMax],[1,1]);
+
+  history.select([7],undefined,1); // C2 now has coefficient −1, with one manual +C2 term.
+  assert.equal(read().weights.get(7),-1);
+  assert.deepEqual([...read().remainder],[[7,1]]);
+  assert.deepEqual([read().remainderMin,read().remainderMax],[1,2]);
+  history.undo();
+  assert.equal(read().remainder.size,0);
+  history.redo();
+  assert.deepEqual([...read().remainder],[[7,1]]);
+});
+
+test('a manually selected region uses clue capacity and accounts for known mines',()=>{
+  const ns=require('./engine').adj(3,2);
+  const visible=[-1,2,-1,-1,-1,-1], known=new Map([[1,0],[0,1]]);
+  const weights=new Map([[2,2],[3,1],[4,1],[5,1]]);
+  const read=()=>selection.readout(weights,new Map(),visible,ns,known);
+  assert.deepEqual([read().min,read().max,read().remainderMin,read().remainderMax],[1,2,1,2]);
+  weights.delete(3); weights.delete(4); weights.delete(5);
+  assert.deepEqual([read().min,read().max],[0,2]);
+  weights.set(2,-2);
+  assert.deepEqual([read().min,read().max],[-2,0]);
+});
+
 test('known clues, flags and red marks are excluded from selected variable regions',()=>{
   const known=selection.knownCells({visible:[-1,2,-1,-1,-1,-1],flags:[3],proven:[4],
     manual:new Map([[5,'safe']]),red:new Map([[1,{symbol:'x'}],[2,{symbol:'/'}]])});
