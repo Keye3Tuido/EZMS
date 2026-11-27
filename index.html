@@ -63,7 +63,7 @@
     </header>
 
     <div class="setup-bar">
-    <form id="settings" class="settings" novalidate aria-label="棋局设置">
+    <form id="settings" class="settings" autocomplete="off" novalidate aria-label="棋局设置">
       <label>宽度<input id="width" type="number" min="1" value="5" required></label>
       <label>高度<input id="height" type="number" min="1" value="5" required></label>
       <div class="form-actions"><button id="generate" class="primary" type="submit">生成棋局</button><button id="cancel" type="button" class="is-inactive" aria-hidden="true" disabled>取消</button></div>
@@ -76,7 +76,7 @@
         </div>
       </div>
     </form>
-    <form id="editorSettings" class="settings editor-settings" aria-label="编辑器尺寸" hidden>
+    <form id="editorSettings" class="settings editor-settings" autocomplete="off" aria-label="编辑器尺寸" hidden>
       <label>宽度<input id="editWidth" type="number" min="1" value="5" required></label>
       <label>高度<input id="editHeight" type="number" min="1" value="5" required></label>
       <div class="form-actions"><button type="submit">调整尺寸</button><button id="blankPosition" type="button">新建空白</button><button id="copyGamePosition" type="button">从游戏复制</button></div>
@@ -112,7 +112,7 @@
             <button type="button" data-edit="flag" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#flag"/></svg>旗标</button>
             </div>
             <div id="numberTools" class="number-tools" hidden>
-              <label>总雷数<input id="draftMines" type="number" min="0" step="1" value="0"></label>
+              <label>总雷数<input id="draftMines" type="number" autocomplete="off" min="0" step="1" value="0"></label>
               <div id="digitPalette" class="digit-palette" role="group" aria-label="填入数字"></div>
             </div>
           </div>
