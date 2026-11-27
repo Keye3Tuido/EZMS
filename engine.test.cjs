@@ -1183,7 +1183,7 @@ test('conclusion rectangles preserve coefficients and count each real cell once'
   const show=raw=>format.comparison(raw,'≤',-2,format.conclusionGroups(raw,groups,4,3,visible));
   const u=show(uniform), m=show(mixed);
   assert.deepEqual(u.terms,[{coefficient:-2,cells:[0,2,3]},{coefficient:-2,cells:[7]}]);
-  assert.deepEqual(m.terms,[{coefficient:-2,cells:[0]},{coefficient:-2,cells:[2]},{coefficient:2,cells:[3,7]}]);
+  assert.deepEqual(m.terms,[{coefficient:2,cells:[3,7]},{coefficient:-2,cells:[0]},{coefficient:-2,cells:[2]}]);
   assert.deepEqual(u.terms.flatMap(t=>t.cells.map(v=>[v,-t.coefficient])),uniform);
 });
 
@@ -1282,7 +1282,7 @@ test('comparison formatting preserves the original sign, boundary and meaning', 
     assert.ok(display.constant>=0);
     assert.equal(display.sign,sign);
     assert.equal(display.constant,Math.abs(rhs));
-    assert.deepEqual(display.terms.map(t=>t.cells),groups);
+    assert.deepEqual(display.terms.map(t=>t.cells),rhs<0?groups:groups.slice().reverse());
     for(let bits=0;bits<8;bits++) {
       const bit=v=>(bits>>v)&1;
       const lhs=raw.reduce((sum,[v,c])=>sum+c*bit(v),0);
@@ -1481,4 +1481,79 @@ test('staged red batches and flag transfers are atomic and expire when applied',
   assert.equal(notes.layers.blue.has(0),false);
   assert.equal(flags.has(0),false);
   assert.equal(notes.canUndo,false);
+});
+
+
+test('选区雷数保留离散取值和负系数，并遵守全局总雷数',()=>{
+  const p={w:5,h:1,mines:2};
+  const visible=[-1,1,-1,1,-1];
+  const weights=new Map([[0,2],[2,-2],[4,2]]);
+  assert.deepEqual(engine.selectionTotals(p,visible,new Map(),weights),{status:'complete',values:[4]});
+  assert.deepEqual(engine.selectionTotals({...p,mines:1},visible,new Map(),weights),{status:'complete',values:[-2]});
+  assert.deepEqual(engine.selectionTotals({w:4,h:1,mines:1},Array(4).fill(-1),new Map(),new Map([[0,2]])),
+    {status:'complete',values:[0,2]});
+  assert.deepEqual(engine.selectionTotals(p,visible,new Map([[2,1]]),weights),{status:'invalid'});
+});
+
+test('选区雷数使用整个公开局面，包括远处线索和已确认格',()=>{
+  const p={w:7,h:1,mines:2};
+  const visible=[-1,1,-1,-1,1,-1,-1];
+  const known=new Map([[0,0],[5,1]]);
+  const weights=new Map([[0,9],[2,2],[3,4],[5,7],[6,8]]);
+  assert.deepEqual(engine.selectionTotals(p,visible,known,weights),{status:'complete',values:[2]});
+  assert.deepEqual(engine.selectionTotals(p,visible,known,weights,0),{status:'budget'});
+});
+
+test('各项难度目标提高时，生成使用更多初始种子',()=>{
+  const easy={w:5,h:5,minAverage:1,minMultiPercent:0,minPeakClues:1};
+  const initial=p=>engine.generationSchedule(p,18).initial;
+  assert.equal(initial(easy),3);
+  for(const change of [{minAverage:2},{minMultiPercent:30},{minPeakClues:5}]) {
+    assert.ok(initial({...easy,...change})>initial(easy));
+  }
+  assert.equal(initial({w:5,h:5}),6);
+  assert.equal(initial({w:1,h:25}),5);
+  assert.equal(initial({w:16,h:16}),5);
+});
+
+test('生成每到一个轮数阈值增加一个种子，并遵守棋盘尺寸和核心数上限',()=>{
+  const small=engine.generationSchedule({w:5,h:5},18);
+  assert.equal(small.limit,12);
+  assert.deepEqual([0,31,32,63,64,Infinity].map(small.lanesAt),[6,6,7,7,8,12]);
+  const medium=engine.generationSchedule({w:16,h:16},18);
+  assert.equal(medium.limit,10);
+  assert.deepEqual([0,15,16,32,96].map(medium.lanesAt),[5,5,6,7,10]);
+  const large=engine.generationSchedule({w:30,h:16},18);
+  assert.equal(large.limit,8);
+  assert.deepEqual([0,7,8,16,100].map(large.lanesAt),[5,5,6,7,8]);
+  assert.equal(engine.generationSchedule({w:5,h:5},8).lanesAt(1000),7);
+  assert.equal(engine.generationSchedule({w:5,h:5},2).lanesAt(1000),1);
+  assert.equal(engine.generationSchedule({w:2,h:2},18).lanesAt(1000),1);
+});
+
+test('跨种子比较最接近候选时保留峰值优先规则',()=>{
+  const rank=engine.generationRanking({w:5,h:5});
+  const report=(clues,advancedDensity)=>({clues,advancedDensity,averageClues:1.8});
+  assert.ok(rank.compareClosest(report(4,.7),report(3,.9))<0);
+  assert.ok(rank.compareClosest(report(5,.1),report(4,.9))<0);
+  assert.ok(rank.compareClosest(report(5,.29),report(8,.25))<0);
+});
+
+test('游戏内的可能取值包含下一步需要猜的公开局面',()=>{
+  const position={w:3,h:1,mines:1}, visible=[-1,1,-1];
+  const board=engine.publicBoard(position,visible).board;
+  assert.equal(engine.verify(board,position,{certify:true,visible}).status,'stuck');
+  const publicState=engine.classify(position,visible);
+  assert.equal(publicState.state[0],'either');
+  assert.equal(publicState.state[2],'either');
+  assert.deepEqual(engine.selectionTotals(position,visible,new Map(),new Map([[0,1],[2,-1]])),
+    {status:'complete',values:[-1,1]});
+});
+
+
+test('选区动态规划保留大幅正负系数产生的稀疏取值',()=>{
+  const position={w:6,h:1,mines:2}, visible=[-1,1,-1,-1,1,-1];
+  const weights=new Map([[0,-9500],[2,1],[3,-2],[5,60000]]);
+  assert.deepEqual(engine.selectionTotals(position,visible,new Map(),weights),
+    {status:'complete',values:[-9502,-1,50500,60001]});
 });

@@ -79,7 +79,7 @@ function makeProofFormat() {
       for (const v of group) weights.delete(v);
     }
     for (const [v,c] of weights) if (c) result.push({coefficient:c,cells:[v]});
-    return result.sort((a,b) => a.cells[0]-b.cells[0]);
+    return result.sort((a,b)=>Number(b.coefficient>0)-Number(a.coefficient>0) || a.cells[0]-b.cells[0]);
   }
 
   function conclusionGroups(raw,groups,w,h,visible) {

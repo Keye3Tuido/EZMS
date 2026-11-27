@@ -329,12 +329,12 @@ input, select { background: #fcfcfe; }
 #useCandidate:disabled { visibility: hidden; }
 .round-feedback { grid-area: 2 / 1; min-width: 0; }
 #roundText { margin: 0; line-height: 1.45; min-height: 2lh; }
-/* Keep space for three rows. Long expressions scroll inside the readout. */
+/* 表达式较长时，仍在下方显示计算结果。 */
 .selection-slot {
   grid-area: 3 / 1 / 4 / -1;
   min-width: 0;
   font: 600 13px/1.45 ui-monospace, Consolas, monospace;
-  block-size: calc(3lh + 14px);
+  block-size: calc(2lh + 16px);
 }
 .selection-readout {
   block-size: 100%;
@@ -344,15 +344,15 @@ input, select { background: #fcfcfe; }
   background: #f4effb;
   color: #33234a;
   overflow-wrap: anywhere;
-  overflow: auto;
-  scrollbar-gutter: stable;
 }
-.selection-readout > div { display: grid; grid-template-columns: 4.5em minmax(0,1fr); align-items: baseline; gap: 4px; padding-block: 1px; }
+.selection-readout:not([hidden]) { display: flex; flex-direction: column; }
+.selection-readout > div { display: grid; grid-template-columns: 2.25em minmax(0,1fr); grid-template-rows: minmax(0,1fr); gap: 4px; min-block-size: 0; padding-block: 1px; }
+.selection-readout > div:last-child { flex: 0 0 calc(1lh + 2px); }
 .selection-readout dt { color: #604877; }
-.selection-readout dd { margin: 0; }
+.selection-readout dd { margin: 0; overflow: auto; scrollbar-width: thin; }
 .selection-token { display: inline-block; max-width: 100%; padding-inline: 4px; border-radius: 4px; color: #482368; background: #e9dcf8; }
 .selection-token.negative { color: #674b0b; background: #faecc0; }
-.selection-token.clue-token { min-inline-size: 1.7em; border: 1px solid currentColor; border-radius: 50%; color: #6c410a; background: #fce8b9; text-align: center; white-space: nowrap; }
+.selection-token.clue-token { min-inline-size: 1.7em; border: 1px solid currentColor; border-radius: 50%; text-align: center; white-space: nowrap; }
 .selection-token:is(:hover,:focus-visible) { outline: 1px solid currentColor; outline-offset: -1px; }
 
 #roundText[data-complete] { color: var(--green); font-weight: 680; }

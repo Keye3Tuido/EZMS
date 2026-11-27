@@ -777,6 +777,181 @@ function makeMinesEngine() {
     return result(exhausted?'budget':'complete');
   }
 
+  function selectionTotals(p,visible,known,weights,budget=Infinity) {
+    const marks=new Set(), safe=new Set();
+    for(const [v,mine] of known) if(visible[v]<0) (mine?marks:safe).add(v);
+    const ns=adj(p.w,p.h);
+    let fixedWeight=0, context=constraints(p,visible,marks,ns,safe);
+    // 精确搜索前先传播约束，排除雷或安全状态已经确定的格子。
+    for(;;) {
+      if(context.invalid) return {status:'invalid'};
+      let changed=false, contradiction=false;
+      function force(cells,mine) {
+        const affected=mine?marks:safe, opposite=mine?safe:marks;
+        for(const v of cells) {
+          if(opposite.has(v)) {contradiction=true;continue;}
+          if(affected.has(v)) continue;
+          affected.add(v);
+          if(mine) fixedWeight+=weights.get(v)??0;
+          changed=true;
+        }
+      }
+      for(const {vs,rhs} of context.rows) if(!rhs || rhs===vs.length) force(vs,Boolean(rhs));
+      if(!changed && !contradiction) {
+        const incident=new Map();
+        for(const a of context.local) {
+          const overlaps=new Set();
+          for(const v of a.vs) {
+            if(!incident.has(v)) incident.set(v,[]);
+            const prior=incident.get(v);
+            for(const b of prior) overlaps.add(b);
+            prior.push(a);
+          }
+          for(const b of overlaps) {
+            const [A,B,I]=split(a.vs,b.vs);
+            const low=Math.max(0,a.rhs-A.length,b.rhs-B.length), high=Math.min(I.length,a.rhs,b.rhs);
+            if(low>high) return {status:'invalid'};
+            for(const [cells,min,max] of [[I,low,high],[A,a.rhs-high,a.rhs-low],[B,b.rhs-high,b.rhs-low]]) {
+              if(cells.length && (!max || min===cells.length)) force(cells,Boolean(max));
+            }
+          }
+        }
+      }
+      if(contradiction) return {status:'invalid'};
+      if(!changed) break;
+      context=constraints(p,visible,marks,ns,safe);
+    }
+    const {local,unknown}=context;
+    if(budget<=0) return {status:'budget'};
+    const remaining=p.mines-marks.size;
+    const incident=new Map(unknown.map(v=>[v,[]]));
+    for(const [i,row] of local.entries()) for(const v of row.vs) incident.get(v).push(i);
+
+    // 只使用公开约束，符合约束但需要猜的布雷也参与统计。
+    // 受相同线索约束且系数相同的格子可以合并，只记录组内雷数。
+    const groups=new Map();
+    for(const [v,rows] of incident) {
+      const weight=weights.get(v)??0, key=`${weight}:${rows}`;
+      if(!groups.has(key)) groups.set(key,{rows,weight,size:0,first:v});
+      groups.get(key).size++;
+    }
+    const byRow=local.map(()=>[]);
+    for(const group of groups.values()) for(const row of group.rows) byRow[row].push(group);
+    const unvisited=new Set(groups.values());
+    const components=[];
+    const scan=v=>p.w<=p.h?v:(v%p.w)*p.h+Math.floor(v/p.w);
+    while(unvisited.size) {
+      const first=unvisited.values().next().value;
+      unvisited.delete(first);
+      const component=[first], seenRows=new Set();
+      for(const group of component) for(const row of group.rows) {
+        if(seenRows.has(row)) continue;
+        seenRows.add(row);
+        for(const other of byRow[row]) if(unvisited.delete(other)) component.push(other);
+      }
+      components.push(component.sort((a,b)=>scan(a.first)-scan(b.first)));
+    }
+    const add=(table,mines,weighted)=>{
+      if(!table.has(mines)) table.set(mines,new Set());
+      table.get(mines).add(weighted);
+    };
+    // 将最大的无线索约束组留到最后，由全局总雷数确定其组内雷数。
+    components.sort((a,b)=>Number(!a[0].rows.length)-Number(!b[0].rows.length)||
+      (!a[0].rows.length && !b[0].rows.length ? a[0].size-b[0].size : 0));
+    let combined=new Map([[0,new Set([fixedWeight])]]), countedCells=0;
+    for(const component of components) {
+      const totals=new Map();
+      const size=component.reduce((sum,group)=>sum+group.size,0);
+      const minMines=Math.max(0,remaining-(unknown.length-size));
+      const gcd=(a,b)=>{while(b) [a,b]=[b,a%b];return a;};
+      const unit=component.reduce((scale,group)=>gcd(scale,Math.abs(group.weight)),0)||1;
+      const offset=component.reduce((sum,group)=>sum+Math.min(0,group.weight*group.size),0);
+      const span=component.reduce((sum,group)=>sum+Math.abs(group.weight/unit)*group.size,0);
+      const bitset=span<=8192;
+      const lastUse=new Map(), capacity=new Map();
+      for(const [index,group] of component.entries()) for(const row of group.rows) {
+        lastUse.set(row,index);
+        capacity.set(row,(capacity.get(row)??0)+group.size);
+      }
+      // 只保留仍关联未处理分组的线索余量。
+      // 用位集合记录当前边界和雷数下所有可能的加权雷数。
+      let states=new Map([['0:',{mines:0,residual:'',scores:bitset?1n:new Set([0])}]]);
+      let active=[];
+      let consumed=0;
+      for(const [index,{rows,weight,size:copies}] of component.entries()) {
+        consumed+=copies;
+        const activeSlots=new Map(active.map((row,i)=>[row,i]));
+        const linked=new Set(rows);
+        const nextRows=[...new Set([...active,...rows])].filter(row=>lastUse.get(row)>index);
+        const read=({slot,rhs},residual)=>slot===undefined?rhs:residual.charCodeAt(slot)-48;
+        const bounds=rows.map(row=>{
+          const free=capacity.get(row)-copies;
+          capacity.set(row,free);
+          return {slot:activeSlots.get(row),rhs:local[row].rhs,free};
+        });
+        const outgoing=nextRows.map(row=>({slot:activeSlots.get(row),rhs:local[row].rhs,used:linked.has(row)}));
+        const minimum=Math.min(0,copies*weight);
+        const next=new Map();
+        for(const {mines,residual,scores} of states.values()) {
+          let low=Math.max(0,minMines-mines-(size-consumed)), high=Math.min(copies,remaining-mines);
+          for(const bound of bounds) {
+            const rhs=read(bound,residual);
+            low=Math.max(low,rhs-bound.free);
+            high=Math.min(high,rhs);
+          }
+          for(let count=low;count<=high;count++) {
+            if(--budget<0) return {status:'budget'};
+            let boundary='';
+            for(const row of outgoing) boundary+=String.fromCharCode(48+read(row,residual)-(row.used?count:0));
+            const countNow=mines+count, key=`${countNow}:${boundary}`;
+            let entry=next.get(key);
+            if(!entry) {
+              entry={mines:countNow,residual:boundary,scores:bitset?0n:new Set()};
+              next.set(key,entry);
+            }
+            const shift=(count*weight-minimum)/unit;
+            if(bitset) entry.scores|=scores<<BigInt(shift);
+            else for(const value of scores) {
+              if(--budget<0) return {status:'budget'};
+              entry.scores.add(value+shift);
+            }
+          }
+        }
+        if(!next.size) return {status:'invalid'};
+        active=nextRows;
+        states=next;
+      }
+      for(const {mines,scores} of states.values()) {
+        if(bitset) {
+          const bits=scores.toString(2);
+          for(let i=0;i<bits.length;i++) if(bits[bits.length-1-i]==='1') add(totals,mines,offset+i*unit);
+        } else for(const value of scores) add(totals,mines,offset+value*unit);
+      }
+      countedCells+=size;
+      const next=new Map(), minCombined=remaining-(unknown.length-countedCells);
+      function* compatible(used) {
+        const low=Math.max(0,minCombined-used), high=remaining-used;
+        if(high-low+1<totals.size) {
+          for(let mines=low;mines<=high;mines++) if(totals.has(mines)) yield [mines,totals.get(mines)];
+        } else {
+          for(const entry of totals) if(entry[0]>=low && entry[0]<=high) yield entry;
+        }
+      }
+      for(const [used,previous] of combined) for(const [mines,weighted] of compatible(used)) {
+        if(--budget<0) return {status:'budget'};
+        const count=used+mines;
+        for(const a of previous) for(const b of weighted) {
+          if(--budget<0) return {status:'budget'};
+          add(next,count,a+b);
+        }
+      }
+      if(!next.size) return {status:'invalid'};
+      combined=next;
+    }
+    const values=combined.get(remaining);
+    return values?{status:'complete',values:[...values].sort((a,b)=>a-b)}:{status:'invalid'};
+  }
+
   function gate(classification,cells) {
     if(classification.status==='invalid') return {status:'invalid'};
     const blocked=cells.find(v=>['mine','either'].includes(classification.state[v]));
@@ -1649,10 +1824,42 @@ function makeMinesEngine() {
     return {minAverage:2,minMultiPercent:30,minPeakClues:5};
   }
 
-  function* generate(p,seed,onCandidate) {
+  function generationRanking(p) {
     const defaults=difficultyDefaults();
     const target={average:p.minAverage??defaults.minAverage,multiPercent:p.minMultiPercent??defaults.minMultiPercent,
       peak:p.minPeakClues??defaults.minPeakClues};
+    const multi=target.multiPercent/100;
+    const fits=report=>report.averageClues>=target.average && report.advancedDensity>=multi && report.clues>=target.peak;
+    const deficit=r=>Math.max(0,1-r.averageClues/Math.max(1,target.average))+
+      (multi>0?Math.max(0,1-r.advancedDensity/multi):0)+
+      Math.max(0,1-r.clues/Math.max(1,target.peak));
+    const compare=(a,b)=>Number(fits(b))-Number(fits(a)) || deficit(a)-deficit(b) || compareOpening(a,b);
+    const compareClosest=(a,b)=>{
+      const priority=a.clues<target.peak || b.clues<target.peak ?
+        b.clues-a.clues : b.advancedDensity-a.advancedDensity;
+      return priority || compare(a,b);
+    };
+    return {target,fits,compare,compareClosest};
+  }
+
+  function generationSchedule(p,logicalCores=2) {
+    const area=p.w*p.h;
+    if(area<=2 || p.w===2 && p.h===2) return {initial:1,limit:1,lanesAt:()=>1};
+    const {target}=generationRanking(p);
+    const effort=target.average-1+target.multiPercent/30+(target.peak-1)/4;
+    const base=area<=64 && Math.min(p.w,p.h)>=5 ? 3 : 2;
+    const boardLimit=area<=64 ? 12 : area<=256 ? 10 : 8;
+    // 设备有多个可用逻辑核心时，为页面留出一个。
+    const limit=Math.max(1,Math.min(boardLimit,Math.floor(logicalCores||2)-1));
+    const initial=Math.min(limit,base+Math.min(4,Math.floor(effort)));
+    // 大棋盘的单轮搜索通常更耗时，因此更早增加搜索路数。
+    const roundsPerSeed=area<=64 ? 32 : area<=256 ? 16 : 8;
+    const lanesAt=rounds=>Math.min(limit,initial+Math.floor(rounds/roundsPerSeed));
+    return {initial,limit,lanesAt};
+  }
+
+  function* generate(p,seed,onCandidate) {
+    const {target,fits,compare,compareClosest}=generationRanking(p);
     const area=p.w*p.h, tiny=area===2 || p.w===2 && p.h===2;
     const required=Math.max(target.peak,Math.ceil(target.average),target.multiPercent>0?3:1);
     // Besides opened digits, only the total mine count can add a clue.
@@ -1671,19 +1878,9 @@ function makeMinesEngine() {
     const plan=openingPlans[(seed>>>0)%openingPlans.length];
     const compact=ns.length<=64 || Math.min(p.w,p.h)<5;
     const multi=target.multiPercent/100;
-    const fits=report=>report.averageClues>=target.average && report.advancedDensity>=multi && report.clues>=target.peak;
     const standard=standardDifficulty(p.w,p.h);
     const hard=target.average>standard.minAverage || target.multiPercent>standard.minMultiPercent || target.peak>standard.minPeakClues ?
       {multi:4*multi,peak:target.peak>standard.minPeakClues?.75:0} : null;
-    const deficit=r=>Math.max(0,1-r.averageClues/Math.max(1,target.average))+
-      (multi>0?Math.max(0,1-r.advancedDensity/multi):0)+
-      Math.max(0,1-r.clues/Math.max(1,target.peak));
-    const compare=(a,b)=>Number(fits(b))-Number(fits(a)) || deficit(a)-deficit(b) || compareOpening(a,b);
-    const compareClosest=(a,b)=>{
-      const priority=a.clues<target.peak || b.clues<target.peak ?
-        b.clues-a.clues : b.advancedDensity-a.advancedDensity;
-      return priority || compare(a,b);
-    };
     const min=Math.max(1,Math.ceil(ns.length*.16)), max=Math.max(min,Math.floor(ns.length*.28));
     let passed=0, constructed=0, closest, closestMetrics;
     function duplicate(board) {
@@ -1759,7 +1956,7 @@ function makeMinesEngine() {
     }
   }
 
-  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generate};
+  return {version,adj,candidate,opening,reveal,numberAction,analyze,equivalentGroups,minimumProof,classify,selectionTotals,confirmationTargets,gate,advance,verify,hint,inspect,expand,publicBoard,difficultyDefaults,generationRanking,generationSchedule,generate};
 }
 
 if(typeof module!=='undefined') module.exports=makeMinesEngine();

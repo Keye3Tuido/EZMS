@@ -6,17 +6,17 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261127-10">
+  <link rel="stylesheet" href="styles.css?v=20261127-11">
   <link rel="stylesheet" href="game-motion.css?v=20261127-1">
-  <script defer src="region-selection.js?v=20261127-5"></script>
+  <script defer src="region-selection.js?v=20261127-8"></script>
   <script defer src="radial-layout.js?v=20261127-10"></script>
-  <script defer src="engine.js?v=20261127-2"></script>
-  <script defer src="proof-format.js?v=20261127-1"></script>
+  <script defer src="engine.js?v=20261127-5"></script>
+  <script defer src="proof-format.js?v=20261127-2"></script>
   <script defer src="board-input.js?v=20261127-12"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
-  <script defer src="app.js?v=20261127-21"></script>
+  <script defer src="app.js?v=20261127-26"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -134,8 +134,7 @@
           <div class="selection-slot">
             <dl id="selectionReadout" class="selection-readout" tabindex="0" aria-label="选区信息" hidden>
               <div><dt>选区</dt><dd id="selectionTerms"></dd></div>
-              <div><dt>加权雷数</dt><dd id="selectionBounds"></dd></div>
-              <div id="selectionClueRow"><dt>线索剩余</dt><dd id="selectionClues"></dd></div>
+              <div><dt>=</dt><dd id="selectionBounds" aria-live="polite" aria-label="可能的加权雷数"></dd></div>
             </dl>
           </div>
         </footer>

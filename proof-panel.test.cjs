@@ -122,3 +122,12 @@ test('rounding remains visible when it proves a new cell', () => {
   assert.ok(rows.some(row=>row.safe));
   assert.ok(rows.every((row,i)=>row.refs.every(ref=>ref>0&&ref<=i)));
 });
+
+
+test('显示不等式和移项后的结论时，正系数变量项统一排在前面',()=>{
+  const {comparison,isolateConclusion,terms}=require('./proof-format');
+  assert.deepEqual(comparison([[0,-2],[1,1],[2,-1]],'≤',1,[]).terms.map(t=>t.cells[0]),[1,0,2]);
+  assert.deepEqual(comparison([[0,-2],[1,1],[2,-1]],'≤',-1,[]).terms.map(t=>t.cells[0]),[0,2,1]);
+  const isolated=isolateConclusion([[0,1],[1,-1],[2,2]],'≤',0,2,0);
+  assert.deepEqual(terms(isolated.terms,[]).map(t=>t.cells[0]),[1,0]);
+});

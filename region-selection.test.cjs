@@ -25,39 +25,65 @@ test('bounds use only public fixed cells and binary bounds for unknown cells',()
   assert.deepEqual(result.negative,[2]);
 });
 
-test('public clues bound both signs of overlapping regions without counting a cell twice in one clue',()=>{
-  const ns=require('./engine').adj(5,5);
-  const visible=Array(25).fill(-1);
-  for(const [cell,count] of [[6,1],[12,1],[15,3],[19,3],[22,2]]) visible[cell]=count;
-  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
-  const history=selection.history();
-  for(const [cell,sign] of [[6,-1],[12,-1],[15,1]]) history.select(selection.unknown(ns[cell],known),cell,sign);
-  const read=()=>selection.readout(history.weights,history.clueWeights,visible,ns,known);
-  const {min,max,remainder,remainderMin,remainderMax}=read();
-  assert.deepEqual([min,max],[-2,2]);
-  assert.deepEqual([...remainder],[]);
-  assert.deepEqual([remainderMin,remainderMax],[1,1]);
-
-  history.select([7],undefined,1); // C2 now has coefficient −1, with one manual +C2 term.
-  assert.equal(read().weights.get(7),-1);
-  assert.deepEqual([...read().remainder],[[7,1]]);
-  assert.deepEqual([read().remainderMin,read().remainderMax],[1,2]);
-  history.undo();
-  assert.equal(read().remainder.size,0);
-  history.redo();
-  assert.deepEqual([...read().remainder],[[7,1]]);
+test('扣除已知邻格后，完整线索邻域得到唯一的带符号加权雷数',()=>{
+  const ns=require('./engine').adj(4,4);
+  const visible=Array(16).fill(-1);
+  visible[5]=3;
+  const known=new Map([[5,0],[0,1],[1,0]]);
+  const cells=selection.unknown(ns[5],known);
+  const weights=new Map(cells.map(cell=>[cell,-2]));
+  const find=()=>selection.singleClue(weights,new Map(),visible,ns,known);
+  assert.deepEqual(find(),{clue:5,coefficient:-2,cells,total:-4});
+  weights.set(cells[0],-1);
+  assert.equal(find(),undefined);
+  weights.delete(cells[0]);
+  assert.equal(find(),undefined);
+  weights.set(cells[0],-2);
+  visible[5]=1;
+  assert.equal(find().total,0);
+  visible[5]=0;
+  assert.equal(find(),undefined);
 });
 
-test('a manually selected region uses clue capacity and accounts for known mines',()=>{
-  const ns=require('./engine').adj(3,2);
-  const visible=[-1,2,-1,-1,-1,-1], known=new Map([[1,0],[0,1]]);
-  const weights=new Map([[2,2],[3,1],[4,1],[5,1]]);
-  const read=()=>selection.readout(weights,new Map(),visible,ns,known);
-  assert.deepEqual([read().min,read().max,read().remainderMin,read().remainderMax],[1,2,1,2]);
-  weights.delete(3); weights.delete(4); weights.delete(5);
-  assert.deepEqual([read().min,read().max],[0,2]);
-  weights.set(2,-2);
-  assert.deepEqual([read().min,read().max],[-2,0]);
+test('手动选区和混合选区中的完整线索邻域均归并为一个线索项',()=>{
+  const ns=require('./engine').adj(5,5);
+  const visible=Array(25).fill(-1);
+  for(const [cell,count] of [[5,1],[6,2],[11,3],[15,3],[22,2]]) visible[cell]=count;
+  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
+  const selected=new Map(ns[22].map(cell=>[cell,1]));
+  const {regions}=require('./proof-format');
+  for(const clues of [new Map(),new Map([[5,1],[6,-1],[11,1]])]) {
+    const result=selection.readout(selected,clues,visible,ns,known,
+      region=>selection.regionTerms(region,5,known,cells=>regions(cells,5,5,visible)));
+    assert.deepEqual(result.terms,[{clue:22,coefficient:1,cells:selection.unknown(ns[22],known)}]);
+    assert.deepEqual([...result.weights],[...selected]);
+  }
+});
+
+test('项数相同时线索邻域优先于矩形，正系数项统一排在前面',()=>{
+  const w=5,h=5,ns=require('./engine').adj(w,h), {regions}=require('./proof-format');
+  const visible=Array(w*h).fill(-1);
+  visible[0]=1;
+  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
+  const weights=new Map([[1,-1],[5,-1],[6,-1],[23,1],[24,1],[9,1]]);
+  const {terms}=selection.readout(weights,new Map(),visible,ns,known,
+    region=>selection.regionTerms(region,w,known,cells=>regions(cells,w,h,visible)));
+  assert.deepEqual(terms,[{coefficient:1,cells:[23,24]},{coefficient:1,cells:[9]},
+    {clue:0,coefficient:-1,cells:[1,5,6]}]);
+});
+
+test('两个重叠矩形可以更简洁地表示不同系数的选区',()=>{
+  const {regions}=require('./proof-format');
+  const weights=new Map([[0,2],[1,1],[5,1]]);
+  const terms=selection.regionTerms(weights,5,new Map(),cells=>regions(cells,5,5));
+  assert.deepEqual(terms,[{coefficient:1,cells:[0,1]},{coefficient:1,cells:[0,5]}]);
+});
+
+test('矩形减去未开格的缺口可以简化选区表达式',()=>{
+  const {regions}=require('./proof-format');
+  const selectionWeights=new Map([[0,1],[1,1],[2,1],[3,1],[5,1],[6,1],[7,1],[8,1]]);
+  const terms=selection.regionTerms(selectionWeights,3,new Map(),cells=>regions(cells,3,3));
+  assert.deepEqual(terms,[{coefficient:1,cells:[0,1,2,3,4,5,6,7,8]},{coefficient:-1,cells:[4]}]);
 });
 
 test('known clues, flags and red marks are excluded from selected variable regions',()=>{

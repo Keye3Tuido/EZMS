@@ -37,7 +37,10 @@
   let activeAreaPreview = null;
   let selectionHistory=regionSelection.history();
   const selectionTargets=new WeakMap();
-  let hoveredSelection, focusedSelection, selectionReadoutKey='';
+  let hoveredSelection, focusedSelection, selectionReadoutKey;
+  let selectionCountWorker, selectionCountKey, selectionCountTimer;
+  let selectionExpressionWorker, selectionExpressionJob;
+  const selectionCountCache=new Map();
   let activeSelectionClues=[];
   let selectionMode='';
 
@@ -162,8 +165,7 @@
     const minAverage = optional('minAverage', v=>v>=1, '平均最少线索下限须至少为 1。');
     const minMultiPercent = optional('minMultiPercent', v=>v>=0 && v<=100, '多线索步骤占比须为 0–100%。');
     const minPeakClues = optional('minPeakClues', v=>Number.isSafeInteger(v) && v>=1, '峰值线索数下限须为正整数。');
-    const seed = crypto.getRandomValues(new Uint32Array(1))[0];
-    return {p: {w,h,minAverage,minMultiPercent,minPeakClues}, seed};
+    return {w,h,minAverage,minMultiPercent,minPeakClues};
   }
 
   function cancelPlayRequest() {
@@ -180,7 +182,7 @@
     controls();
   }
   function finishWorker() {
-    worker?.terminate();
+    for(const lane of worker?.active??[]) lane.terminate();
     worker=null;
     generationCandidate=undefined;
     controls();
@@ -195,10 +197,29 @@
   function generate(e) {
     e?.preventDefault();
     if (worker || pending && !auto) return;
-    let job;
-    try { job = readSettings(); } catch (error) { say(error.message, 'error'); return; }
+    let p;
+    try { p = readSettings(); } catch (error) { say(error.message, 'error'); return; }
     stopAuto();
-    try { worker = background(`onmessage = ({data:{p,seed}}) => {
+    const {target,compareClosest}=engine.generationRanking(p);
+    const schedule=engine.generationSchedule(p,navigator.hardwareConcurrency);
+    const usedSeeds=new Set();
+    let canStartMore=true;
+    const task=worker={lanes:new Map(),active:new Set()};
+    function progress() {
+      let tried=0,passed=0;
+      for(const lane of task.lanes.values()) {tried+=lane.tried;passed+=lane.passed;}
+      const report=generationCandidate?.report;
+      const closest=report&&{average:report.averageClues,multiPercent:report.advancedDensity*100,peak:report.clues};
+      return {tried,passed,closest,target};
+    }
+    function failed(lane,message) {
+      if(worker!==task || !task.active.delete(lane)) return;
+      lane.terminate();
+      if(task.active.size) return;
+      finishWorker();
+      say(message,'error');
+    }
+    const code=`onmessage = ({data:{p,seed}}) => {
         try {
           let updated = -Infinity, sentCandidate;
           const sendProgress=({candidate,...progress})=>{
@@ -208,37 +229,60 @@
           };
           for (const result of makeMinesEngine().generate(p,seed,sendProgress)) {
             if (result.board) { postMessage({result}); return; }
-            if (performance.now() - updated >= 200) sendProgress(result);
+            if (performance.now() - updated >= 100) sendProgress(result);
           }
         }
         catch (error) { postMessage({error:error.message}); }
-      };`); }
-    catch { say('浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。', 'error'); return; }
+      };`;
+    function startLane(seed) {
+      const lane=background(code);
+      lane.onmessage=({data})=>{
+        if(worker!==task || !task.active.has(lane)) return;
+        if(data.error) {failed(lane,`本次生成中止：${data.error}`);return;}
+        if(data.progress) {
+          task.lanes.set(lane,data.progress);
+          if(data.candidate && (!generationCandidate || compareClosest(data.candidate.report,generationCandidate.report)<0)) {
+            generationCandidate={...data.candidate,p};
+            $('useCandidate').disabled=false;
+          }
+          const merged=progress();
+          if(generationCandidate) generationCandidate.progress=merged;
+          startLanes(schedule.lanesAt(merged.tried));
+          const {text,shortfall}=generationProgress(merged,generationCandidate?.report);
+          say(text,'',shortfall);
+          return;
+        }
+        const result=data.result;
+        task.lanes.set(lane,result);
+        const {tried}=progress();
+        finishWorker();
+        mountGenerated(result,p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${tried} 轮`);
+      };
+      lane.onerror=()=>failed(lane,`生成任务无法运行。${game ? '当前棋局已保留。' : ''}`);
+      try { lane.postMessage({p,seed}); }
+      catch(error) { lane.terminate(); throw error; }
+      task.lanes.set(lane,{tried:0,passed:0});
+      task.active.add(lane);
+    }
+    function startLanes(desired) {
+      const missing=desired-task.lanes.size;
+      if(!canStartMore || missing<=0) return;
+      const seeds=crypto.getRandomValues(new Uint32Array(missing));
+      for(let seed of seeds) {
+        while(usedSeeds.has(seed)) seed=(seed+1)>>>0;
+        usedSeeds.add(seed);
+        try { startLane(seed); }
+        catch { canStartMore=false; return; }
+      }
+    }
+    startLanes(schedule.initial);
+    if(!task.active.size) {
+      finishWorker();
+      say('浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。','error');
+      return;
+    }
     controls();
     say('正在构造开局');
-    const task = worker;
-    worker.onmessage = ({data}) => {
-      if (task !== worker) return;
-      if (data.progress) {
-        if(data.candidate) generationCandidate={...data.candidate,p:job.p};
-        if(generationCandidate) {
-          generationCandidate.progress=data.progress;
-          $('useCandidate').disabled=false;
-        }
-        const {text,shortfall}=generationProgress(data.progress,generationCandidate?.report);
-        say(text,'',shortfall);
-        return;
-      }
-      finishWorker();
-      if (data.error) { say(`本次生成中止：${data.error}`, 'error'); return; }
-      const r = data.result;
-      mountGenerated(r,job.p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${r.tried} 轮`);
-    };
-    worker.onerror = () => {
-      if (task !== worker) return;
-      finishWorker(); say(`生成任务无法运行。${game ? '当前棋局已保留。' : ''}`, 'error');
-    };
-    worker.postMessage(job);
   }
 
   function mountGenerated({board,report},p,message,shortfall) {
@@ -271,7 +315,7 @@
     selectionHistory=game?.selection??regionSelection.history();
     setSelectionMode();
     hoveredSelection=focusedSelection=undefined;
-    selectionReadoutKey='';
+    selectionReadoutKey=undefined;
     updateSelectionReadout();
     input.reset(editing); showReason(false);
     clearHint();
@@ -588,13 +632,12 @@
       manual:game.manual?.marked??[],red:game.notes.layers.red});
   }
 
-  function selectionUnknownWeights() {
-    const known=selectionKnown();
+  function selectionUnknownWeights(known=selectionKnown()) {
     return new Map([...selectionHistory.weights].filter(([cell])=>!known.has(cell)));
   }
 
   function selectionTarget(target) {
-    const token=target?.closest?.('.selection-token, #selectionClueRow');
+    const token=target?.closest?.('.selection-token');
     return selectionReadout.contains(token)?token:undefined;
   }
   function updateSelectionHover(event,target) {
@@ -603,57 +646,153 @@
     updateProofPreview();
   }
 
-  function updateSelectionReadout() {
-    const readout=game && (selectionHistory.weights.size || selectionHistory.clueWeights.size)
-      ? regionSelection.readout(selectionHistory.weights,selectionHistory.clueWeights,game.visible,game.board.ns,selectionKnown())
-      : null;
-    const shown=!!readout && (readout.weights.size>0 || readout.clues.length>0);
-    selectionReadout.hidden=!shown;
-    if(!shown) {
-      hoveredSelection=focusedSelection=undefined;
-      selectionReadoutKey='';
+  function cancelSelectionCount() {
+    if(selectionCountTimer===undefined) return;
+    clearTimeout(selectionCountTimer);
+    selectionCountTimer=undefined;
+    selectionCountWorker?.terminate();
+    selectionCountWorker=undefined;
+  }
+
+  function updateSelectionCount(known,weights) {
+    const {w,h,mines}=game.board;
+    const p={w,h,mines}, visible=game.visible;
+    const key=JSON.stringify([p,visible,[...known],[...weights]]);
+    if(key===selectionCountKey) return;
+    selectionCountKey=key;
+    cancelSelectionCount();
+    const output=$('selectionBounds');
+    if(selectionCountCache.has(key)) {
+      output.textContent=selectionCountCache.get(key);
       return;
     }
-    const {w,h}=game.board;
-    const {weights,clues,min,max,remainder,remainderMin,remainderMax}=readout;
-    function labeledTerms(region) {
-      const byWeight=new Map();
-      for(const [cell,weight] of region) {
-        if(!byWeight.has(weight)) byWeight.set(weight,[]);
-        byWeight.get(weight).push(cell);
-      }
-      return [...byWeight].flatMap(([coefficient,cells])=>format.regions(cells,w,h,game.visible).map(group=>({
-        coefficient,cells:group,label:format.label(group,w,h,game.visible)
-      }))).sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
+    output.textContent='';
+    let task;
+    try {
+      task=selectionCountWorker??=background(`const engine=makeMinesEngine();
+        onmessage=({data:{p,visible,known,weights}})=>postMessage(engine.selectionTotals(p,visible,known,weights));`);
+    } catch {
+      output.textContent='无法统计';
+      return;
     }
-    const terms=labeledTerms(weights), remainderTerms=labeledTerms(remainder);
-    const key=JSON.stringify([terms,clues,min,max,remainderTerms,remainderMin,remainderMax,w]);
+    selectionCountTimer=setTimeout(()=>{output.textContent='正在统计…';},100);
+    function show(text) {
+      clearTimeout(selectionCountTimer);
+      selectionCountTimer=undefined;
+      output.textContent=text;
+    }
+    task.onmessage=({data:{status,values}})=>{
+      if(selectionCountWorker!==task) return;
+      if(status==='invalid') {show('线索与标记矛盾');return;}
+      const text=values.join(', ');
+      if(text.length<2048) {
+        if(selectionCountCache.size>=24) selectionCountCache.delete(selectionCountCache.keys().next().value);
+        selectionCountCache.set(key,text);
+      }
+      show(text);
+    };
+    task.onerror=()=>{
+      if(selectionCountWorker!==task) return;
+      task.terminate();
+      selectionCountWorker=undefined;
+      show('无法统计');
+    };
+    task.postMessage({p,visible,known,weights});
+  }
+
+  function cancelSelectionExpression() {
+    if(!selectionExpressionJob) return;
+    const {timer,worker}=selectionExpressionJob;
+    clearTimeout(timer);
+    if(worker) {
+      worker.terminate();
+      selectionExpressionWorker=undefined;
+    }
+    selectionExpressionJob=undefined;
+  }
+
+  function updateSelectionExpression(data) {
+    const job=selectionExpressionJob={};
+    // 合并短时间内连续触发的操作，只整理最新选区。
+    job.timer=setTimeout(()=>{
+      function fail() {
+        if(selectionExpressionJob!==job) return;
+        cancelSelectionExpression();
+        $('selectionTerms').textContent='无法整理选区';
+      }
+      try {
+        const worker=job.worker=selectionExpressionWorker??=background(`
+          ${makeRegionSelection.toString()}
+          ${makeProofFormat.toString()}
+          const engine=makeMinesEngine();
+          const selection=makeRegionSelection(engine.adj);
+          const format=makeProofFormat();
+          onmessage=({data:{w,h,visible,known,weights,clueWeights}})=>{
+            const regionVisible=visible.map((value,cell)=>known.has(cell)?0:value);
+            const partition=cells=>format.regions(cells,w,h,regionVisible);
+            const {terms}=selection.readout(weights,clueWeights,visible,engine.adj(w,h),known,
+              rest=>selection.regionTerms(rest,w,known,partition));
+            postMessage(terms.map(term=>({...term,label:term.clue===undefined
+              ?format.label(term.cells,w,h,regionVisible):format.coordinate(term.clue,w)})));
+          };`);
+        worker.onmessage=({data:terms})=>{
+          if(selectionExpressionJob!==job) return;
+          selectionExpressionJob=undefined;
+          renderSelectionTerms(terms);
+        };
+        worker.onerror=worker.onmessageerror=fail;
+        worker.postMessage(data);
+      } catch { fail(); }
+    },0);
+  }
+
+  function updateSelectionReadout() {
+    const known=game && selectionHistory.weights.size?selectionKnown():null;
+    const {w,h,mines,ns}=game?.board??{};
+    const visible=game?.visible, {clueWeights}=selectionHistory;
+    const key=known?JSON.stringify([w,h,mines,visible,[...known],
+      [...selectionHistory.weights],[...clueWeights]]):null;
     if(key===selectionReadoutKey) return;
     selectionReadoutKey=key;
+    const weights=known?selectionUnknownWeights(known):null;
+    selectionReadout.hidden=!weights?.size;
     hoveredSelection=focusedSelection=undefined;
+    cancelSelectionExpression();
+    $('selectionTerms').replaceChildren();
+    if(!weights?.size) {
+      selectionCountKey=undefined;
+      cancelSelectionCount();
+      return;
+    }
+    // 进入游戏的局面已有可行布雷，同时满足公开线索和已确认标记。
+    const clue=!editing?regionSelection.singleClue(weights,clueWeights,visible,ns,known):undefined;
+    if(clue) {
+      selectionCountKey=undefined;
+      cancelSelectionCount();
+      $('selectionBounds').textContent=String(clue.total);
+      renderSelectionTerms([{...clue,label:format.coordinate(clue.clue,w)}]);
+      return;
+    }
+    updateSelectionCount(known,weights);
+    updateSelectionExpression({w,h,visible,known,weights,clueWeights});
+  }
+
+  function renderSelectionTerms(terms) {
     const prefix=(coefficient,index)=>
       `${index?(coefficient<0?' − ':' + '):(coefficient<0?'−':'')}${Math.abs(coefficient)>1?`${Math.abs(coefficient)}·`:''}`;
-    function token(label,kind,target) {
-      const node=element('span',`selection-token ${kind}`,label);
+    const items=terms.flatMap(({coefficient,cells,clue,label},index)=>{
+      const isClue=clue!==undefined;
+      const kind=coefficient<0?'selection-token negative':'selection-token';
+      const node=element('span',isClue?`${kind} clue-token`:kind,label);
       node.tabIndex=0;
-      selectionTargets.set(node,target);
-      return node;
-    }
-    const range=(lo,hi)=>lo===hi?String(lo):`${lo} 至 ${hi}`;
-    function regionTokens(items,region,offset=0) {
-      return items.flatMap(({coefficient,cells,label},index)=>[
-        prefix(coefficient,index+offset),token(label,coefficient<0?'negative':'positive',{
-          preview:proofPreview([[],[],[],cells],false,region)
-        })
-      ]);
-    }
-    $('selectionTerms').replaceChildren(...(terms.length?regionTokens(terms,weights):['0']));
-    $('selectionBounds').textContent=range(min,max);
-    $('selectionClues').replaceChildren(
-      ...clues.flatMap(([cell,weight],index)=>[prefix(weight,index),token(format.coordinate(cell,w),'clue-token',{clues:[cell]})]),
-      ...regionTokens(remainderTerms,remainder,clues.length),` = ${range(remainderMin,remainderMax)}`
-    );
-    selectionTargets.set($('selectionClueRow'),{clues:clues.map(([cell])=>cell)});
+      if(isClue) node.title=`${label} 的线索邻域`;
+      selectionTargets.set(node,{
+        clues:isClue?[clue]:undefined,
+        preview:proofPreview([[],[],[],cells],false,new Map(cells.map(cell=>[cell,coefficient])))
+      });
+      return [prefix(coefficient,index),node];
+    });
+    $('selectionTerms').replaceChildren(...items);
   }
 
   function setSelectionMode(mode='') {
@@ -1142,7 +1281,6 @@
         formula.append(chip(sourceRow.vs,name,{clueRegion,
           description:`${scope}：${sourceRow.vs.length} 个格子计入本式`}),element('span','operator',`${sign} ${rhs}`));
       } else {
-        terms.sort((a,b)=>Number(b.coefficient>0)-Number(a.coefficient>0));
         if (constantFirst) formula.append(element('span','operator',`${constant} ${comparison}`));
         if (!terms.length) formula.append('0');
         for (const [i,{coefficient,cells}] of terms.entries()) {
