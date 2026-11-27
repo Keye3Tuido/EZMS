@@ -131,3 +131,71 @@ test('显示不等式和移项后的结论时，正系数变量项统一排在�
   const isolated=isolateConclusion([[0,1],[1,-1],[2,2]],'≤',0,2,0);
   assert.deepEqual(terms(isolated.terms,[]).map(t=>t.cells[0]),[1,0]);
 });
+
+test('停止求解控件只在状态变化时更新，并立即作废待处理工作',()=>{
+  const {readFileSync}=require('node:fs');
+  const {runInNewContext}=require('node:vm');
+  const source=readFileSync(`${__dirname}/app.js`,'utf8');
+  const section=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b));
+  const calls=[];
+  const label={textContent:'自动求解'};
+  const button={querySelector:s=>s==='use'?{setAttribute:(...args)=>calls.push(args)}:label,
+    set innerHTML(_) {throw Error('不应重建停止按钮');}};
+  runInNewContext(section('  function updateSolveControl(', '  function controls(')+
+    section('  function cancelPlayRequest()', '  function finishWorker(')+`
+    let run=7, auto=true, proofVisible=false, worker;
+    let playWorker={terminate(){events.push('terminate');}},pending=value=>events.push({value,run,auto});
+    updateSolveControl(true);
+    updateSolveControl(true);
+    stopAuto();
+    `,{$:()=>button,controls(){},events:calls});
+  assert.equal(label.textContent,'停止求解');
+  assert.equal(calls.filter(Array.isArray).length,1);
+  assert.deepEqual({...calls.at(-1)},{value:null,run:8,auto:false});
+});
+
+test('提交后自动刷新的线索可立即关闭，取消后不渲染旧结果',async()=>{
+  const section=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b));
+  const events=[];
+  const state=new Script([
+    section('  function cancelPlayRequest()', '  function stopAuto()'),
+    section('  function cancelProofRequest()', '  async function judge('),
+    section('  async function commitBatch(', '  function play('),
+    section('  async function stageStep(', '  function pauseSolve()'),
+    section('  function toggleHint(', '  function showReason('),
+    section('  function closeProof()', '  function setMode('),
+    `let auto=false, run=0, pending, playWorker, editing=false, worker;
+    let proofVisible=true, proofMode='focus', proofRequest, proofReturn;
+    const game={state:'playing',visible:[0,-1,-1],opened:1,board:{mines:1},
+      flags:new Set(),proven:new Set(),notes:{discardConfirmations(){}},
+      manual:{done:true,cells:kind=>kind==='mine'?[1]:[]}};
+    function setProofVisible(open){proofVisible=open;if(!open) proofMode=undefined;}
+    function next(){
+      playWorker={terminate(){events.push('terminate');}};
+      return new Promise(resolve=>{pending=resolve;});
+    }
+    const commit=commitBatch(game);
+    ({commit,toggleHint,visible:()=>proofVisible,pending:()=>pending})`
+  ].join('\n'),{filename:'app.js'}).runInNewContext({
+    events, dismissSearchResult(){}, feedback:{handoff(){},sound(){}}, inkDrawing:{}, discardOpenedMarks(){},
+    scheduleVerification(){}, clearProofHover(){}, proofPanel:{replaceChildren(){}}, element(){},
+    say(){}, render(){}, controls(){}, focusProofReturn(){}, display:(_result,weak)=>events.push(weak)
+  });
+  const oldResult=state.pending();
+  assert.equal(typeof oldResult,'function');
+  state.toggleHint('focus');
+  assert.equal(state.visible(),false);
+  assert.equal(state.pending(),null);
+  oldResult({status:'confirmed'});
+  assert.equal(await state.commit,true);
+  assert.deepEqual(events,['terminate']);
+});
+
+test('求解一步刷新提示时继续显示当前选中的提示类型',async()=>{
+  const stage=source.slice(source.indexOf('  async function stageStep('),source.indexOf('  function pauseSolve()'));
+  const displays=[];
+  await new Script(`${stage}
+    let game, run=0, proofVisible=true, proofMode='focus';
+    stageStep({status:'confirmed'});`).runInNewContext({display:(_a,weak)=>displays.push(weak)});
+  assert.deepEqual(displays,[true]);
+});

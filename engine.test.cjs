@@ -1539,6 +1539,103 @@ test('生成每到一个轮数阈值增加一个种子，并遵守棋盘尺寸�
   assert.equal(engine.generationSchedule({w:2,h:2},18).lanesAt(1000),1);
 });
 
+test('单路和并行生成都保留原目标，辅助线程失效时启用候选拼接',async()=>{
+  const {readFileSync}=require('node:fs');
+  const {runInNewContext}=require('node:vm');
+  const source=readFileSync(`${__dirname}/app.js`,'utf8');
+  const block=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
+  const handlers=`function controls(){${block("    const cancel=$","    for (const id of ['gameMode'")}}`+
+    block('  function finishWorker(', '  function background(')+
+    block('  function generate(e)', '  function mountGenerated(')+
+    block("  $('useCandidate').onclick", "  $('restart').onclick");
+  const p={w:5,h:5,minAverage:2,minMultiPercent:30,minPeakClues:15};
+  for(const [hardwareConcurrency,failStartup] of [[2,false],[18,false],[18,true]]) {
+    const launched=[], mounted=[], errors=[], elements=new Map();
+    let startupAttempted=false;
+    const state=runInNewContext(`${handlers}
+let worker, generationCandidate, pending, auto, game;
+generate();
+({candidate:()=>generationCandidate,searching:()=>!!worker})`,{
+      engine, navigator:{hardwareConcurrency}, readSettings:()=>p, stopAuto(){}, say(){},
+      $(id){
+        if(!elements.has(id)) elements.set(id,{querySelector:()=>null,classList:{toggle(){}},setAttribute(){}});
+        return elements.get(id);
+      },
+      generationProgress:({tried})=>({text:`搜索 ${tried} 轮`}),
+      mountGenerated:(result,_p,text)=>mounted.push({result,text}),
+      saySearch(text,kind){if(kind==='error') errors.push(text);},
+      crypto:{getRandomValues:values=>values.fill(42)},
+      background(code){
+        if(failStartup && launched.length===1 && !startupAttempted) {
+          startupAttempted=true;
+          throw Error('浏览器无法启动辅助线程');
+        }
+        const lane={code,postMessage(message){
+          if(message.p) this.message=message;
+          this.candidateFallback=message.candidateFallback;
+        },terminate(){this.terminated=true;}};
+        launched.push(lane);
+        return lane;
+      }
+    });
+    const schedule=engine.generationSchedule(p,hardwareConcurrency);
+    const initial=failStartup?1:schedule.initial;
+    assert.equal(launched.length,initial);
+    assert.deepEqual(launched.map(lane=>lane.message.originalTarget),[true,...Array(initial-1).fill(false)]);
+    const original=launched[0];
+    assert.equal(original.candidateFallback,initial===1);
+    original.onerror();
+    assert.ok(original.terminated);
+    assert.equal(launched.length,initial+1);
+    const replacement=launched.at(-1);
+    assert.equal(replacement.message.originalTarget,true);
+    const modes=[];
+    await runInNewContext(`${replacement.code}
+const started=onmessage({data:message});
+onmessage({data:{candidateFallback:!message.candidateFallback}});
+started;`,{
+      message:replacement.message, postMessage(){}, setTimeout, performance,
+      makeMinesEngine:()=>({*generate(settings,_seed,_onCandidate,options) {
+        assert.equal(settings,p);
+        assert.equal(options.originalTarget,true);
+        modes.push(options.candidateFallback);
+        yield {tried:1};
+        modes.push(options.candidateFallback);
+      }})
+    });
+    assert.deepEqual(modes,[initial===1,initial!==1]);
+    const candidate={report:{averageClues:2,advancedDensity:.3,clues:8}};
+    const candidateLane=initial===1?replacement:launched[1];
+    candidateLane.onmessage({data:{progress:{tried:1000,passed:1},candidate}});
+    assert.equal(state.candidate().report.clues,8);
+    assert.deepEqual(mounted,[]);
+    const active=launched.filter(lane=>!lane.terminated);
+    const limit=failStartup?1:schedule.limit;
+    assert.equal(active.length,limit);
+    assert.deepEqual(active.filter(lane=>lane.message.originalTarget),[replacement]);
+    assert.equal(replacement.candidateFallback,limit===1);
+    for(const lane of active) if(lane!==replacement) lane.onerror();
+    assert.equal(replacement.candidateFallback,true);
+    assert.equal(new Set(launched.map(lane=>lane.message.seed)).size,launched.length);
+    assert.deepEqual(errors,[]);
+    replacement.onerror();
+    assert.equal(launched.length,limit+1);
+    assert.ok(launched.every(lane=>lane.terminated));
+    assert.equal(errors.length,1);
+    assert.equal(state.searching(),false);
+    assert.equal(state.candidate().report,candidate.report);
+    const useCandidate=elements.get('useCandidate');
+    assert.equal(useCandidate.disabled,false);
+    assert.equal(useCandidate.textContent,'采用候选');
+    useCandidate.onclick();
+    assert.equal(mounted.length,1);
+    assert.equal(mounted[0].result.report,candidate.report);
+    assert.match(mounted[0].text,/^已采用候选/);
+    assert.equal(state.candidate(),undefined);
+    assert.equal(useCandidate.disabled,true);
+  }
+});
+
 test('跨种子比较最接近候选时保留峰值优先规则',()=>{
   const rank=engine.generationRanking({w:5,h:5});
   const report=(clues,advancedDensity)=>({clues,advancedDensity,averageClues:1.8});
@@ -1651,30 +1748,78 @@ test('修改筛选回调或返回值收到的棋盘，不影响后续逆向枚�
   assert.deepEqual(consumed,expected);
 });
 
-test('高峰值拼接复用前轮结构，严格超过下限后在可用区间选目标', () => {
-  const p={w:20,h:20,minPeakClues:8};
-  const next=engine.composeClueSearch(p,2);
-  const initial=Array.from({length:4},()=>next());
-  assert.deepEqual(initial.map(({shape})=>shape.givens.length),[2,4,8,16]);
-  assert.deepEqual(initial.map(({shape})=>shape.split),[[1,1],[2,2],[4,4],[8,8]]);
-  for(let i=1;i<initial.length;i++) assert.ok(initial[i].shape.parts.every(part=>part===initial[i-1].shape));
-  const targets=Array.from({length:12},()=>next().target);
-  assert.ok(targets.every(target=>target>=8 && target<=16));
-  assert.ok(new Set(targets).size>1);
+function simulatedClues(accept) {
+  const attempts=new Map();
+  return {attempts,compose(_p,count,seed,{balanced,exploreSplit,blocks}) {
+    if(balanced) attempts.set(count,[...(attempts.get(count)??[]),{seed,exploreSplit,blocks:new Map(blocks)}]);
+    if(!accept(count,attempts.get(count).length,exploreSplit)) return null;
+    return {givens:Array(count).fill(0),geometry:{},id:seed};
+  }};
+}
+
+test('原目标拼接在多轮失败后仍持续尝试用户指定的峰值', () => {
+  const p={w:5,h:5,minPeakClues:15};
+  const sample=simulatedClues((count,attempt)=>count<15 || count===15 && attempt===15);
+  const next=engine.composeClueSearch(p,2,sample.compose,{originalTarget:true});
+  const rounds=Array.from({length:20},next);
+  assert.deepEqual([...sample.attempts.keys()],[15]);
+  assert.ok(rounds.every(result=>result.target===15));
+  assert.equal(rounds[13].shape,undefined);
+  assert.equal(rounds[14].shape.givens.length,15);
+  assert.equal(rounds.at(-1).shape,rounds[14].shape);
 });
 
-test('最大拼接目标放不下时保留已有结构，再尝试较大的可行规模', () => {
-  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},2);
-  next();
-  next();
-  const previous=next();
-  const missed=next();
-  assert.equal(missed.target,16);
-  assert.equal(missed.shape,previous.shape);
-  const improved=next();
-  assert.ok(improved.target<missed.target);
-  assert.ok(improved.shape.givens.length>8);
-  assert.ok(improved.shape.parts.includes(previous.shape));
+test('单路搜索在原峰值超出拼接上限时仍能拼接并认证候选', () => {
+  const p={w:5,h:5,minPeakClues:22,minAverage:1,minMultiPercent:0};
+  const rounds=engine.generate(p,0,undefined,{originalTarget:true,candidateFallback:true});
+  const progress=Array.from({length:20},()=>rounds.next().value);
+  assert.ok(progress.every(result=>result.target.peak===p.minPeakClues && !result.board));
+  const {candidate}=progress.at(-1);
+  assert.ok(candidate.report.clues>=5);
+  assert.deepEqual(engine.verify(candidate.board,p,{certify:true}),candidate.report);
+});
+
+test('8×8 的峰值 16 候选按二分递增并复用已拼结构', () => {
+  const p={w:8,h:8,minPeakClues:16};
+  const sample=simulatedClues(()=>true);
+  const next=engine.composeClueSearch(p,2,sample.compose);
+  const rounds=Array.from({length:4},next);
+  assert.deepEqual(rounds.map(({target})=>target),[8,12,14,15]);
+  for(let i=1;i<rounds.length;i++) {
+    const previous=rounds[i-1];
+    assert.equal(sample.attempts.get(rounds[i].target)[0].blocks.get(previous.target),previous.shape);
+  }
+});
+
+test('候选二分搜索在中点反复抽样失败后缩小上界', () => {
+  const sample=simulatedClues(count=>count!==12);
+  const next=engine.composeClueSearch({w:8,h:8,minPeakClues:16},2,sample.compose);
+  const rounds=Array.from({length:8},next);
+  assert.deepEqual(rounds.map(({target})=>target),[8,12,12,12,12,10,11,11]);
+  assert.ok(rounds.slice(1,5).every(({shape})=>shape===rounds[0].shape));
+  const probes=sample.attempts.get(12);
+  assert.equal(probes.filter(({exploreSplit})=>exploreSplit).length,11);
+  assert.equal(new Set(probes.map(({seed})=>seed)).size,12);
+});
+
+test('二分收敛后仍可复查原峰值和更高档', () => {
+  const sample=simulatedClues(count=>count<=8 || count>=18);
+  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:18,mines:5},2,sample.compose);
+  const rounds=Array.from({length:48},next);
+  const first=rounds.findIndex(result=>result.shape?.givens.length===18);
+  assert.ok(first>0);
+  assert.equal(rounds[first-1].shape.givens.length,8);
+  assert.ok(rounds.slice(first).some(result=>result.shape.givens.length===19));
+  assert.ok(rounds.every(result=>result.target<=19));
+});
+
+test('二分收敛后用不同拆分复查先前失手的更高档', () => {
+  const sample=simulatedClues((count,attempt,exploreSplit)=>count<=8 || count===9 && attempt>12 && exploreSplit);
+  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:10,mines:14},2,sample.compose);
+  const rounds=Array.from({length:80},next);
+  const missed=sample.attempts.get(9);
+  assert.equal(missed.slice(0,12).filter(({exploreSplit})=>exploreSplit).length,11);
+  assert.ok(rounds.some(({shape})=>shape?.givens.length===9));
 });
 
 test('棋盘边缘截断接缝时重新放置同一结构', () => {
@@ -1686,18 +1831,16 @@ test('棋盘边缘截断接缝时重新放置同一结构', () => {
   assert.equal(givens.length,4);
   assert.ok(givens.every(v=>v>=3 && v<15));
   assert.ok(rows.every(row=>rows.some(other=>other!==row && row.filter(v=>other.includes(v)).length>=2)));
+});
 
-  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},3);
-  const {target,shape:scheduled}=Array.from({length:6},next).at(-1);
-  assert.equal(target,10);
-  assert.equal(scheduled.givens.length,10);
+test('长方形棋盘可以转置左块以找到可行接缝', () => {
+  const shape=engine.composeClues({w:5,h:6},6,1936384585,{balanced:true});
+  assert.deepEqual(shape,{givens:[0,10,14,21,24,27],split:[2,4]});
 });
 
 test('候选结构在所有偏移均不连通时继续检查其他接缝', () => {
-  const next=engine.composeClueSearch({w:5,h:5,minPeakClues:8},0);
-  const {target,shape}=Array.from({length:10},next).at(-1);
-  assert.equal(target,11);
-  assert.equal(shape.givens.length,11);
+  const shape=engine.composeClues({w:2,h:3},4,3576916120);
+  assert.deepEqual(shape,{givens:[0,2,4,5],split:[1,3]});
 });
 
 test('十线索递归拼接考虑五种拆分，并能在同一图中得到环和分支', () => {
@@ -1763,7 +1906,17 @@ test('逆向构造与独立的 3×2 穷举回放得到同一批可通关开局',
   assert.deepEqual([...engine.enumerateNoGuess({w,h},{accept:()=>false})],[]);
 });
 
-test('高峰值搜索保留较低的已验证候选，并采用超过峰值下限的合成棋局', () => {
+test('拼接和闭环都没有开局时继续通用棋局构造', () => {
+  const p={w:5,h:13,minPeakClues:24,minAverage:1,minMultiPercent:0};
+  const generator=engine.generate(p,9);
+  const results=Array.from({length:6},()=>generator.next().value);
+  const [previous,current]=results.slice(-2);
+  assert.ok(current.constructed>previous.constructed);
+  assert.ok(current.candidate);
+  assert.deepEqual(engine.verify(current.candidate.board,p,{certify:true}),current.candidate.report);
+});
+
+test('二分搜索保留已验证候选，达标后采用合成棋局', () => {
   const p={w:20,h:20,minAverage:1,minMultiPercent:0,minPeakClues:15};
   const generator=engine.generate(p,2);
   const before=Array.from({length:3},()=>generator.next().value);
@@ -1771,9 +1924,11 @@ test('高峰值搜索保留较低的已验证候选，并采用超过峰值下�
   const {candidate}=before.at(-1);
   assert.ok(candidate.report.clues<p.minPeakClues);
   assert.deepEqual(engine.verify(candidate.board,p,{certify:true}),candidate.report);
-  const {board,report,route}=generator.next().value;
+  let accepted;
+  for(let i=before.length;i<12 && !accepted?.board;i++) accepted=generator.next().value;
+  const {board,report,route}=accepted;
   assert.equal(route,'composed-transfer');
-  assert.equal(report.clues,16);
+  assert.ok(engine.generationRanking(p).fits(report));
   assert.deepEqual(engine.verify(board,p,{certify:true}),report);
 });
 
@@ -1811,26 +1966,25 @@ test('20×20 的十五线索混合图开局，去掉任何一条后都没有固�
 test('高峰值生成续接困难回合，新揭示的数字使原本不确定的格可推导', () => {
   const p={w:20,h:20,minPeakClues:15,minAverage:2,minMultiPercent:30};
   const candidates=[];
-  const generator=engine.generate(p,2,({candidate})=>candidates.push(candidate));
-  for(let round=0;round<5;round++) generator.next();
+  const generator=engine.generate(p,2,({candidate})=>candidates.push(candidate),{originalTarget:true});
+  for(let round=0;round<4;round++) generator.next();
   const anchor=candidates.find(({report})=>report.clues>=p.minPeakClues);
   assert.ok(anchor);
-  assert.ok(candidates.some(({board,report})=>board.mines===anchor.board.mines &&
+  const linked=candidates.find(({board,report})=>board.mines===anchor.board.mines &&
     engine.opening(board).join()===engine.opening(anchor.board).join() && report.clues===anchor.report.clues &&
-    report.averageClues>anchor.report.averageClues && report.advancedDensity>anchor.report.advancedDensity));
-  const linked=candidates.find(({report})=>report.clues===15);
+    report.advancedDensity>anchor.report.advancedDensity);
   assert.ok(linked);
   const {board}=linked, rounds=[];
   const {trace,...report}=engine.verify(board,p,{certify:true,trace:true,observeRound:(visible,flags,state)=>{
     rounds.push({visible:visible.slice(),flags:new Set(flags),state});
   }});
   assert.deepEqual({...report,trace:[]},linked.report);
-  const source=168, target=184;
+  const source=72, target=52;
   const firstCommit=trace.findIndex(move=>move.commit);
   const followUp=trace.slice(firstCommit+1,trace.findIndex((move,i)=>i>firstCommit && move.commit)+1);
   assert.ok(trace[0].safe.includes(source) && trace[0].sources.length===15);
   assert.equal(rounds[0].state[target],'either');
-  assert.ok(followUp.some(move=>move.safe.includes(target) && move.sources.includes(source) && move.sources.length===4));
+  assert.ok(followUp.some(move=>move.safe.includes(target) && move.sources.includes(source) && move.sources.length===3));
   const {visible,flags}=rounds[1];
   assert.ok(visible[source]>=0);
   visible[source]=-1;

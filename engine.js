@@ -1531,7 +1531,7 @@ function makeMinesEngine() {
     return ns[a].some(v=>view[v]<0 && ns[b].includes(v));
   }
 
-  function composeClues({w,h},count,seed,{balanced=false,preferLoops=false,splitNearHalf=false,placementBudget=Infinity,blocks}={}) {
+  function composeClues({w,h},count,seed,{balanced=false,preferLoops=false,splitNearHalf=false,exploreSplit=false,placementBudget=Infinity,blocks}={}) {
     if(!Number.isInteger(count) || count<1 || count>w*h) return null;
     const r=random(seed), uniform=n=>{
       const limit=4294967296-4294967296%n;
@@ -1579,7 +1579,7 @@ function makeMinesEngine() {
       const occupied=new Set(left.points.map(([x,y])=>key(x,y)));
       const leftCells=new Map();
       for(const [i,[x,y]] of left.points.entries()) for(const cell of covered(x,y)) {
-        if(!leftCells.has(cell)) leftCells.set(cell,i);
+        if(!occupied.has(cell) && !leftCells.has(cell)) leftCells.set(cell,i);
       }
       const oriented=new Set(), placements=[], multiple=[];
       orientations: for(const swap of [false,true]) for(const sx of [1,-1]) for(const sy of [1,-1]) {
@@ -1588,22 +1588,35 @@ function makeMinesEngine() {
         if(oriented.has(id)) continue;
         oriented.add(id);
         if(block.w>w || block.h>h) continue;
+        // 每个朝向只计算一次未开邻格。同一邻格可同时形成多条接缝。
+        const open=new Set(block.points.map(([x,y])=>key(x,y))), boundary=new Map();
+        for(const [i,[x,y]] of block.points.entries()) for(const cell of covered(x,y)) {
+          if(open.has(cell)) continue;
+          if(boundary.has(cell)) boundary.get(cell).shared=true;
+          else {
+            const [a,b]=cell.split(',').map(Number);
+            boundary.set(cell,{a,b,owner:i,shared:false});
+          }
+        }
+        const cells=[...boundary.values()];
         for(let dy=Math.max(-block.h-1,left.h-h);dy<=Math.min(left.h+1,h-block.h);dy++) {
           for(let dx=Math.max(-block.w-1,left.w-w);dx<=Math.min(left.w+1,w-block.w);dx++) {
             if(placementBudget--<=0) break orientations;
-            const points=block.points.map(([x,y])=>[x+dx,y+dy]);
-            const open=new Set(points.map(([x,y])=>key(x,y)));
-            if([...open].some(cell=>occupied.has(cell))) continue;
-            // 位置有效时，至少存在一个两块共用、拼接后仍未打开的格子。
-            const shared=([x,y])=>covered(x,y).filter(cell=>leftCells.has(cell) && !occupied.has(cell) && !open.has(cell));
-            if(preferLoops) {
-              const ports=new Set();
-              for(const [i,point] of points.entries()) for(const cell of shared(point)) {
-                ports.add(`${i},${leftCells.get(cell)}`);
+            if(block.points.some(([x,y])=>occupied.has(key(x+dx,y+dy)))) continue;
+            let leftOwner, rightOwner, multi=false;
+            for(const {a,b,owner,shared} of cells) {
+              const other=leftCells.get(key(a+dx,b+dy));
+              if(other===undefined) continue;
+              if(preferLoops && (shared || leftOwner!==undefined && (leftOwner!==other || rightOwner!==owner))) {
+                multi=true;
+                break;
               }
-              if(ports.size>1) multiple.push(points);
-              else if(ports.size) placements.push(points);
-            } else if(points.some(point=>shared(point).length)) placements.push(points);
+              leftOwner=other;
+              rightOwner=owner;
+              if(!preferLoops) break;
+            }
+            if(!multi && leftOwner===undefined) continue;
+            (multi?multiple:placements).push(block.points.map(([x,y])=>[x+dx,y+dy]));
           }
         }
       }
@@ -1626,7 +1639,7 @@ function makeMinesEngine() {
       if(size===1) return {points:[[0,0]],w:1,h:1};
       const half=Math.floor(size/2);
       let a=splitNearHalf?half:1+uniform(half);
-      if(blocks) {
+      if(blocks && (reuse || !exploreSplit)) {
         const sizes=[...blocks.keys()].sort((a,b)=>b-a);
         // 优先选两边都能复用的拆分。否则用最大的已有子块，递归补齐余下部分。
         const pairs=sizes.filter(n=>n<size && n>=size-n && blocks.has(size-n));
@@ -1635,7 +1648,12 @@ function makeMinesEngine() {
       }
       const b=size-a, left=build(a), right=left && build(b);
       if(!right) return null;
-      const merged=join(left,right,!reuse);
+      let merged=join(left,right,!reuse);
+      // 长方形棋盘上，交换两轴后可用的接缝可能不同。
+      if(!merged && placementBudget>0 && w!==h && left.w<=h && left.h<=w) {
+        const transposed=normalize(left.points.map(([x,y])=>[y,x]));
+        if(transposed.points.join(';')!==left.points.join(';')) merged=join(transposed,right,!reuse);
+      }
       if(!merged) return null;
       const split=[a,b];
       if(!blocks) return {...merged,split};
@@ -2521,38 +2539,69 @@ function makeMinesEngine() {
     return {initial,limit,lanesAt};
   }
 
-  function composeClueSearch(p,seed) {
+  function composeClueSearch(p,seed,compose=composeClues,{originalTarget=false}={}) {
     const {peak}=generationRanking(p).target;
     const area=p.w*p.h, maxSize=area-(p.mines??Math.max(1,Math.ceil(area*.16)))-1;
-    if(peak<6 || Math.min(p.w,p.h)<5 || maxSize<2 || p.mines===0) return;
+    if(peak<6 || Math.min(p.w,p.h)<5 || maxSize<2 || p.mines===0 || originalTarget && peak>maxSize) return;
     const r=random(seed), blocks=new Map([[1,{geometry:{points:[[0,0]],w:1,h:1}}]]);
-    let largest=1, round=0, best, retryCeiling;
-    return ()=>{
-      const climbing=largest<=peak;
-      const ceiling=Math.min(maxSize,2*largest);
-      const target=climbing?retryCeiling??ceiling:peak+r(largest-peak+1);
-      const floor=climbing?Math.min(largest+1,target):peak;
-      const splitNearHalf=round++%3===2;
-      for(let count=target;count>=Math.max(floor,target-2);count--) {
-        const id=r(4294967296);
-        for(const balanced of [true,false]) {
-          const shape=composeClues(p,count,id,{blocks,balanced,preferLoops:balanced && Boolean(id&8),
-            splitNearHalf,placementBudget:30000});
-          if(!shape) continue;
-          const entry={target,shape,balanced};
-          blocks.set(count,shape);
-          if(count>=largest) {largest=count;best=entry;}
-          retryCeiling=undefined;
-          return entry;
-        }
+    // 在单次命中率至少 20% 的假设下，连续未中的概率降到 10% 以下。
+    const failureLimit=Math.ceil(Math.log(.1)/Math.log(.8));
+    let largest=1, round=0, best;
+    function attempt(count,splitNearHalf,snapshot) {
+      const id=r(4294967296), trialBlocks=snapshot?new Map(snapshot):blocks;
+      for(const balanced of [true,false]) {
+        const shape=compose(p,count,id,{blocks:trialBlocks,balanced,preferLoops:balanced && Boolean(id&8),
+          splitNearHalf,exploreSplit:Boolean(snapshot),placementBudget:30000});
+        if(snapshot) for(const [size,child] of trialBlocks) if(!blocks.has(size)) blocks.set(size,child);
+        if(!shape) continue;
+        const entry={shape,balanced};
+        blocks.set(count,shape);
+        if(count>=largest) {largest=count;best=entry;}
+        return entry;
       }
-      // 一批最大目标放不下时，下轮从更小的未尝试规模继续，已拼出的子块保留。
-      if(climbing) retryCeiling=target-3>=floor?target-3:undefined;
-      return {target,shape:best?.shape,balanced:best?.balanced};
+    }
+    // 保留一路持续尝试用户要求的峰值，历次成功的子块仍可复用。
+    if(originalTarget) return ()=>{
+      const found=attempt(peak,false,blocks);
+      return {target:peak,...(found??best)};
+    };
+    // 候选先在单线索基础块和原峰值之间取中点。上界不参与二分试探。
+    let lower=1, upper=Math.min(peak,maxSize+1), probe, revisit=0;
+    return ()=>{
+      const splitNearHalf=round++%3===2;
+      if(upper-lower<=1) {
+        // 抽样失败只用于收缩区间。收敛后优先复用最高档，间隔复查更高档。
+        const floor=Math.max(2,Math.min(peak,largest));
+        const ceiling=Math.max(floor,largest);
+        let target=floor;
+        if(++revisit%16===8) target=Math.min(peak,maxSize);
+        else if(revisit%16===0 && largest<maxSize) {
+          const limit=Math.min(maxSize,Math.max(peak+1,largest+1));
+          target=largest+1+r(limit-largest);
+        } else if(ceiling>floor) target+=r(ceiling-floor+1);
+        const found=attempt(target,splitNearHalf,blocks);
+        return {target,...(found??best)};
+      }
+      const target=Math.floor((lower+upper)/2);
+      let budget=3;
+      if(!probe) {
+        const found=attempt(target,splitNearHalf);
+        if(found) {lower=target;return {target,...found};}
+        // 固定本档的子块和预算，再用不同种子抽样。
+        probe={blocks:new Map(blocks),misses:0};
+        budget--;
+      }
+      while(budget-->0) {
+        const found=attempt(target,false,probe.blocks);
+        if(found) {lower=target;probe=undefined;return {target,...found};}
+        if(++probe.misses===failureLimit) {upper=target;probe=undefined;break;}
+      }
+      return {target,...best};
     };
   }
 
-  function* generate(p,seed,onCandidate) {
+  function* generate(p,seed,onCandidate,options={}) {
+    const {originalTarget=false}=options;
     const {target,fits,compare,compareClosest}=generationRanking(p);
     const area=p.w*p.h, tiny=area===2 || p.w===2 && p.h===2;
     const required=Math.max(target.peak,Math.ceil(target.average),target.multiPercent>0?3:1);
@@ -2577,7 +2626,9 @@ function makeMinesEngine() {
     const hard=target.average>standard.minAverage || target.multiPercent>standard.minMultiPercent || target.peak>standard.minPeakClues ?
       {multi:4*multi,peak:target.peak>standard.minPeakClues?.75:0} : null;
     const min=Math.max(1,Math.ceil(ns.length*.16)), max=Math.max(min,Math.floor(ns.length*.28));
-    const composeNext=composeClueSearch(p,seed^0x2795);
+    const composeSeed=seed^0x2795;
+    const composeNext=composeClueSearch(p,composeSeed,composeClues,{originalTarget});
+    const composeFallback=originalTarget ? composeClueSearch(p,composeSeed) : undefined;
     const linkRounds=target.peak>=10 && (target.multiPercent>=20 || target.average>=1.8);
     let passed=0, constructed=0, closest, closestMetrics;
     let continuation, continuationAnchor;
@@ -2625,7 +2676,10 @@ function makeMinesEngine() {
     }
     for(let k=1;;k++) {
       const id=r(4294967296), natural=min+r(max-min+1);
-      const composition=composeNext?.();
+      // 单路定期推进候选拼接。原峰值超出拼接容量时，每轮仍可拼接候选。
+      const fallbackRound=options.candidateFallback && composeFallback && (!composeNext || k%5===0);
+      const composeRound=fallbackRound ? composeFallback : composeNext;
+      const composition=composeRound?.();
       const clueSize=composition?.shape?.givens.length??0;
       const useStencil=target.peak<=11 || clueSize>=10 && k%4===1;
       if(p.w===5 && p.h===5 && target.peak>=10 && useStencil && k%4!==0) {
@@ -2642,8 +2696,9 @@ function makeMinesEngine() {
       }
       const dense=random(id^0xd3ab);
       const denseRound=hard && k%4!==0 && k%3!==0;
-      const cycleRound=denseRound && !!composeNext;
-      const cycleSize=target.peak<10?target.peak:Math.max(6,clueSize);
+      const cycleRound=denseRound && !!composeRound;
+      const aimAtPeak=originalTarget && !fallbackRound || target.peak<10;
+      const cycleSize=aimAtPeak ? target.peak : Math.max(6,clueSize);
       const density=cycleRound ? .34+dense(41)/100 : .23+dense(26)/100;
       const sampledMines=denseRound?Math.round(ns.length*density):natural;
       const mines=p.mines??(clueSize?Math.min(sampledMines,area-clueSize-1):sampledMines);
@@ -2692,7 +2747,8 @@ function makeMinesEngine() {
       }
       // 大棋盘已有峰值达标的候选时，部分拼接轮只做快验和续接，通用轮仍深入构造。
       const deferConstruction=continuation && area>256 && k%4!==1;
-      if(!compact && clueSize>0 && k%4!==0 && closest && (clueSize<target.peak || deferConstruction)) {
+      const hasShapedStart=composed.length>0 || ringStarts.length>0;
+      if(!compact && clueSize>0 && hasShapedStart && k%4!==0 && closest && (clueSize<target.peak || deferConstruction)) {
         yield progress(k);
         continue;
       }

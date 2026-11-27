@@ -66,7 +66,12 @@
   }
 
   function dismissSearchResult() {
-    if(!worker && !$('searchCard').hidden) saySearch('');
+    if(worker) return;
+    if(generationCandidate) {
+      generationCandidate=undefined;
+      $('useCandidate').disabled=true;
+    }
+    if(!$('searchCard').hidden) saySearch('');
   }
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
   const coord = i => format.coordinate(i,game.board.w);
@@ -96,6 +101,17 @@
     input.history();
   }
 
+  function updateSolveControl(live) {
+    const button=$('solve');
+    const label=button.querySelector('span');
+    const text=auto?'停止求解':'自动求解';
+    button.disabled=!auto && (!!worker || !live || !!pending);
+    if(label.textContent!==text) {
+      button.querySelector('use').setAttribute('href',auto?'#stopIcon':'#play');
+      label.textContent=text;
+    }
+  }
+
   function controls() {
     const live = game?.state === 'playing', locked = !!worker || auto || !!pending;
     for (const id of fields) $(id).disabled = !!worker;
@@ -104,7 +120,9 @@
     cancel.classList.toggle('is-inactive',!canCancel);
     cancel.setAttribute('aria-hidden',String(!canCancel));
     cancel.disabled=!canCancel;
-    $('useCandidate').disabled=!canCancel || !generationCandidate;
+    const useCandidate=$('useCandidate');
+    useCandidate.disabled=!generationCandidate;
+    useCandidate.textContent=canCancel?'停止并采用候选':'采用候选';
     for (const id of ['gameMode','editMode','importPosition']) $(id).disabled = locked;
     $('exportPosition').disabled = locked || !game;
     $('playPosition').disabled = locked || !game || game.board.mines===game.visible.length || !!(game.numbers && !game.witness);
@@ -120,14 +138,14 @@
     $('restart').hidden = editing;
     $('gameTime').hidden = editing;
     $('board').setAttribute('aria-busy',String(!!pending));
-    for (const id of ['focus', 'hint', 'answers']) $(id).disabled = locked || !live;
+    $('answers').disabled=locked || !live;
+    for(const id of ['focus','hint']) $(id).disabled=!!worker || auto || !live || !!pending && !proofRequest;
     $('reasonMenu').disabled = editing || !game || !!worker;
     $('selectionMenu').disabled = editing || !game || locked;
     selectionHistoryControls();
     $('markMenu').disabled = !game || !!worker || !!pending || auto || !editing && !live;
     $('restart').disabled = !!worker || !!pending && !auto || !game;
-    $('solve').disabled = !!worker || !live || (!!pending && !auto);
-    $('solve').innerHTML = auto ? `${icon('stopIcon')}停止求解` : `${icon('play')}自动求解`;
+    updateSolveControl(live);
     $('reasonMenu').innerHTML=icon('hintIcon');
     $('reasonMenu').title='推理工具';
     $('reasonMenu').setAttribute('aria-label','推理工具');
@@ -186,21 +204,25 @@
 
   function cancelPlayRequest() {
     if (!pending) return;
-    playWorker.terminate(); playWorker = null;
-    pending(null); pending = null;
+    const resolve=pending, task=playWorker;
+    pending=playWorker=null;
+    task?.terminate();
+    resolve(null);
   }
 
   function stopAuto() {
-    if (auto && proofVisible && proofPanel.querySelector('.proof-pending'))
-      proofPanel.replaceChildren(element('p','proof-pending','自动求解已停止。'));
-    auto = false; run++;
+    const wasSolving=auto;
+    auto=false;
+    run++;
     cancelPlayRequest();
+    if(wasSolving && proofVisible && proofPanel.querySelector('.proof-pending'))
+      proofPanel.replaceChildren(element('p','proof-pending','自动求解已停止。'));
     controls();
   }
-  function finishWorker() {
+  function finishWorker(keepCandidate=false) {
     for(const lane of worker?.active??[]) lane.terminate();
     worker=null;
-    generationCandidate=undefined;
+    if(!keepCandidate) generationCandidate=undefined;
     controls();
   }
 
@@ -220,7 +242,8 @@
     const {target,compareClosest}=engine.generationRanking(p);
     const schedule=engine.generationSchedule(p,navigator.hardwareConcurrency);
     const usedSeeds=new Set();
-    let canStartMore=true;
+    generationCandidate=undefined;
+    let canStartMore=true, originalLane, replacedOriginal=false, originalFallback;
     const task=worker={lanes:new Map(),active:new Set()};
     function progress() {
       let tried=0,passed=0;
@@ -232,11 +255,28 @@
     function failed(lane,message) {
       if(worker!==task || !task.active.delete(lane)) return;
       lane.terminate();
-      if(task.active.size) return;
-      finishWorker();
-      saySearch(message,'error');
+      if(lane===originalLane) {
+        if(!replacedOriginal) {
+          replacedOriginal=true;
+          try { startLane(true); return; }
+          catch { /* 补位失败，结束整组搜索。 */ }
+        }
+      } else if(task.active.size) {
+        updateCandidateFallback();
+        return;
+      }
+      finishWorker(true);
+      const candidate=generationCandidate;
+      if(candidate) {
+        const {text,shortfall}=generationProgress(candidate.progress,candidate.report);
+        saySearch(`${message} ${text}`,'error',shortfall);
+      } else saySearch(message,'error');
     }
-    const code=`onmessage = ({data:{p,seed}}) => {
+    const code=`const options={};
+      onmessage = async ({data:{p,seed,originalTarget,candidateFallback}}) => {
+        options.candidateFallback=candidateFallback;
+        if(!p) return;
+        options.originalTarget=originalTarget;
         try {
           let updated = -Infinity, sentCandidate;
           const sendProgress=({candidate,...progress})=>{
@@ -244,14 +284,19 @@
             sentCandidate=candidate;
             updated=performance.now();
           };
-          for (const result of makeMinesEngine().generate(p,seed,sendProgress)) {
+          for (const result of makeMinesEngine().generate(p,seed,sendProgress,options)) {
             if (result.board) { postMessage({result}); return; }
             if (performance.now() - updated >= 100) sendProgress(result);
+            // 原目标线程在轮次之间接收实际并发变化。
+            if(originalTarget) await new Promise(resolve=>setTimeout(resolve,0));
           }
         }
         catch (error) { postMessage({error:error.message}); }
       };`;
-    function startLane(seed) {
+    function startLane(originalTarget) {
+      let [seed]=crypto.getRandomValues(new Uint32Array(1));
+      while(usedSeeds.has(seed)) seed=(seed+1)>>>0;
+      usedSeeds.add(seed);
       const lane=background(code);
       lane.onmessage=({data})=>{
         if(worker!==task || !task.active.has(lane)) return;
@@ -276,21 +321,31 @@
         mountGenerated(result,p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${tried} 轮`);
       };
       lane.onerror=()=>failed(lane,`生成任务无法运行。${game ? '当前棋局已保留。' : ''}`);
-      try { lane.postMessage({p,seed}); }
+      const candidateFallback=originalTarget && !task.active.size;
+      try { lane.postMessage({p,seed,originalTarget,candidateFallback}); }
       catch(error) { lane.terminate(); throw error; }
       task.lanes.set(lane,{tried:0,passed:0});
       task.active.add(lane);
+      if(originalTarget) {
+        originalLane=lane;
+        originalFallback=candidateFallback;
+      }
+    }
+    function updateCandidateFallback() {
+      if(!task.active.has(originalLane)) return;
+      const enabled=task.active.size===1;
+      if(enabled===originalFallback) return;
+      originalLane.postMessage({candidateFallback:enabled});
+      originalFallback=enabled;
     }
     function startLanes(desired) {
-      const missing=desired-task.lanes.size;
-      if(!canStartMore || missing<=0) return;
-      const seeds=crypto.getRandomValues(new Uint32Array(missing));
-      for(let seed of seeds) {
-        while(usedSeeds.has(seed)) seed=(seed+1)>>>0;
-        usedSeeds.add(seed);
-        try { startLane(seed); }
-        catch { canStartMore=false; return; }
+      // 退役线程仍计入累计进度，补位只占原有的一个并发名额。
+      const scheduled=task.lanes.size-Number(replacedOriginal);
+      for(let count=scheduled;canStartMore && count<desired;count++) {
+        try { startLane(!originalLane); }
+        catch { canStartMore=false; }
       }
+      updateCandidateFallback();
     }
     startLanes(schedule.initial);
     if(!task.active.size) {
@@ -858,7 +913,7 @@
   const openReasonPanel=$('openReasonPanel');
   const header=viewport.querySelector('header');
   const compactReason=matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 1000px)');
-  let proofVisible=false, reasonCollapsed=false, proofReturn;
+  let proofVisible=false, reasonCollapsed=false, proofReturn, proofMode, proofRequest;
 
   function positionProofWindow() {
     if(!compactReason.matches || !proofVisible) return;
@@ -952,7 +1007,15 @@
     updateProofPreview();
   },true);
 
+  function cancelProofRequest() {
+    if(!proofRequest) return;
+    proofRequest=undefined;
+    cancelPlayRequest();
+    controls();
+  }
+
   function clearHint(keepProof=false) {
+    if(!keepProof) cancelProofRequest();
     if(game) {
       game.highlight = null;
       if(game.selectedClues!==undefined) {
@@ -1078,17 +1141,11 @@
       feedback.sound(safe.length?'commit':'flag');
     }
     render();
-    if(refreshProof&&!won&&g===game&&run===task) {
-      const step=await next();
-      if(g===game&&run===task&&proofVisible) {
-        if(step) display(step,false);
-        else display({status:'confirmed'},false);
-      }
-    }
     if(safe.length && g.answers && ready()) {
       const result=await judge(g);
       if(g===game && run===task && g.answers && result?.status!=='complete') say('只显示已证实的答案；其余格尚未判定。','error');
     }
+    if(refreshProof && !won && g===game && run===task && proofVisible) await previewNextProof(proofMode);
     return true;
   }
 
@@ -1407,7 +1464,14 @@
 
   function display(a, weak) {
     if(!proofVisible) return;
+    proofMode=weak?'focus':'hint';
+    updateProofButtons();
     const panel=$('proof'), m=a.move;
+    const selectedClues=m?.sources.length;
+    if(game.selectedClues!==selectedClues) {
+      game.selectedClues=selectedClues;
+      showVerification();
+    }
     clearProofHover();
     panel.replaceChildren();
     if (!m) {
@@ -1473,7 +1537,7 @@
 
   async function stageStep(a) {
     const g=game, task=run;
-    if(proofVisible) display(a,false);
+    if(proofVisible) display(a,proofMode==='focus');
     if(!a.move) return false;
     const judgment=await judge(g);
     if(task!==run || g!==game || !ready()) return false;
@@ -1519,25 +1583,42 @@
     } finally { if (task === run) stopAuto(); }
   }
 
-  async function requestHint(show, trigger, selectStep=false) {
-    if (!ready() || auto || pending) return;
+  function toggleHint(mode) {
+    if(!ready() || auto || pending && !proofRequest) return;
+    if(proofVisible && proofMode===mode) {
+      closeProof();
+      return;
+    }
+    cancelProofRequest();
+    void requestHint($(mode),mode);
+  }
+
+  async function previewNextProof(mode) {
+    const task=run, ticket=proofRequest={};
+    try {
+      const a=await next();
+      if(task===run && ready() && a && proofRequest===ticket) display(a,mode==='focus');
+    } finally {
+      if(proofRequest===ticket) {
+        proofRequest=undefined;
+        controls();
+      }
+    }
+  }
+
+  async function requestHint(trigger,mode) {
+    if(!ready() || auto || pending) return;
     dismissSearchResult();
     clearSelection();
-    const openForRequest=trigger===$('hint') || trigger===$('focus');
-    if(openForRequest&&!proofVisible) {showPendingProof();setProofVisible(true);}
-    if (!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
-    const task = run;
+    if(!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
+    if(mode) proofMode=mode;
     proofReturn=trigger;
-    clearHint(openForRequest||proofVisible); render();
-    if(compactReason.matches && trigger===$('hint')) $('closeProof').focus({preventScroll:true});
-    const a = await next();
-    if (task === run && ready() && a && (openForRequest || proofVisible || show===stageStep)) {
-      if(selectStep && a.move) {
-        game.selectedClues=a.move.sources.length;
-        showVerification();
-      }
-      show(a);
-    }
+    clearHint(!!mode || proofVisible);
+    render();
+    if(compactReason.matches && mode==='hint') $('closeProof').focus({preventScroll:true});
+    if(mode) return previewNextProof(mode);
+    const task=run, a=await next();
+    if(task===run && ready() && a) return stageStep(a);
   }
 
   function showReason(open,focus=false) {
@@ -1634,9 +1715,21 @@
   addEventListener('resize',refreshOpenRadials);
   window.visualViewport?.addEventListener('resize',refreshOpenRadials);
 
+  function updateProofButtons() {
+    for(const [id,name] of [['focus','线索'],['hint','推导']]) {
+      const button=$(id), shown=proofVisible && proofMode===id;
+      button.setAttribute('aria-pressed',String(shown));
+      const label=button.querySelector('span');
+      const text=`${shown?'隐藏':'显示'}${name}`;
+      if(label.textContent!==text) label.textContent=text;
+    }
+  }
+
   function setProofVisible(visible) {
     if(!visible && proofPane.contains(document.activeElement)) focusProofReturn();
     proofVisible=visible;
+    if(!visible) proofMode=undefined;
+    updateProofButtons();
     proofPane.classList.toggle('is-open',visible);
     reasonLayout.classList.toggle('show-proof',visible);
     syncReasonLayout();
@@ -2148,11 +2241,12 @@
   });
   $('cancel').onclick = () => { finishWorker(); saySearch(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
   $('useCandidate').onclick = () => {
-    if(!worker || !generationCandidate) return;
-    const candidate=generationCandidate;
+    if(!generationCandidate) return;
+    const candidate=generationCandidate, wasSearching=!!worker;
     finishWorker();
     const {text,shortfall}=generationProgress(candidate.progress,candidate.report);
-    mountGenerated(candidate,candidate.p,`已停止搜索并采用候选。${text}`,shortfall);
+    const message=wasSearching?'已停止搜索并采用候选。':'已采用候选。';
+    mountGenerated(candidate,candidate.p,`${message}${text}`,shortfall);
     $('board').querySelector('[tabindex="0"]')?.focus({preventScroll:true});
   };
   $('restart').onclick = async () => {
@@ -2166,12 +2260,12 @@
       say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
     } catch(error) {say(error.message,'error');}
   };
-  $('focus').onclick = () => requestHint(a=>display(a,true),$('focus'),true);
-  $('hint').onclick = () => requestHint(a=>display(a,false),$('hint'),true);
+  $('focus').onclick = () => toggleHint('focus');
+  $('hint').onclick = () => toggleHint('hint');
   $('apply').onclick = () => {
     if (!ready() || auto || pending) return;
     if (manualStepAction(game?.manual)==='commit') void commitBatch(game);
-    else void requestHint(stageStep,$('apply'));
+    else void requestHint($('apply'));
   };
   $('commitMarks').dataset.soundHandled='';
   $('commitMarks').onclick = () => {if(!auto) void commitBatch(game);};
