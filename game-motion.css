@@ -39,7 +39,7 @@ input, select { transition: border-color var(--control-time) ease, background-co
 .radial-track { opacity: 0; scale: .68; transition: scale var(--fan-time) var(--glide), opacity 210ms ease; }
 .radial.expanded .radial-track { opacity: .8; scale: 1; }
 
-#commitMarks:not(.is-inactive) { animation: commit-in 230ms var(--glide) both; }
+#commitMarks:not([hidden]) { animation: commit-in 230ms var(--glide) both; }
 @keyframes commit-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
 
 .layout { transition: grid-template-columns var(--panel-time) var(--glide); }
@@ -101,4 +101,4 @@ dialog[open].is-closing::backdrop { background-color: transparent; }
   dialog[open]) { transition: none; }
 :root[data-motion-mode='reduced'] dialog[open]::backdrop { transition: none; }
 :root[data-motion-mode='reduced'] :is(button:active:not(:disabled), summary:active) { scale: none; }
-:root[data-motion-mode='reduced'] #commitMarks:not(.is-inactive) { animation: none; }
+:root[data-motion-mode='reduced'] #commitMarks:not([hidden]) { animation: none; }

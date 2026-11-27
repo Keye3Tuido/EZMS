@@ -6,8 +6,8 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261127-11">
-  <link rel="stylesheet" href="game-motion.css?v=20261127-1">
+  <link rel="stylesheet" href="styles.css?v=20261127-12">
+  <link rel="stylesheet" href="game-motion.css?v=20261127-2">
   <script defer src="region-selection.js?v=20261127-8"></script>
   <script defer src="radial-layout.js?v=20261127-10"></script>
   <script defer src="engine.js?v=20261127-5"></script>
@@ -16,7 +16,7 @@
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
-  <script defer src="app.js?v=20261127-26"></script>
+  <script defer src="app.js?v=20261127-27"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -121,22 +121,27 @@
           <div id="board" class="board" aria-label="棋盘格子" hidden></div>
         </div>
         <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
-          <div class="board-status">
-            <p id="status" class="status" role="status" tabindex="0">等待生成或导入棋局</p>
-            <button id="useCandidate" type="button" aria-describedby="status candidateShortfall" disabled>停止并采用候选</button>
-            <p id="candidateShortfall" class="status" role="status"></p>
+          <div id="searchCard" class="board-card search-card" hidden>
+            <div class="search-summary">
+              <p id="status" class="status" role="status" tabindex="0"></p>
+              <button id="useCandidate" type="button" aria-describedby="status candidateShortfall" disabled>停止并采用候选</button>
+            </div>
+            <p id="candidateShortfall" class="status" role="status" hidden></p>
           </div>
-          <div class="round-feedback">
-            <p id="roundText" class="status is-inactive" role="status"></p>
-            <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
+          <div id="operationCard" class="board-card operation-card">
+            <p id="operationText" class="status" role="status">等待生成或导入棋局</p>
+            <div id="operationRound" class="operation-round" hidden>
+              <div class="round-feedback">
+                <p id="roundText" class="status" role="status"></p>
+                <progress id="roundProgress" max="1" value="0" aria-label="本轮确认进度"></progress>
+              </div>
+              <button type="button" id="commitMarks" class="primary" hidden disabled>开格并插旗</button>
+            </div>
           </div>
-          <button type="button" id="commitMarks" class="primary is-inactive" aria-hidden="true" disabled>开格并插旗</button>
-          <div class="selection-slot">
-            <dl id="selectionReadout" class="selection-readout" tabindex="0" aria-label="选区信息" hidden>
-              <div><dt>选区</dt><dd id="selectionTerms"></dd></div>
-              <div><dt>=</dt><dd id="selectionBounds" aria-live="polite" aria-label="可能的加权雷数"></dd></div>
-            </dl>
-          </div>
+          <dl id="selectionReadout" class="board-card selection-readout" tabindex="0" aria-label="选区信息" hidden>
+            <div><dt>选区</dt><dd id="selectionTerms"></dd></div>
+            <div><dt>=</dt><dd id="selectionBounds" aria-live="polite" aria-label="可能的加权雷数"></dd></div>
+          </dl>
         </footer>
       </section>
 

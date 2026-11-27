@@ -44,11 +44,29 @@
   let activeSelectionClues=[];
   let selectionMode='';
 
-  function say(text,tone='',shortfall='') {
+  function updateOperationCard() {
+    $('operationCard').hidden=$('operationText').hidden && $('operationRound').hidden;
+  }
+
+  function say(text,tone='') {
+    const status=$('operationText');
+    status.textContent=text;
+    status.dataset.tone=tone;
+    status.hidden=!text;
+    updateOperationCard();
+  }
+
+  function saySearch(text,tone='',shortfall='') {
     const status=$('status'), summary=$('candidateShortfall');
+    $('searchCard').hidden=!text;
     status.textContent=text;
     status.dataset.tone=tone;
     if(summary.textContent!==shortfall) summary.textContent=shortfall;
+    summary.hidden=!shortfall;
+  }
+
+  function dismissSearchResult() {
+    if(!worker && !$('searchCard').hidden) saySearch('');
   }
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
   const coord = i => format.coordinate(i,game.board.w);
@@ -59,22 +77,20 @@
     const locked = auto || !!pending;
     const commit=$('commitMarks');
     const canCommit=live && complete;
-    if(!canCommit && document.activeElement===commit) commit.parentElement.focus({preventScroll:true});
-    commit.classList.toggle('is-inactive',!canCommit);
-    commit.setAttribute('aria-hidden',String(!canCommit));
+    if(!canCommit && document.activeElement===commit) buttons[game?.focus]?.focus({preventScroll:true});
+    commit.hidden=!canCommit;
     commit.disabled=locked || !canCommit;
     const progress=$('roundProgress');
     const showProgress=live && !!batch?.marked.size;
-    progress.classList.toggle('is-inactive',!showProgress);
-    progress.setAttribute('aria-hidden',String(!showProgress));
+    $('operationRound').hidden=!showProgress && !canCommit;
     progress.max=batch?.total || 1;
     progress.value=batch?.marked.size || 0;
     progress.toggleAttribute('data-complete',complete);
     const text=$('roundText');
     const message=!showProgress?'':`本轮已确认 ${batch.marked.size} / ${batch.total} 格${complete?'，可以开格并插旗。':''}`;
     if(text.textContent!==message) text.textContent=message;
-    text.classList.toggle('is-inactive',!showProgress);
     text.toggleAttribute('data-complete',complete);
+    updateOperationCard();
     // 标齐后，求解一步直接提交这一批；未标齐时才执行下一条推导。
     $('apply').disabled = locked || !live;
     input.history();
@@ -198,8 +214,9 @@
     e?.preventDefault();
     if (worker || pending && !auto) return;
     let p;
-    try { p = readSettings(); } catch (error) { say(error.message, 'error'); return; }
+    try { p = readSettings(); } catch (error) { saySearch(error.message, 'error'); return; }
     stopAuto();
+    say('');
     const {target,compareClosest}=engine.generationRanking(p);
     const schedule=engine.generationSchedule(p,navigator.hardwareConcurrency);
     const usedSeeds=new Set();
@@ -217,7 +234,7 @@
       lane.terminate();
       if(task.active.size) return;
       finishWorker();
-      say(message,'error');
+      saySearch(message,'error');
     }
     const code=`onmessage = ({data:{p,seed}}) => {
         try {
@@ -249,7 +266,7 @@
           if(generationCandidate) generationCandidate.progress=merged;
           startLanes(schedule.lanesAt(merged.tried));
           const {text,shortfall}=generationProgress(merged,generationCandidate?.report);
-          say(text,'',shortfall);
+          saySearch(text,'',shortfall);
           return;
         }
         const result=data.result;
@@ -278,20 +295,19 @@
     startLanes(schedule.initial);
     if(!task.active.size) {
       finishWorker();
-      say('浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。','error');
+      saySearch('浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。','error');
       return;
     }
     controls();
-    say('正在构造开局');
+    saySearch('正在构造开局');
   }
 
   function mountGenerated({board,report},p,message,shortfall) {
-    if(!report.openingMinimum) {say('没有通过首步最少线索验证，未发放该局。','error'); return;}
+    if(!report.openingMinimum) {saySearch('没有通过首步最少线索验证，未发放该局。','error'); return;}
     const position=positionGame({board},p);
     position.openingVerification=verificationSummary(report);
     mount(position);
-    say(message,'success',shortfall);
-    $('status').scrollTop=0;
+    saySearch(message,'success',shortfall);
   }
 
   const noteColors=['red','blue','archivedBlue'];
@@ -311,6 +327,7 @@
 
   function mount(position) {
     stopAuto();
+    dismissSearchResult();
     game=position;
     selectionHistory=game?.selection??regionSelection.history();
     setSelectionMode();
@@ -968,6 +985,7 @@
 
   async function toggleAnswers() {
     if(!ready() || pending || auto) return;
+    dismissSearchResult();
     const g=game;
     g.answers=!g.answers;
     if(g.answers) clearSelection();
@@ -1028,6 +1046,7 @@
 
   async function commitBatch(g) {
     if(g!==game || !g.manual?.done || !ready() || pending) return false;
+    dismissSearchResult();
     const task=run;
     const refreshProof=!auto&&proofVisible;
     const safe=g.manual.cells('safe'), mines=g.manual.cells('mine');
@@ -1486,6 +1505,7 @@
   async function solve() {
     if (auto) { pauseSolve(); return; }
     if (!ready() || pending) return;
+    dismissSearchResult();
     auto = true;
     const task=++run, g=game;
     if(proofVisible) showPendingProof();
@@ -1506,6 +1526,7 @@
 
   async function requestHint(show, trigger, selectStep=false) {
     if (!ready() || auto || pending) return;
+    dismissSearchResult();
     clearSelection();
     const openForRequest=trigger===$('hint') || trigger===$('focus');
     if(openForRequest&&!proofVisible) {showPendingProof();setProofVisible(true);}
@@ -2042,6 +2063,7 @@
     if(!g || g.current?.status!=='blocked' || pending || worker || auto) return;
     const board=g.numbers?g.witness:g.board;
     if(!board) return;
+    dismissSearchResult();
     const result=await ask('expand',{board,visible:g.visible,flags:editing?[]:g.flags});
     if(g!==game) return;
     if(result?.status!=='expanded') {say('未能确定最少开扩格数，局面未改变。','error');return;}
@@ -2128,7 +2150,7 @@
       setDifficultyOpen(false);
     }
   });
-  $('cancel').onclick = () => { finishWorker(); say(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
+  $('cancel').onclick = () => { finishWorker(); saySearch(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
   $('useCandidate').onclick = () => {
     if(!worker || !generationCandidate) return;
     const candidate=generationCandidate;
@@ -2139,6 +2161,7 @@
   };
   $('restart').onclick = async () => {
     if (!game || worker || pending && !auto) return;
+    dismissSearchResult();
     stopAuto();
     const {original,p,originalVisible,originalFlags,originalNotes,selection}=game;
     try {
@@ -2221,7 +2244,10 @@
     const timer=setTimeout(()=>{
       suppressSelectionClick=true;
       stopSelectionHold();
-      if(!selectionLauncher.disabled) clearSelection(true);
+      if(!selectionLauncher.disabled && (selectionHistory.weights.size || selectionHistory.clueWeights.size)) {
+        dismissSearchResult();
+        clearSelection(true);
+      }
     },650);
     selectionHold={timer,id:e.pointerId,x:e.clientX,y:e.clientY};
     selectionLauncher.classList.add('holding');
@@ -2242,8 +2268,16 @@
   };
   $('selectionAdd').onclick=()=>setSelectionMode(selectionMode==='add'?'':'add');
   $('selectionSubtract').onclick=()=>setSelectionMode(selectionMode==='subtract'?'':'subtract');
-  $('selectionUndo').onclick=()=>{if(selectionHistory.undo()) refreshSelection();};
-  $('selectionRedo').onclick=()=>{if(selectionHistory.redo()) refreshSelection();};
+  function moveSelectionHistory(action) {
+    if(!selectionHistory[action]()) return;
+    dismissSearchResult();
+    refreshSelection();
+  }
+  $('selectionUndo').onclick=()=>moveSelectionHistory('undo');
+  $('selectionRedo').onclick=()=>moveSelectionHistory('redo');
+  $('markHistory').addEventListener('click',e=>{
+    if(e.target.closest('button:not(:disabled)')) dismissSearchResult();
+  },{capture:true});
   $('closeProof').onclick = closeProof;
   openReasonPanel.onclick = () => setReasonCollapsed(false,true);
   for(const button of document.querySelectorAll('[data-collapse-reason]')) {
@@ -2295,6 +2329,7 @@
     if(selectionMode) return;
     if(input.writing) {
       if(input.startStroke(i)) {
+        dismissSearchResult();
         inkDrag={id:e.pointerId,x:e.clientX,y:e.clientY,spacing:Math.max(1,cell.offsetWidth/4)};
         skipDragClick=true;
         board.setPointerCapture(e.pointerId);
@@ -2315,7 +2350,8 @@
     if(drag?.id!==e.pointerId || drag.game!==game) return;
     if(!drag.ghost) {
       if(!e.buttons || Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<8) return;
-      // Keep taps on the original cell; capture only after a drag starts.
+      // 越过拖动阈值后再捕获指针，让直接点按仍落在原格子上。
+      dismissSearchResult();
       board.setPointerCapture(e.pointerId);
       drag.ghost=element('span','drag-flag');
       drag.ghost.innerHTML=icon('flag');
@@ -2347,6 +2383,7 @@
   board.addEventListener('click',e=>{
     if(e.detail && skipDragClick) {skipDragClick=false;return;}
     const b=e.target.closest('[data-cell]'); if(!b) return;
+    dismissSearchResult();
     const i=Number(b.dataset.cell);
     if(selectBoardCell(i)) return;
     if(input.stamp(i)) return;
@@ -2356,6 +2393,7 @@
     const b=e.target.closest('[data-cell]'); if (b) {
       e.preventDefault();
       if(inkDrag) return;
+      dismissSearchResult();
       const i=Number(b.dataset.cell);
       if(selectBoardCell(i)) return;
       if(input.erase(i)) return;
@@ -2366,6 +2404,7 @@
     const b=e.target.closest('[data-cell]'); if (!b || !game) return;
     const i=Number(b.dataset.cell), w=game.board.w;
     if(editing && game.numbers && (/^[0-8]$/.test(e.key) || ['Delete','Backspace'].includes(e.key))) {
+      dismissSearchResult();
       e.preventDefault(); editCell(i,false,/^[0-8]$/.test(e.key)?Number(e.key):-1); return;
     }
     let n=i;
@@ -2376,12 +2415,15 @@
       case 'ArrowDown': if(i+w<buttons.length) n+=w; break;
       case 'f': case 'F':
         e.preventDefault();
+        dismissSearchResult();
         if(selectBoardCell(i)) return;
         if(!input.writing) (editing?editCell:play)(i,true);
         return;
       default: return;
     }
-    e.preventDefault(); game.focus=n; buttons[i].tabIndex=-1; buttons[n].tabIndex=0; buttons[n].focus();
+    e.preventDefault();
+    if(n!==i) dismissSearchResult();
+    game.focus=n; buttons[i].tabIndex=-1; buttons[n].tabIndex=0; buttons[n].focus();
   });
   setInterval(time,250);
   controls();

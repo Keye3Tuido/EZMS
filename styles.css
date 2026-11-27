@@ -298,66 +298,45 @@ input, select { background: #fcfcfe; }
 .cell.first.open { box-shadow: inset 0 0 0 1px #a6b5cf; }
 .cell.flagged:not(.edit-mine) { color: #a02443; }
 .cell.flagged > .icon { width: min(21px, 75%); height: min(21px, 75%); fill: #b73f5b32; }
-.board-footer { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; min-height: 60px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.board-footer { display: grid; justify-items: start; grid-template-columns: minmax(0,1fr); gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.board-footer:not(:has(> :not([hidden]))) { padding: 0; border: 0; }
 .board-footer:focus { outline: none; }
-.board-status {
-  grid-area: 1 / 1 / 2 / -1;
-  display: grid;
-  grid-template-columns: minmax(0,1fr) auto;
-  column-gap: 8px;
-  align-items: start;
-  max-inline-size: 36rem;
-  min-width: 0;
-}
-/* Reserve the entire status row even before a candidate is available. */
-#status {
-  margin: 0;
-  min-height: 0;
-  line-height: 1.5;
-  block-size: 2lh;
-  overflow: auto;
-  scrollbar-gutter: stable;
-}
-#candidateShortfall {
-  grid-column: 1 / -1;
-  block-size: 2lh;
-  margin: 0;
-  color: #804920;
-  font-weight: 600;
-}
-#useCandidate { font-size: 13px; white-space: nowrap; }
-#useCandidate:disabled { visibility: hidden; }
-.round-feedback { grid-area: 2 / 1; min-width: 0; }
-#roundText { margin: 0; line-height: 1.45; min-height: 2lh; }
-/* 表达式较长时，仍在下方显示计算结果。 */
-.selection-slot {
-  grid-area: 3 / 1 / 4 / -1;
-  min-width: 0;
-  font: 600 13px/1.45 ui-monospace, Consolas, monospace;
-  block-size: calc(2lh + 16px);
-}
-.selection-readout {
-  block-size: 100%;
-  margin: 0;
-  padding: 4px 7px;
-  border-left: 3px solid #8052bd;
-  background: #f4effb;
-  color: #33234a;
+.board-card {
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--card-line);
+  border-radius: 8px;
+  background: var(--card-bg);
+  color: var(--card-ink);
   overflow-wrap: anywhere;
 }
-.selection-readout:not([hidden]) { display: flex; flex-direction: column; }
-.selection-readout > div { display: grid; grid-template-columns: 2.25em minmax(0,1fr); grid-template-rows: minmax(0,1fr); gap: 4px; min-block-size: 0; padding-block: 1px; }
-.selection-readout > div:last-child { flex: 0 0 calc(1lh + 2px); }
+.board-card .status { min-height: 0; margin: 0; color: inherit; }
+.board-card .status[data-tone='success'] { color: var(--green); }
+.board-card .status[data-tone='error'] { color: var(--red); }
+.search-card { --card-bg: #fff7db; --card-line: #e8d698; --card-ink: #614b1a; }
+.operation-card { --card-bg: #e7f7f5; --card-line: #b9dfda; --card-ink: #235c55; }
+.selection-readout { --card-bg: #f4effb; --card-line: #d9c9ec; --card-ink: #33234a; }
+.search-summary { display: grid; grid-template-columns: minmax(0,1fr); align-items: center; gap: 8px; }
+.search-summary:has(#useCandidate:not(:disabled)) { grid-template-columns: minmax(0,1fr) auto; }
+.operation-round { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+#status, .round-feedback { min-inline-size: 0; }
+#candidateShortfall { margin-top: 3px; color: #804920; font-weight: 600; }
+:where(#useCandidate, #commitMarks) { font-size: 13px; }
+#useCandidate:disabled { display: none; }
+#operationText:not([hidden]) + .operation-round { margin-top: 4px; }
+.selection-readout { margin: 0; font: 600 13px/1.45 ui-monospace, Consolas, monospace; }
+.selection-readout > div { display: grid; grid-template-columns: 2.25em minmax(0,1fr); gap: 4px; padding-block: 1px; }
 .selection-readout dt { color: #604877; }
-.selection-readout dd { margin: 0; overflow: auto; scrollbar-width: thin; }
+.selection-readout dd { margin: 0; max-block-size: 4lh; overflow: auto; scrollbar-width: thin; }
 .selection-token { display: inline-block; max-width: 100%; padding-inline: 4px; border-radius: 4px; color: #482368; background: #e9dcf8; }
 .selection-token.negative { color: #674b0b; background: #faecc0; }
 .selection-token.clue-token { min-inline-size: 1.7em; border: 1px solid currentColor; border-radius: 50%; text-align: center; white-space: nowrap; }
 .selection-token:is(:hover,:focus-visible) { outline: 1px solid currentColor; outline-offset: -1px; }
 
 #roundText[data-complete] { color: var(--green); font-weight: 680; }
-#status[data-tone='rejected'] { color: #8e1634; background: #fff0f3; box-shadow: inset 3px 0 #ac153b; padding-inline: 9px 5px; align-content: center; font-weight: 750; }
-.board-footer #commitMarks { grid-area: 2 / 2; font-size: 13px; }
+#operationText[data-tone='rejected'] { color: #8e1634; font-weight: 750; }
 #roundProgress { display: block; appearance: none; width: min(100%,14rem); height: 4px; margin-top: 6px; overflow: hidden; border: 0; border-radius: 3px; background: #e6eae4; }
 #roundProgress::-webkit-progress-bar { background: transparent; }
 #roundProgress::-webkit-progress-value { background: #a8425b; border-radius: inherit; }
@@ -428,10 +407,6 @@ input, select { background: #fcfcfe; }
   .header-tools .mode-switch button { padding-inline: 7px; }
   .header-tools .icon-button { flex: none; width: 34px; }
   .board-head .icon-button { width: 32px; min-height: 32px; }
-  .board-footer { grid-template-columns: auto minmax(0,1fr); }
-  #status { block-size: 4lh; }
-  .board-footer #commitMarks { grid-area: 2 / 1; }
-  .board-footer .round-feedback { grid-area: 2 / 2; }
 }
 /* Match the layout used by syncReasonLayout(), including phones in landscape. */
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1000px) {
@@ -613,7 +588,7 @@ input, select { background: #fcfcfe; }
   [data-fullscreen-mode] .board {
     --tile: clamp(11px, min(calc((100cqw - var(--axis)) / var(--cols) - var(--grid-gap)), calc((var(--stage) - 42px) / var(--rows) - var(--grid-gap))), 56px);
   }
-  [data-fullscreen-mode] .board-footer { min-height: 50px; padding-block: 5px; }
+  [data-fullscreen-mode] .board-footer:has(> :not([hidden])) { padding-block: 5px; }
 }
 
 @media (min-width: 761px) and (pointer: fine), (min-width: 1001px) {
