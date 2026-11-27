@@ -24,7 +24,7 @@
   inkDrawing.setAttribute('aria-hidden','true');
   let paintedInk='';
   const fields = ['width', 'height', 'minAverage', 'minMultiPercent', 'minPeakClues'];
-  let game, worker, auto = false, run = 0, buttons = [];
+  let game, worker, generationCandidate, auto = false, run = 0, buttons = [];
   let editing=false, parkedGame, draft, editTool='mine';
   let digit=1, draftMinesValid=true;
   let playWorker, pending;
@@ -35,15 +35,18 @@
   let hoveredProof, focusedProof, pinnedProof;
   let activeProofRow;
   let activeAreaPreview = null;
-  const selectionHistory=regionSelection.history();
-  const {weights:selectedWeights,clueWeights:selectedClueWeights}=selectionHistory;
+  let selectionHistory=regionSelection.history();
   const selectionTargets=new WeakMap();
   let hoveredSelection, focusedSelection, selectionReadoutKey='';
   let activeSelectionClues=[];
   let selectionMode='';
-  let selectionAdj=[];
 
-  const say = (text, tone = '') => { $('status').textContent = text; $('status').dataset.tone = tone; };
+  function say(text,tone='',shortfall='') {
+    const status=$('status'), summary=$('candidateShortfall');
+    status.textContent=text;
+    status.dataset.tone=tone;
+    if(summary.textContent!==shortfall) summary.textContent=shortfall;
+  }
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
   const coord = i => format.coordinate(i,game.board.w);
   const source = s => s === -1 ? '总雷数' : coord(s);
@@ -67,10 +70,11 @@
     const text=$('roundText');
     const message=!showProgress?'':`本轮已确认 ${batch.marked.size} / ${batch.total} 格${complete?'，可以开格并插旗。':''}`;
     if(text.textContent!==message) text.textContent=message;
-    text.hidden=!showProgress;
+    text.classList.toggle('is-inactive',!showProgress);
     text.toggleAttribute('data-complete',complete);
     // 标齐后，求解一步直接提交这一批；未标齐时才执行下一条推导。
     $('apply').disabled = locked || !live;
+    input.history();
   }
 
   function controls() {
@@ -81,6 +85,7 @@
     cancel.classList.toggle('is-inactive',!canCancel);
     cancel.setAttribute('aria-hidden',String(!canCancel));
     cancel.disabled=!canCancel;
+    $('useCandidate').disabled=!canCancel || !generationCandidate;
     for (const id of ['gameMode','editMode','importPosition']) $(id).disabled = locked;
     $('exportPosition').disabled = locked || !game;
     $('playPosition').disabled = locked || !game || game.board.mines===game.visible.length || !!(game.numbers && !game.witness);
@@ -117,16 +122,21 @@
     }
   }
 
-  function generationProgress({tried,passed,closest,target}) {
+  function generationProgress({tried,passed,closest,target},report) {
     const progress=`已搜索 ${tried} 轮 · ${passed} 局通过技巧验证`;
-    if(!closest) return progress;
-    const {average, multiPercent, peak}=closest;
-    const metrics=[['平均线索',average,target.average,''],['多线索步骤',multiPercent,target.multiPercent,'%'],
-      ['峰值线索',peak,target.peak,'']];
-    const display=(value,suffix)=>`${Number(value.toFixed(2))}${suffix}`;
-    const summary=metrics.map(([name,actual,,suffix])=>`${name} ${display(actual,suffix)}`).join('、');
-    const missing=metrics.filter(([,actual,goal])=>actual<goal).map(([name,,goal,suffix])=>`${name}需 ≥ ${goal}${suffix}`).join('、');
-    return `${progress}。最接近候选：${summary}。${missing ? `未达标：${missing}。` : ''}`;
+    if(!closest) return {text:progress};
+    const {average,multiPercent,peak}=closest;
+    const metrics=[
+      ['平均线索',average,target.average,'',average<target.average],
+      ['多线索步骤占比',multiPercent,target.multiPercent,'%',report.advancedDensity<target.multiPercent/100],
+      ['峰值线索',peak,target.peak,'',peak<target.peak]
+    ];
+    const summary=metrics.map(([name,actual,goal,suffix,miss])=>{
+      const value=`${name} ${Number(actual.toFixed(2))}${suffix}`;
+      return miss?`${value}（需 ≥ ${goal}${suffix}）`:value;
+    }).join('、');
+    const missing=metrics.filter(([, , , ,miss])=>miss).map(([name])=>name);
+    return {text:`${progress}。最接近候选：${summary}。`,shortfall:missing.length?`未达标：${missing.join('、')}`:''};
   }
 
   function readDimensions(width,height) {
@@ -169,7 +179,12 @@
     cancelPlayRequest();
     controls();
   }
-  function finishWorker() { worker?.terminate(); worker = null; controls(); }
+  function finishWorker() {
+    worker?.terminate();
+    worker=null;
+    generationCandidate=undefined;
+    controls();
+  }
 
   function background(code) {
     const url = URL.createObjectURL(new Blob([`${makeMinesEngine.toString()}\n${code}`],{type:'text/javascript'}));
@@ -185,15 +200,15 @@
     stopAuto();
     try { worker = background(`onmessage = ({data:{p,seed}}) => {
         try {
-          let updated = -Infinity, reportedCandidate = false;
-          for (const result of makeMinesEngine().generate(p,seed)) {
+          let updated = -Infinity, sentCandidate;
+          const sendProgress=({candidate,...progress})=>{
+            postMessage(candidate!==sentCandidate ? {progress,candidate} : {progress});
+            sentCandidate=candidate;
+            updated=performance.now();
+          };
+          for (const result of makeMinesEngine().generate(p,seed,sendProgress)) {
             if (result.board) { postMessage({result}); return; }
-            const now = performance.now();
-            if (now - updated >= 200 || result.closest && !reportedCandidate) {
-              postMessage({progress:result});
-              updated = now;
-              reportedCandidate ||= !!result.closest;
-            }
+            if (performance.now() - updated >= 200) sendProgress(result);
           }
         }
         catch (error) { postMessage({error:error.message}); }
@@ -205,23 +220,34 @@
     worker.onmessage = ({data}) => {
       if (task !== worker) return;
       if (data.progress) {
-        say(generationProgress(data.progress));
+        if(data.candidate) generationCandidate={...data.candidate,p:job.p};
+        if(generationCandidate) {
+          generationCandidate.progress=data.progress;
+          $('useCandidate').disabled=false;
+        }
+        const {text,shortfall}=generationProgress(data.progress,generationCandidate?.report);
+        say(text,'',shortfall);
         return;
       }
       finishWorker();
       if (data.error) { say(`本次生成中止：${data.error}`, 'error'); return; }
       const r = data.result;
-      if (!r.report.openingMinimum) { say('没有通过首步最少线索验证，未发放该局。','error'); return; }
-      const position=positionGame({board:r.board},job.p);
-      position.openingVerification=verificationSummary(r.report);
-      mount(position);
-      say(`三项难度达标 · 技巧通关验证通过 · 搜索 ${r.tried} 轮`, 'success');
+      mountGenerated(r,job.p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${r.tried} 轮`);
     };
     worker.onerror = () => {
       if (task !== worker) return;
       finishWorker(); say(`生成任务无法运行。${game ? '当前棋局已保留。' : ''}`, 'error');
     };
     worker.postMessage(job);
+  }
+
+  function mountGenerated({board,report},p,message,shortfall) {
+    if(!report.openingMinimum) {say('没有通过首步最少线索验证，未发放该局。','error'); return;}
+    const position=positionGame({board},p);
+    position.openingVerification=verificationSummary(report);
+    mount(position);
+    say(message,'success',shortfall);
+    $('status').scrollTop=0;
   }
 
   const noteColors=['red','blue','archivedBlue'];
@@ -236,14 +262,17 @@
     return {board,original:board,originalVisible:visible,originalFlags:[...flags],originalNotes:notes,p:{...p,w:board.w,h:board.h,mines:board.mines},
       numbers,visible,flags:new Set(flags),notes:history,proven:new Set(),opened,
       state:opened===visible.length-board.mines?'won':'playing',started:null,ended:null,highlight:null,focus:board.first,
-      judgment:null,answers:false};
+      judgment:null,answers:false,selection:regionSelection.history()};
   }
 
   function mount(position) {
     stopAuto();
     game=position;
-    selectionAdj=game?.board.ns??[];
-    clearSelection();
+    selectionHistory=game?.selection??regionSelection.history();
+    setSelectionMode();
+    hoveredSelection=focusedSelection=undefined;
+    selectionReadoutKey='';
+    updateSelectionReadout();
     input.reset(editing); showReason(false);
     clearHint();
     scheduleVerification();
@@ -463,7 +492,7 @@
     $('totalMines').classList.toggle('clue-total', !!highlight?.sources.includes(-1));
     paintInk();
     time();
-    if(selectedWeights.size || selectedClueWeights.size) {
+    if(selectionHistory.weights.size || selectionHistory.clueWeights.size) {
       updateSelectionReadout();
       updateProofPreview();
     }
@@ -488,7 +517,7 @@
       for(const cell of clues) buttons[cell]?.classList.add('clue');
       activeSelectionClues=clues;
     }
-    const next=proof??selection?.preview??(selectedWeights.size?selectionPreview():null);
+    const next=proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
     if(next===activeAreaPreview) return;
     for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
@@ -519,14 +548,14 @@
 
   function selectionUnknownWeights() {
     const known=selectionKnown();
-    return new Map([...selectedWeights].filter(([cell])=>!known.has(cell)));
+    return new Map([...selectionHistory.weights].filter(([cell])=>!known.has(cell)));
   }
 
-  function selectionRemainder(known) {
+  function selectionRemainder(clues,known) {
     let total=0;
-    for(const [clue,weight] of selectedClueWeights) {
+    for(const [clue,weight] of clues) {
       let fixedMines=0;
-      for(const cell of selectionAdj[clue]) fixedMines+=known.get(cell)??0;
+      for(const cell of game.board.ns[clue]) fixedMines+=known.get(cell)??0;
       total+=weight*(game.visible[clue]-fixedMines);
     }
     return total;
@@ -543,8 +572,8 @@
   }
 
   function updateSelectionReadout() {
-    const weights=selectedWeights.size?selectionUnknownWeights():new Map();
-    const clues=[...selectedClueWeights].sort(([a],[b])=>a-b);
+    const weights=selectionHistory.weights.size?selectionUnknownWeights():new Map();
+    const clues=[...selectionHistory.clueWeights].filter(([cell])=>game.visible[cell]>=0).sort(([a],[b])=>a-b);
     const shown=weights.size>0 || clues.length>0;
     selectionReadout.hidden=!shown;
     if(!shown) {
@@ -559,7 +588,7 @@
       coefficient,cells,label:format.label(cells,w,h,game.visible)
     })).sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
     const {min,max}=regionSelection.bounds(weights,new Map());
-    const remaining=clues.length?selectionRemainder(selectionKnown()):null;
+    const remaining=clues.length?selectionRemainder(clues,selectionKnown()):null;
     const key=JSON.stringify([terms,clues,remaining,w]);
     if(key===selectionReadoutKey) return;
     selectionReadoutKey=key;
@@ -613,7 +642,7 @@
     if(!selectionMode || !game || editing || game.state!=='playing') return false;
     if($('selectionMenu').disabled) return true;
     const clue=game.visible[i]>=0?i:undefined;
-    const cells=regionSelection.unknown(clue===undefined?[i]:selectionAdj[clue],selectionKnown());
+    const cells=regionSelection.unknown(clue===undefined?[i]:game.board.ns[clue],selectionKnown());
     const sign=selectionMode==='add'?1:-1;
     if(!selectionHistory.select(cells,clue,sign)) return true;
     buttons[game.focus].tabIndex=-1;
@@ -755,9 +784,10 @@
 
   async function toggleAnswers() {
     if(!ready() || pending || auto) return;
-    clearSelection();
     const g=game;
-    g.answers=!g.answers; controls(); render();
+    g.answers=!g.answers;
+    if(g.answers) clearSelection();
+    controls(); render();
     if(!g.answers) return;
     const result=await judge(g);
     if(g===game && g.answers && result?.status!=='complete') say('只显示已证实的答案；其余格尚未判定。','error');
@@ -773,10 +803,8 @@
   function removeFlag(g,i) {
     g.flags.delete(i);
     g.verification=undefined;
-    if(!g.manual) return;
-    const updated=makeManualBatch(g.judgment.state,g.flags,engine.confirmationTargets);
-    for(const kind of ['mine','safe']) updated.record(g.manual.cells(kind),kind);
-    g.manual=updated;
+    g.notes.discardRedo();
+    g.manual?.refreshTargets();
   }
 
   async function recordManual(g,cells,kind,from) {
@@ -788,10 +816,10 @@
       feedback.sound('rejected');
       say(judgment?.status==='invalid'?'当前线索互相矛盾。':'未能核对当前局面。','error'); return;
     }
-    const batch=g.manual??makeManualBatch(judgment.state,g.flags,engine.confirmationTargets);
+    const batch=g.manual??makeManualBatch(judgment.state,g.flags,engine.confirmationTargets,g.notes);
     const added=cells.filter(i=>!batch.marked.has(i));
     const wasDone=batch.done;
-    const result=batch.record(cells,kind);
+    const result=batch.record(cells,kind,from);
     if(result.wrong!==undefined) {
       feedback.tile('rejected',buttons[result.wrong]);
       feedback.sound('rejected');
@@ -800,7 +828,6 @@
     }
     for(const i of cells) feedback.clearRejection(buttons[i]);
     g.manual=batch;
-    if(from!==undefined) removeFlag(g,from);
     const confirmed=added.filter(i=>batch.marked.has(i));
     if(!confirmed.length) feedback.sound(from===undefined?'click':'erase');
     showMarks(g,confirmed,wasDone);
@@ -841,7 +868,7 @@
     g.flags=flags;
     discardOpenedMarks(g,safe);
     g.manual=null;
-    clearSelection();
+    g.notes.discardConfirmations();
     g.current=g.verification=undefined; scheduleVerification();
     const won=g.opened===g.visible.length-g.board.mines;
     clearHint(!won && proofVisible);
@@ -867,7 +894,6 @@
 
   function play(i, marking) {
     if (!ready() || auto || pending) return;
-    clearSelection();
     const g = game;
     g.focus = i;
     say('');
@@ -1143,7 +1169,6 @@
   function display(a, weak) {
     if(!proofVisible) return;
     const panel=$('proof'), m=a.move;
-    clearSelection();
     clearProofHover();
     panel.replaceChildren();
     if (!m) {
@@ -1216,10 +1241,10 @@
     if(safe.some(v=>judgment.state[v]!=='safe') || mines.some(v=>judgment.state[v]!=='mine')) {
       say('推导未通过核对，红色标记未改变。','error');return false;
     }
-    g.manual??=makeManualBatch(judgment.state,g.flags,engine.confirmationTargets);
+    g.manual??=makeManualBatch(judgment.state,g.flags,engine.confirmationTargets,g.notes);
     const added=[...safe,...mines].filter(i=>!g.manual.marked.has(i));
     const wasDone=g.manual.done;
-    g.manual.record(safe,'safe'); g.manual.record(mines,'mine');
+    g.manual.recordStep(safe,mines);
     const confirmed=added.filter(i=>g.manual.marked.has(i));
     if(!confirmed.length) return false;
     showMarks(g,confirmed,wasDone);
@@ -1284,7 +1309,7 @@
       if(open) {input.close();showReason(false);}
       else setSelectionMode();
     }
-    if(name==='mark'&&open) {clearSelection();showReason(false);}
+    if(name==='mark'&&open) {setSelectionMode();showReason(false);}
     if(name==='reason'&&open) {clearSelection();input.close();}
     if(open) for(const other of ['mark','selection','reason']) {
       if(other===name) continue;
@@ -1314,7 +1339,7 @@
     const viewport=document.documentElement;
     const originX=anchor.left+anchor.width/2, originY=anchor.top+anchor.height/2;
     const obstacles=[...dock.querySelectorAll('.launcher')].filter(item=>item!==launcher && !item.hidden).map(dockButtonRect);
-    const kind=name==='reason'?'reason':name==='mark'&&!editing?'ring':name==='selection'?'paired':'fan';
+    const kind=name==='reason'?'reason':name==='mark'&&!editing?'ring':name==='selection'?'selection':'fan';
     const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
       width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind
     });
@@ -1337,14 +1362,9 @@
     if(track) {
       const mark=positioned.items;
       const launcherPoint={x:0,y:0};
-      if(kind==='ring') {
-        track.querySelector('#inkTrack').setAttribute('d',radialLayout.ringArcPath(mark));
-      } else if(name==='selection') {
-        const [left,right]=radialLayout.pairedGroups(mark,launcherPoint);
-        const ids=['selectionTrackLeft','selectionTrackRight'];
-        for(const [index,group] of [left,right].entries()) {
-          track.querySelector(`#${ids[index]}`).setAttribute('d',radialLayout.pairedArcPath(group,launcherPoint,index?'right':'left'));
-        }
+      if(kind==='ring' || kind==='selection') {
+        const id=kind==='ring'?'inkTrack':'selectionTrack';
+        track.querySelector(`#${id}`).setAttribute('d',radialLayout.ringArcPath(mark));
       } else if(name==='reason') {
         track.querySelector('#reasonTrack')?.setAttribute('d',radialLayout.semicirclePath(mark));
       } else {
@@ -1799,9 +1819,9 @@
     if(g!==game) return;
     if(result?.status!=='expanded') {say('未能确定最少开扩格数，局面未改变。','error');return;}
     g.manual=null;
+    g.notes.discardConfirmations();
     g.visible=result.visible; g.opened+=result.cells.length;
     discardOpenedMarks(g,result.cells);
-    clearSelection();
     if(editing) {
       g.board.opening=g.visible.flatMap((n,i)=>n>=0?[i]:[]);
       g.board.first=g.board.opening[0]??0;
@@ -1861,7 +1881,11 @@
       feedback.sound(kind,cells.length || 1);
     }
   },
-    menu:setRadial,closeReason:()=>showReason(false)});
+    confirmationChanged:effect=>{
+      clearHint();
+      showMarks(game,[],false);
+      feedback.sound(effect);
+    },menu:setRadial,closeReason:()=>showReason(false)});
   $('settings').addEventListener('submit',generate);
   showDifficultyDefaults();
   const difficulty=$('difficultySettings');
@@ -1878,12 +1902,22 @@
     }
   });
   $('cancel').onclick = () => { finishWorker(); say(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
+  $('useCandidate').onclick = () => {
+    if(!worker || !generationCandidate) return;
+    const candidate=generationCandidate;
+    finishWorker();
+    const {text,shortfall}=generationProgress(candidate.progress,candidate.report);
+    mountGenerated(candidate,candidate.p,`已停止搜索并采用候选。${text}`,shortfall);
+    $('board').querySelector('[tabindex="0"]')?.focus({preventScroll:true});
+  };
   $('restart').onclick = async () => {
     if (!game || worker || pending && !auto) return;
     stopAuto();
-    const {original,p,originalVisible,originalFlags,originalNotes}=game;
+    const {original,p,originalVisible,originalFlags,originalNotes,selection}=game;
     try {
-      mount(await prepareGame({board:original,visible:originalVisible,flags:originalFlags,notes:originalNotes},p));
+      const position=await prepareGame({board:original,visible:originalVisible,flags:originalFlags,notes:originalNotes},p);
+      position.selection=selection;
+      mount(position);
       say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
     } catch(error) {say(error.message,'error');}
   };
@@ -1914,7 +1948,6 @@
       stopReasonHold();
       if(reasonLauncher.disabled) return;
       if(game) game.answers=false;
-      clearSelection();
       clearHint(false);
       showReason(false);
       controls(); render();

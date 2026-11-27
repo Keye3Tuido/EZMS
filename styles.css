@@ -297,11 +297,53 @@ input, select { background: #fcfcfe; }
 .cell.flagged > .icon { width: min(21px, 75%); height: min(21px, 75%); fill: #b73f5b32; }
 .board-footer { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; min-height: 60px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .board-footer:focus { outline: none; }
-.round-feedback { grid-column: 1; min-width: 0; }
-.round-feedback .status { margin: 0; }
-.board-footer:has(#commitMarks.is-inactive):has(#selectionReadout:not([hidden])) .round-feedback { grid-column: 1 / -1; }
-.board-footer:has(#selectionReadout:not([hidden])) #commitMarks.is-inactive { display: none; }
-.selection-readout { margin: 3px 0 0; padding: 4px 7px; border-left: 3px solid #8052bd; background: #f4effb; color: #33234a; font: 600 13px/1.45 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.board-status {
+  grid-area: 1 / 1 / 2 / -1;
+  display: grid;
+  grid-template-columns: minmax(0,1fr) auto;
+  column-gap: 8px;
+  align-items: start;
+  max-inline-size: 36rem;
+  min-width: 0;
+}
+/* Reserve the entire status row even before a candidate is available. */
+#status {
+  margin: 0;
+  min-height: 0;
+  line-height: 1.5;
+  block-size: 2lh;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+#candidateShortfall {
+  grid-column: 1 / -1;
+  block-size: 2lh;
+  margin: 0;
+  color: #804920;
+  font-weight: 600;
+}
+#useCandidate { font-size: 13px; white-space: nowrap; }
+#useCandidate:disabled { visibility: hidden; }
+.round-feedback { grid-area: 2 / 1; min-width: 0; }
+#roundText { margin: 0; line-height: 1.45; min-height: 2lh; }
+/* Keep space for three rows. Long expressions scroll inside the readout. */
+.selection-slot {
+  grid-area: 3 / 1 / 4 / -1;
+  min-width: 0;
+  font: 600 13px/1.45 ui-monospace, Consolas, monospace;
+  block-size: calc(3lh + 14px);
+}
+.selection-readout {
+  block-size: 100%;
+  margin: 0;
+  padding: 4px 7px;
+  border-left: 3px solid #8052bd;
+  background: #f4effb;
+  color: #33234a;
+  overflow-wrap: anywhere;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
 .selection-readout > div { display: grid; grid-template-columns: 4.5em minmax(0,1fr); align-items: baseline; gap: 4px; padding-block: 1px; }
 .selection-readout dt { color: #604877; }
 .selection-readout dd { margin: 0; }
@@ -310,10 +352,9 @@ input, select { background: #fcfcfe; }
 .selection-token.clue-token { color: #6c410a; background: #fce8b9; }
 .selection-token:is(:hover,:focus-visible) { outline: 1px solid currentColor; outline-offset: -1px; }
 
-#status:empty { display: none; }
 #roundText[data-complete] { color: var(--green); font-weight: 680; }
-.round-feedback .status[data-tone='rejected'] { color: #8e1634; background: #fff0f3; box-shadow: inset 3px 0 #ac153b; padding-inline: 9px 5px; align-content: center; font-weight: 750; }
-.board-footer #commitMarks { grid-column: 2; font-size: 13px; }
+#status[data-tone='rejected'] { color: #8e1634; background: #fff0f3; box-shadow: inset 3px 0 #ac153b; padding-inline: 9px 5px; align-content: center; font-weight: 750; }
+.board-footer #commitMarks { grid-area: 2 / 2; font-size: 13px; }
 #roundProgress { display: block; appearance: none; width: min(100%,14rem); height: 4px; margin-top: 6px; overflow: hidden; border: 0; border-radius: 3px; background: #e6eae4; }
 #roundProgress::-webkit-progress-bar { background: transparent; }
 #roundProgress::-webkit-progress-value { background: #a8425b; border-radius: inherit; }
@@ -382,8 +423,9 @@ input, select { background: #fcfcfe; }
   .header-tools .icon-button { flex: none; width: 34px; }
   .board-head .icon-button { width: 32px; min-height: 32px; }
   .board-footer { grid-template-columns: auto minmax(0,1fr); }
-  .board-footer #commitMarks { grid-area: 1 / 1; }
-  .board-footer .round-feedback { grid-area: 1 / 2; }
+  #status { block-size: 4lh; }
+  .board-footer #commitMarks { grid-area: 2 / 1; }
+  .board-footer .round-feedback { grid-area: 2 / 2; }
 }
 /* Match the layout used by syncReasonLayout(), including phones in landscape. */
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1000px) {

@@ -30,72 +30,6 @@ test('arc ordering stays continuous across the atan2 branch cut',()=>{
     ['lower-inner','lower-outer','upper-outer','upper-inner']);
 });
 
-test('one-child paired arcs bow in opposite directions and end at button centers',()=>{
-  const start={x:0,y:70},left={x:-60,y:0},right={x:60,y:0};
-  const leftPath=layout.pairedArcPath([left],start,'left');
-  const rightPath=layout.pairedArcPath([right],start,'right');
-  assert.match(leftPath,/^M 0 70 A 46\.0977222864\d* 46\.0977222864\d* 0 0 [01] -60 0$/);
-  assert.match(rightPath,/^M 0 70 A 46\.0977222864\d* 46\.0977222864\d* 0 0 [01] 60 0$/);
-  assert.notEqual(leftPath.match(/0 0 ([01])/)[1],rightPath.match(/0 0 ([01])/)[1]);
-});
-
-test('paired mark paths curve from the launcher through button centers',()=>{
-  const left=[{x:-63.3012701892,y:-25},{x:-70,y:0},{x:-63.3012701892,y:25}];
-  const right=left.map(point=>({x:-point.x,y:point.y}));
-  const leftPath=layout.pairedArcPath(left,{x:0,y:0},'left');
-  const rightPath=layout.pairedArcPath(right,{x:0,y:0},'right');
-  assert.match(leftPath,/^M 0 0 C .* -63\.3012701892 -25 C .* -70 0 C .* -63\.3012701892 25$/);
-  assert.match(rightPath,/^M 0 0 C .* 63\.3012701892 -25 C .* 70 0 C .* 63\.3012701892 25$/);
-  assert.doesNotMatch(leftPath,/L /);
-  assert.doesNotMatch(rightPath,/L /);
-});
-
-test('paired curves leave the launcher tangent toward the first petal',()=>{
-  const start={x:0,y:0};
-  const points=[{x:-30,y:40},{x:-55,y:5},{x:-42,y:-35}];
-  const path=layout.pairedArcPath(points,start,'left');
-  const [,c1x,c1y]=path.match(/^M 0 0 C ([\d.-]+) ([\d.-]+)/).map(Number);
-  assert.ok(c1x<0 && c1y>0,'initial tangent follows the first petal from the launcher');
-  assert.ok(c1y/Math.abs(c1x)>40/30*.8,'the curve does not kink toward later petals at its origin');
-});
-
-test('paired menu groups follow actual left and right screen positions, not DOM halves',()=>{
-  const origin={x:0,y:0};
-  const points=[{id:'right-top',x:20,y:-30},{id:'left-bottom',x:-20,y:30},
-    {id:'left-top',x:-20,y:-30},{id:'right-bottom',x:20,y:30}];
-  const [left,right]=layout.pairedGroups(points,origin);
-  assert.deepEqual(left.map(point=>point.id),['left-top','left-bottom']);
-  assert.deepEqual(right.map(point=>point.id),['right-top','right-bottom']);
-});
-
-test('paired menu groups follow each arc from its upper end to its lower end',()=>{
-  const origin={x:0,y:0};
-  const points=[{id:'left-lower',x:-.819,y:.574},{id:'right-lower',x:.819,y:.574},
-    {id:'left-upper',x:-.259,y:-.966},{id:'right-upper',x:.259,y:-.966},
-    {id:'left-outer',x:-.94,y:-.342},{id:'right-outer',x:.94,y:-.342}];
-  const [left,right]=layout.pairedGroups(points,origin);
-  assert.deepEqual(left.map(point=>point.id),['left-upper','left-outer','left-lower']);
-  assert.deepEqual(right.map(point=>point.id),['right-upper','right-outer','right-lower']);
-});
-
-test('translated launcher does not reorder inner petals onto the opposite arc',()=>{
-  const items=Array.from({length:10},()=>({width:52,height:52}));
-  const result=layout.arrange(items,{width:1200,height:900,originX:1050,originY:760,
-    launcher:{width:48,height:48},kind:'paired'});
-  const launcher={x:-result.center.x,y:-result.center.y};
-  const [left,right]=layout.pairedGroups(result.items,launcher);
-  assert.equal(left.length,5);
-  assert.equal(right.length,5);
-  assert.ok(left.every(point=>point.x<0));
-  assert.ok(right.every(point=>point.x>0));
-  assert.ok(Math.hypot(left[0].x-launcher.x,left[0].y-launcher.y)<=
-    Math.hypot(left.at(-1).x-launcher.x,left.at(-1).y-launcher.y),
-    'left arc starts at the endpoint nearest the launcher');
-  assert.ok(Math.hypot(right[0].x-launcher.x,right[0].y-launcher.y)<=
-    Math.hypot(right.at(-1).x-launcher.x,right.at(-1).y-launcher.y),
-    'right arc starts at the endpoint nearest the launcher');
-});
-
 test('reasoning track is an upper ellipse passing through the button centers',()=>{
   const points=[{x:-137,y:69},{x:-97,y:-28},{x:0,y:-69},{x:97,y:-28},{x:137,y:69}];
   const path=layout.semicirclePath(points);
@@ -338,4 +272,21 @@ test('blue marker petals share a circular arc centered on their launcher',()=>{
     assert.ok(result.items.slice(0,i).every(other=>Math.hypot(point.x-other.x,point.y-other.y)>=size+10));
   }
   assert.match(layout.ringArcPath(result.items),/^M .* A [\d.]+ [\d.]+ 0 1 1 /);
+});
+
+test('all four selection controls sit on one short arc around the launcher',()=>{
+  const items=Array.from({length:4},(_,id)=>({id,width:50,height:50}));
+  const {items:petals,center}=layout.arrange(items,{
+    kind:'selection',width:320,height:640,originX:260,originY:605,launcher:{width:52,height:52}
+  });
+  const radii=petals.map(({x,y})=>Math.hypot(x,y));
+  assert.ok(petals.every(({y})=>y<0));
+  assert.ok(radii.every(radius=>Math.abs(radius-radii[0])<1e-9));
+  assert.ok(radii[0]>51);
+  for(const {x,y,screenX,screenY} of petals) {
+    assert.ok(260+screenX-25>0 && 260+screenX+25<320);
+    assert.ok(605+screenY-25>0 && 605+screenY+25<640);
+    assert.ok(Math.abs(screenX-x-center.x)<1e-9 && Math.abs(screenY-y-center.y)<1e-9);
+  }
+  assert.match(layout.ringArcPath(petals),/^M .+ A [\d.]+ [\d.]+ 0 0 1 [\d.]+ -[\d.]+$/);
 });

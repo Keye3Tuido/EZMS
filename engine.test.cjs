@@ -966,19 +966,45 @@ test('all three difficulty floors filter the certified path', () => {
   }
 });
 
-test('progress retains the closest certified candidate without replacing the board', () => {
+test('progress keeps the full certified candidate and publishes each improvement', () => {
   const p={w:5,h:5,minAverage:20,minMultiPercent:30,minPeakClues:10};
-  const rounds=engine.generate(p,0);
-  let lastGap=Infinity;
+  const updates=[];
+  const rounds=engine.generate(p,0,progress=>updates.push(progress));
   for(let i=0;i<5;i++) {
-    const {board,closest,target,passed}=rounds.next().value;
+    const progress=rounds.next().value;
+    const {board,candidate,closest,passed}=progress;
     assert.equal(board,undefined);
-    assert.ok(passed>0 && closest);
-    const gap=Math.max(0,1-closest.average/target.average)+
-      Math.max(0,1-closest.multiPercent/target.multiPercent)+Math.max(0,1-closest.peak/target.peak);
-    assert.ok(gap<=lastGap+Number.EPSILON);
-    lastGap=gap;
+    assert.ok(passed>0 && candidate);
+    assert.equal(candidate,updates.at(-1).candidate);
+    const report=engine.verify(candidate.board,p,{certify:true});
+    assert.equal(report.status,'passed');
+    assert.deepEqual(candidate.report,report);
+    assert.deepEqual(closest,{average:report.averageClues,multiPercent:report.advancedDensity*100,peak:report.clues});
   }
+  assert.equal(new Set(updates.map(({candidate})=>candidate)).size,updates.length);
+});
+
+test('a candidate meeting the peak target outranks one meeting only the multi-clue target', () => {
+  const p={w:8,h:8,minAverage:18,minMultiPercent:20,minPeakClues:6};
+  const {closest}=search(p,2,6);
+  assert.ok(closest.peak>=p.minPeakClues);
+  assert.ok(closest.multiPercent<p.minMultiPercent);
+});
+
+test('below the peak target, a higher peak wins even if only the other candidate meets the multi-clue target', () => {
+  const p={w:5,h:5,minAverage:24,minMultiPercent:18,minPeakClues:10};
+  const {board,closest}=search(p,0,7);
+  assert.equal(board,undefined);
+  assert.equal(closest.peak,5);
+  assert.ok(closest.multiPercent<p.minMultiPercent);
+});
+
+test('once the peak target is met, higher multi-clue density wins even with a lower qualifying peak', () => {
+  const p={w:6,h:6,minAverage:35,minMultiPercent:0,minPeakClues:3};
+  const {board,candidate}=search(p,0,2);
+  assert.equal(board,undefined);
+  assert.equal(candidate.report.clues,3);
+  assert.equal(candidate.report.advancedDensity,2/13);
 });
 
 test('default generation uses staged clues and does not accept an inflated ten-clue replay', () => {
@@ -1376,4 +1402,63 @@ test('integer cut rounds negative coefficients down and preserves the bound', ()
     for(const v of m.vs) assert.equal(at(v),m.value);
   }
   assert.ok(legal>0);
+});
+
+test('manual red confirmations and blue ink share undo and redo in action order',()=>{
+  const makeMarkHistory=require('./board-input');
+  const notes=makeMarkHistory();
+  const batch=makeMarkHistory.makeManualBatch(['mine','safe','both'],new Set(),engine.confirmationTargets,notes);
+  const ink={symbol:'o',level:0};
+  batch.record([0],'mine');
+  notes.edit('blue',[[2,ink]]);
+  batch.record([1],'safe');
+  assert.equal(batch.done,true);
+  notes.undo();
+  assert.deepEqual(batch.cells('safe'),[]);
+  assert.equal(batch.done,false);
+  notes.undo();
+  assert.equal(notes.layers.blue.has(2),false);
+  notes.undo();
+  assert.equal(batch.marked.size,0);
+  notes.redo();
+  notes.redo();
+  assert.deepEqual(batch.cells('mine'),[0]);
+  assert.deepEqual(notes.layers.blue.get(2),ink);
+  batch.record([0],'mine');
+  batch.record([2],'safe');
+  assert.equal(notes.canRedo,true);
+  notes.redo();
+  assert.equal(batch.done,true);
+  notes.undo();
+  notes.edit('blue',[[2,undefined]]);
+  assert.equal(notes.canRedo,false);
+});
+
+test('staged red batches and flag transfers are atomic and expire when applied',()=>{
+  const makeMarkHistory=require('./board-input');
+  const notes=makeMarkHistory();
+  const flags=new Set([0]);
+  const batch=makeMarkHistory.makeManualBatch(['mine','mine','safe'],flags,engine.confirmationTargets,notes);
+  notes.edit('blue',[[0,{symbol:'o',level:0}]]);
+  batch.record([1],'mine',0);
+  assert.equal(flags.has(0),false);
+  assert.equal(batch.total,3);
+  notes.undo();
+  assert.equal(flags.has(0),true);
+  assert.equal(batch.total,2);
+  assert.equal(batch.marked.size,0);
+  notes.redo();
+  assert.equal(flags.has(0),false);
+  assert.deepEqual(batch.cells('mine'),[1]);
+  batch.recordStep([2],[0,1]);
+  assert.equal(batch.done,true);
+  notes.undo();
+  assert.deepEqual([...batch.marked],[[1,'mine']]);
+  notes.discardCells([2]);
+  notes.discardConfirmations();
+  assert.equal(notes.canRedo,false);
+  notes.undo();
+  assert.equal(notes.layers.blue.has(0),false);
+  assert.equal(flags.has(0),false);
+  assert.equal(notes.canUndo,false);
 });

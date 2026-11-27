@@ -1553,7 +1553,7 @@ function makeMinesEngine() {
     return null;
   }
 
-  function refine(p,board,report,start,compare,fits,hard,duplicate) {
+  function refine(p,board,report,start,compare,fits,hard,evaluate) {
     const {ns,mines,seed}=board, r=random(seed^0x579a);
     let best={board,report};
     for(let trial=0;trial<5 && !fits(best.report);trial++) {
@@ -1580,9 +1580,9 @@ function makeMinesEngine() {
       checkpoints.sort((a,b)=>b.weight-a.weight);
       const point=checkpoints[r(Math.min(5,checkpoints.length))];
       const candidate=construct(p,r(4294967296),ns,mines,{...start,seed},point,hard);
-      if(!candidate || duplicate(candidate)) continue;
-      const next=verify(candidate,p,{certify:true,trace:true});
-      if(next.status==='passed' && compare(next,best.report)<0) best={board:candidate,report:next};
+      if(!candidate) continue;
+      const next=evaluate(candidate);
+      if(next?.status==='passed' && compare(next,best.report)<0) best={board:candidate,report:next};
     }
     return best;
   }
@@ -1649,7 +1649,7 @@ function makeMinesEngine() {
     return {minAverage:2,minMultiPercent:30,minPeakClues:5};
   }
 
-  function* generate(p,seed) {
+  function* generate(p,seed,onCandidate) {
     const defaults=difficultyDefaults();
     const target={average:p.minAverage??defaults.minAverage,multiPercent:p.minMultiPercent??defaults.minMultiPercent,
       peak:p.minPeakClues??defaults.minPeakClues};
@@ -1679,8 +1679,13 @@ function makeMinesEngine() {
       (multi>0?Math.max(0,1-r.advancedDensity/multi):0)+
       Math.max(0,1-r.clues/Math.max(1,target.peak));
     const compare=(a,b)=>Number(fits(b))-Number(fits(a)) || deficit(a)-deficit(b) || compareOpening(a,b);
+    const compareClosest=(a,b)=>{
+      const priority=a.clues<target.peak || b.clues<target.peak ?
+        b.clues-a.clues : b.advancedDensity-a.advancedDensity;
+      return priority || compare(a,b);
+    };
     const min=Math.max(1,Math.ceil(ns.length*.16)), max=Math.max(min,Math.floor(ns.length*.28));
-    let passed=0, constructed=0, closest;
+    let passed=0, constructed=0, closest, closestMetrics;
     function duplicate(board) {
       const key=board.opening.slice().sort((a,b)=>a-b)+':'+board.bombs.map(Number).join('');
       if(seen.has(key)) return true;
@@ -1688,8 +1693,18 @@ function makeMinesEngine() {
       seen.add(key);
       return false;
     }
-    function record(report) {
-      if(!closest || compare(report,closest)<0) closest={...report,trace:[]};
+    const progress=tried=>({target,tried,passed,constructed,closest:closestMetrics,candidate:closest});
+    function certify(board,tried,trace=false) {
+      const report=verify(board,p,{certify:true,trace});
+      if(report.status==='passed' && report.steps) {
+        passed++;
+        if(report.openingMinimum && !fits(report) && (!closest || compareClosest(report,closest.report)<0)) {
+          closest={board,report:{...report,trace:[]}};
+          closestMetrics={average:report.averageClues,multiPercent:report.advancedDensity*100,peak:report.clues};
+          onCandidate?.(progress(tried));
+        }
+      }
+      return report;
     }
     for(let k=1;;k++) {
       const id=r(4294967296), natural=min+r(max-min+1);
@@ -1698,14 +1713,11 @@ function makeMinesEngine() {
         for(const board of compactCancellation(ns,id,p.mines,k,shape)) {
           constructed++;
           if(duplicate(board)) continue;
-          const report=verify(board,p,{certify:true});
-          if(report.status!=='passed' || !report.steps) continue;
-          passed++;
-          if(fits(report)) {
+          const report=certify(board,k);
+          if(report.status==='passed' && report.steps && fits(report)) {
             yield {board,report,target,tried:k,passed,constructed,route:'compact-cancellation'};
             return;
           }
-          record(report);
         }
       }
       const dense=random(id^0xd3ab);
@@ -1731,19 +1743,19 @@ function makeMinesEngine() {
         if(!board) continue;
         constructed++;
         if(duplicate(board) || start.givens.some(v=>start.view[v]!==board.clues[v])) continue;
-        const report=verify(board,p,{certify:true,trace:true});
+        const report=certify(board,k,true);
         if(report.status==='passed' && report.steps) {
-          passed++;
-          const candidate=fits(report)?{board,report}:refine(p,board,report,start,compare,fits,directed,duplicate);
+          const candidate=fits(report)?{board,report}:refine(p,board,report,start,compare,fits,directed,refined=>{
+            constructed++;
+            if(!duplicate(refined)) return certify(refined,k,true);
+          });
           if(fits(candidate.report)) {
             yield {board:candidate.board,report:{...candidate.report,trace:[]},target,tried:k,passed,constructed,route:compact?'compact':route.kind};
             return;
           }
-          record(candidate.report);
         }
       }
-      const summary=closest && {average:closest.averageClues,multiPercent:closest.advancedDensity*100,peak:closest.clues};
-      yield {target,tried:k,passed,constructed,closest:summary};
+      yield progress(k);
     }
   }
 

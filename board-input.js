@@ -2,14 +2,19 @@ function makeMarkHistory() {
   const layers={red:new Map(),blue:new Map(),archivedBlue:new Map()}, past=[], future=[];
   const same=(a,b)=>a?.symbol===b?.symbol && a?.level===b?.level;
   function record(change) {
-    if(!change.length) return false;
+    if(Array.isArray(change) && !change.length) return false;
     past.push(change); future.length=0; return true;
   }
   function write(change,undo=false) {
+    if(!Array.isArray(change)) {
+      change.apply(undo);
+      return 'confirmation';
+    }
     for(const [color,cell,before,after] of change) {
       const value=undo?before:after;
       if(value) layers[color].set(cell,value); else layers[color].delete(cell);
     }
+    return true;
   }
   function edit(color,entries) {
     const change=[];
@@ -21,6 +26,16 @@ function makeMarkHistory() {
   }
   return {
     layers,edit,
+    recordConfirmation(apply) {
+      apply(false);
+      record({apply});
+    },
+    discardConfirmations() {
+      for(const stack of [past,future]) for(let i=stack.length-1;i>=0;i--) {
+        if(!Array.isArray(stack[i])) stack.splice(i,1);
+      }
+    },
+    discardRedo() {future.length=0;},
     stroke(color,start,mark) {
       const after=same(layers[color].get(start),mark)?undefined:mark;
       const seen=new Set(), change=[];
@@ -45,6 +60,7 @@ function makeMarkHistory() {
       for(const layer of Object.values(layers)) for(const cell of discarded) layer.delete(cell);
       // Opening a cell must not bring its marks back through undo or redo.
       for(const stack of [past,future]) for(let i=stack.length-1;i>=0;i--) {
+        if(!Array.isArray(stack[i])) continue;
         const change=stack[i].filter(([,cell])=>!discarded.has(cell));
         if(change.length) stack[i]=change; else stack.splice(i,1);
       }
@@ -79,23 +95,52 @@ function makeMarkHistory() {
       return edit('blue',advanced.filter(([,m])=>m.level===rank && ['ʌ','//'].includes(m.symbol)).map(([i])=>[i]));
     },
     get canUndo() {return !!past.length;}, get canRedo() {return !!future.length;},
-    undo() {if(past.length) {const change=past.pop();write(change,true);future.push(change);return true;}},
-    redo() {if(future.length) {const change=future.pop();write(change);past.push(change);return true;}}
+    undo() {
+      if(!past.length) return;
+      const change=past.pop();
+      future.push(change);
+      return write(change,true);
+    },
+    redo() {
+      if(!future.length) return;
+      const change=future.pop();
+      past.push(change);
+      return write(change);
+    }
   };
 }
 
-function makeManualBatch(state,flags,selectTargets) {
-  const targets=selectTargets(state,flags), marked=new Map();
+function makeManualBatch(state,flags,selectTargets,history) {
+  const marked=new Map();
+  let targets;
+  function refreshTargets() {targets=selectTargets(state,flags);}
+  function done() {return targets.size>0 && marked.size===targets.size;}
+  function record(entries,from) {
+    const wrong=entries.find(([i,kind])=>state[i]!==kind);
+    if(wrong) return {wrong:wrong[0],state:state[wrong[0]]};
+    const additions=new Map(entries.filter(([i])=>targets.has(i) && !marked.has(i)));
+    const movesFlag=from!==undefined && flags.has(from);
+    if(additions.size || movesFlag) {
+      const apply=undo=>{
+        if(movesFlag) {
+          if(undo) flags.add(from); else flags.delete(from);
+          refreshTargets();
+        }
+        for(const [i,kind] of additions) {
+          if(undo) marked.delete(i); else marked.set(i,kind);
+        }
+      };
+      if(history) history.recordConfirmation(apply); else apply(false);
+    }
+    return {done:done(),total:targets.size};
+  }
+  refreshTargets();
   return {
-    marked,
+    marked,refreshTargets,
     get total() {return targets.size;},
-    get done() {return targets.size>0 && marked.size===targets.size;},
-    record(cells,kind) {
-      const wrong=cells.find(i=>state[i]!==kind);
-      if(wrong!==undefined) return {wrong,state:state[wrong]};
-      for(const i of cells) if(targets.has(i)) marked.set(i,kind);
-      return {done:targets.size>0 && marked.size===targets.size,total:targets.size};
-    },
+    get done() {return done();},
+    record(cells,kind,from) {return record(cells.map(i=>[i,kind]),from);},
+    recordStep(safe,mines) {return record([...safe.map(i=>[i,'safe']),...mines.map(i=>[i,'mine'])]);},
     cells(kind) {return [...marked].filter(([,value])=>value===kind).map(([i])=>i).sort((a,b)=>a-b);}
   };
 }
@@ -118,7 +163,7 @@ function checkPositionMarks(state,flags,red) {
 }
 
 function restoreManualMarks(state,flags,selectTargets,notes) {
-  const batch=makeManualBatch(state,flags,selectTargets);
+  const batch=makeManualBatch(state,flags,selectTargets,notes);
   for(const [cell,mark] of notes.layers.red) batch.record([cell],mark.symbol==='x'?'mine':'safe');
   notes.discardRed(notes.layers.red.keys());
   return batch.marked.size?batch:null;
@@ -243,7 +288,7 @@ function inkGlyph(symbol) {
   return shape?`<svg class="ink-glyph" viewBox="0 0 24 24" aria-hidden="true">${shape}</svg>`:'';
 }
 
-function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReason}) {
+function makeBoardInput({$,icon,say,canAct,getGame,changed,confirmationChanged,sound,menu,closeReason}) {
   const flower=$('markFlower'), launcher=$('markMenu');
   const rows=[[['x','拟定为雷'],['o','拟推为雷'],['v','拟定为雷'],['ʌ','拟推为雷'],['+','提高层级']],
     [['s','拟定安全'],['/','拟推安全'],['e','拟定安全'],['//','拟推安全'],['−','降低层级']]];
@@ -253,12 +298,13 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
   const redLabels={x:'标记为雷（笔记）','/':'标记为安全（笔记）'};
   function history() {
     const notes=getGame()?.notes;
-    const visible=!(flower.inert && !selected);
+    const visible=!flower.inert || !!selected || !!notes?.canUndo || !!notes?.canRedo;
+    const active=canAct();
     $('markHistory').classList.toggle('is-inactive',!visible);
     $('markHistory').setAttribute('aria-hidden',String(!visible));
     $('markHistory').inert=!visible;
-    $('undoMark').disabled=!notes?.canUndo;
-    $('redoMark').disabled=!notes?.canRedo;
+    $('undoMark').disabled=!active || !notes?.canUndo;
+    $('redoMark').disabled=!active || !notes?.canRedo;
   }
   function refresh() {
     for(const [symbol,{button,label}] of buttons) {
@@ -390,7 +436,9 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
     button.onclick=()=>{
       if(!canAct()) return;
       endStroke();
-      if(getGame().notes[kind]()) changed([],kind==='undo'?'erase':'ink');
+      const result=getGame().notes[kind](), effect=kind==='undo'?'erase':'ink';
+      if(result==='confirmation') confirmationChanged(effect);
+      else if(result) changed([],effect);
       history();
     };
   }

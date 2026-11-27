@@ -6,17 +6,17 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261127-2">
+  <link rel="stylesheet" href="styles.css?v=20261127-5">
   <link rel="stylesheet" href="game-motion.css?v=20261127-1">
   <script defer src="region-selection.js?v=20261127-4"></script>
-  <script defer src="radial-layout.js?v=20261127-9"></script>
-  <script defer src="engine.js?v=20261127-1"></script>
+  <script defer src="radial-layout.js?v=20261127-10"></script>
+  <script defer src="engine.js?v=20261127-2"></script>
   <script defer src="proof-format.js?v=20261126-7"></script>
-  <script defer src="board-input.js?v=20261126-15"></script>
+  <script defer src="board-input.js?v=20261127-10"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
-  <script defer src="app.js?v=20261127-9"></script>
+  <script defer src="app.js?v=20261127-13"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -121,17 +121,23 @@
           <div id="board" class="board" aria-label="棋盘格子" hidden></div>
         </div>
         <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
+          <div class="board-status">
+            <p id="status" class="status" role="status" tabindex="0">等待生成或导入棋局</p>
+            <button id="useCandidate" type="button" aria-describedby="status candidateShortfall" disabled>停止并采用候选</button>
+            <p id="candidateShortfall" class="status" role="status"></p>
+          </div>
           <div class="round-feedback">
-            <dl id="selectionReadout" class="selection-readout" hidden>
+            <p id="roundText" class="status is-inactive" role="status"></p>
+            <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
+          </div>
+          <button type="button" id="commitMarks" class="primary is-inactive" aria-hidden="true" disabled>开格并插旗</button>
+          <div class="selection-slot">
+            <dl id="selectionReadout" class="selection-readout" tabindex="0" aria-label="选区信息" hidden>
               <div><dt>选区</dt><dd id="selectionTerms"></dd></div>
               <div><dt>加权雷数</dt><dd id="selectionBounds"></dd></div>
               <div id="selectionClueRow"><dt>线索剩余</dt><dd id="selectionClues"></dd></div>
             </dl>
-            <p id="status" class="status" role="status">等待生成或导入棋局</p>
-            <p id="roundText" class="status" role="status" hidden></p>
-            <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
           </div>
-          <button type="button" id="commitMarks" class="primary is-inactive" aria-hidden="true" disabled>开格并插旗</button>
         </footer>
       </section>
 
@@ -185,11 +191,11 @@
     <button type="button" id="solve" class="orb petal"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
   </div>
   <div id="selectionFlower" class="radial selection-flower" role="group" aria-label="选区工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="selectionArc" gradientUnits="userSpaceOnUse" x1="-65" x2="65"><stop stop-color="#8c57c9"/><stop offset="1" stop-color="#e3b238"/></linearGradient></defs><path id="selectionTrackLeft" pathLength="1" stroke="url(#selectionArc)"/><path id="selectionTrackRight" pathLength="1" stroke="url(#selectionArc)"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="selectionArc" gradientUnits="userSpaceOnUse" x1="-65" x2="65"><stop stop-color="#8c57c9"/><stop offset="1" stop-color="#e3b238"/></linearGradient></defs><path id="selectionTrack" pathLength="1" stroke="url(#selectionArc)"/></svg>
     <button type="button" id="selectionAdd" class="orb petal" aria-label="增加选区" title="增加选区" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#selectionAddIcon"/></svg></button>
     <button type="button" id="selectionUndo" class="orb petal" aria-label="撤销选区" title="撤销选区" disabled><svg class="icon" aria-hidden="true"><use href="#undoIcon"/></svg></button>
-    <button type="button" id="selectionSubtract" class="orb petal" aria-label="减去选区" title="减去选区" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#selectionSubtractIcon"/></svg></button>
     <button type="button" id="selectionRedo" class="orb petal" aria-label="重做选区" title="重做选区" disabled><svg class="icon" aria-hidden="true"><use href="#redoIcon"/></svg></button>
+    <button type="button" id="selectionSubtract" class="orb petal" aria-label="减去选区" title="减去选区" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#selectionSubtractIcon"/></svg></button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
     <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient><linearGradient id="redInkArc" gradientUnits="userSpaceOnUse" x1="-65" x2="65"><stop stop-color="#d67089"/><stop offset="1" stop-color="#9b1e42"/></linearGradient></defs><path id="inkTrack" stroke="url(#inkArc)"/><path id="redInkTrack" d="M -54 -26 Q -32 0 0 0 T 54 -26" pathLength="1" stroke="url(#redInkArc)"/></svg>

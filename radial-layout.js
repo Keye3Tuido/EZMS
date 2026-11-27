@@ -22,39 +22,6 @@ function makeRadialLayout() {
     }).join(' ');
   }
 
-  function pairedArcPath(points,start,side) {
-    if(!points.length) return '';
-    const [first]=points;
-    if(points.length===1) {
-      const end=first,dx=end.x-start.x,dy=end.y-start.y;
-      const radius=Math.hypot(dx,dy)/2;
-      if(radius<1e-8) return '';
-      const sweep=side==='left' ? (dy*1-dx*0>=0?0:1) : (dy*1-dx*0>=0?1:0);
-      return `M ${start.x} ${start.y} A ${radius} ${radius} 0 0 ${sweep} ${end.x} ${end.y}`;
-    }
-    return pathThrough(points,start);
-  }
-
-  function pairedGroups(points,origin) {
-    const left=[],right=[];
-    const midpoint=(Math.min(...points.map(point=>point.x))+Math.max(...points.map(point=>point.x)))/2;
-    for(const point of points) (point.x<midpoint?left:right).push(point);
-    const arcOrder=(group,side)=>{
-      const angle=point=>{
-        let value=Math.atan2(point.y-origin.y,point.x-origin.x);
-        if(side==='left'&&value>0) value-=Math.PI*2;
-        return value;
-      };
-      group.sort((a,b)=>side==='left'?angle(b)-angle(a):angle(a)-angle(b));
-      if(group.length>1) {
-        const distance=point=>Math.hypot(point.x-origin.x,point.y-origin.y);
-        if(distance(group.at(-1))+1e-6<distance(group[0])) group.reverse();
-      }
-      return group;
-    };
-    return [left.length?arcOrder(left,'left'):[],right.length?arcOrder(right,'right'):[]];
-  }
-
   function pathsThrough(groups,start={x:0,y:0}) {
     return groups
       .filter(group=>group.length)
@@ -171,9 +138,9 @@ function makeRadialLayout() {
       else if(nearest===right) twoItemArc=[135,225];
       else twoItemArc=[-45,45];
     }
-    const fanStart=items.length===2?twoItemArc[0]:180;
-    const fanEnd=items.length===2?twoItemArc[1]:360;
-    const span=kind==='ring'?300:kind==='paired'?110:(items.length>2?180:fanEnd-fanStart);
+    const selection=kind==='selection';
+    const [fanStart,fanEnd]=selection?[186,354]:items.length===2?twoItemArc:[180,360];
+    const span=kind==='ring'?300:kind==='paired'?110:fanEnd-fanStart;
     const diameter=Math.max(...sizes.map(size=>Math.max(size.width,size.height)));
     let radius=radiusFor(Math.ceil(items.length/(kind==='paired'?2:1)),
       diameter,span);
@@ -203,6 +170,11 @@ function makeRadialLayout() {
       const arc=fan(items.length,radius,120,420);
       const leftCount=Math.ceil(items.length/2);
       points=[...arc.slice(0,leftCount).reverse(),...arc.slice(leftCount)];
+    } else if(selection) {
+      // The four circular buttons and launcher share the same center of rotation.
+      const launcherDiameter=launcher?Math.max(launcher.width,launcher.height):0;
+      radius=Math.max(radius,(diameter+launcherDiameter)/2+10);
+      points=fanPoints();
     } else if(kind==='paired') {
       const horizontalWidth=radius*2+Math.max(...sizes.map(size=>size.width));
       if(horizontalWidth>width-padding*2) {
@@ -212,7 +184,7 @@ function makeRadialLayout() {
       points=pairedPoints();
     }
     else points=fanPoints();
-    for(let attempt=0;kind!=='ring'&&(overlaps(points,sizes)||overlapsLauncher(points,sizes,launcher))&&attempt<96;attempt++) {
+    for(let attempt=0;kind!=='ring'&&!selection&&(overlaps(points,sizes)||overlapsLauncher(points,sizes,launcher))&&attempt<96;attempt++) {
       if(kind==='paired') {
         radius*=1.08;
         if(pairedOrientation==='horizontal'&&radius*2+Math.max(...sizes.map(size=>size.width))>width-padding*2) {
@@ -230,7 +202,7 @@ function makeRadialLayout() {
         points=points.map(point=>({...point,x:point.x*halfWidth/extent}));
       }
     }
-    const target=kind==='ring'?{x:0,y:0}:center(points,sizes);
+    const target=(kind==='ring'||selection)?{x:0,y:0}:center(points,sizes);
     const positioned=points.map(point=>({x:point.x-target.x,y:point.y-target.y}));
     const bounds=positioned.reduce((box,point,index)=>({
       left:Math.min(box.left,point.x-sizes[index].width/2),
@@ -273,7 +245,7 @@ function makeRadialLayout() {
       fromX:0,fromY:0,screenX:points[index].x+dx,screenY:points[index].y+dy})),center:offset,bounds};
   }
 
-  return {fan,radiusFor,center,arrange,pathThrough,pairedArcPath,pairedGroups,pathsThrough,semicirclePath,ringArcPath,orderAlongArc};
+  return {fan,radiusFor,center,arrange,pathThrough,pathsThrough,semicirclePath,ringArcPath,orderAlongArc};
 }
 
 if(typeof module!=='undefined') module.exports=makeRadialLayout;
