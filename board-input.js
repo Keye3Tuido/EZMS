@@ -111,16 +111,14 @@ function makeMarkHistory() {
 }
 
 function makeManualBatch(state,flags,selectTargets,history) {
-  const marked=new Map(), weights=new Map();
+  const marked=new Map();
   let targets;
   function refreshTargets() {targets=selectTargets(state,flags);}
   function done() {return targets.size>0 && marked.size===targets.size;}
-  function record(entries,from,coefficients) {
+  function record(entries,from) {
     const wrong=entries.find(([i,kind])=>state[i]!==kind);
     if(wrong) return {wrong:wrong[0],state:state[wrong[0]]};
     const additions=new Map(entries.filter(([i])=>targets.has(i) && !marked.has(i)));
-    const weighted=[...additions.keys()].map(i=>[i,coefficients?.get(i)??1])
-      .filter(([,coefficient])=>Math.abs(coefficient)>1);
     const movesFlag=from!==undefined && flags.has(from);
     if(additions.size || movesFlag) {
       const apply=undo=>{
@@ -131,9 +129,6 @@ function makeManualBatch(state,flags,selectTargets,history) {
         for(const [i,kind] of additions) {
           if(undo) marked.delete(i); else marked.set(i,kind);
         }
-        for(const [i,coefficient] of weighted) {
-          if(undo) weights.delete(i); else weights.set(i,coefficient);
-        }
       };
       if(history) history.recordConfirmation(apply); else apply(false);
     }
@@ -141,12 +136,12 @@ function makeManualBatch(state,flags,selectTargets,history) {
   }
   refreshTargets();
   return {
-    marked,weights,refreshTargets,
+    marked,refreshTargets,
     get total() {return targets.size;},
     get done() {return done();},
     record(cells,kind,from) {return record(cells.map(i=>[i,kind]),from);},
-    recordStep(safe,mines,coefficients) {
-      return record([...safe.map(i=>[i,'safe']),...mines.map(i=>[i,'mine'])],undefined,coefficients);
+    recordStep(safe,mines) {
+      return record([...safe.map(i=>[i,'safe']),...mines.map(i=>[i,'mine'])]);
     },
     cells(kind) {return [...marked].filter(([,value])=>value===kind).map(([i])=>i).sort((a,b)=>a-b);}
   };

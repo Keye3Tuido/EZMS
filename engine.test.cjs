@@ -1449,7 +1449,7 @@ test('manual red confirmations and blue ink share undo and redo in action order'
   assert.equal(notes.canRedo,false);
 });
 
-test('staged red batches and flag transfers are atomic and expire when applied',()=>{
+test('红标批次和移旗可整批撤销，提交后清除对应历史',()=>{
   const makeMarkHistory=require('./board-input');
   const notes=makeMarkHistory();
   const flags=new Set([0]);
@@ -1465,14 +1465,15 @@ test('staged red batches and flag transfers are atomic and expire when applied',
   notes.redo();
   assert.equal(flags.has(0),false);
   assert.deepEqual(batch.cells('mine'),[1]);
-  batch.recordStep([2],[0,1],new Map([[0,-3],[1,2],[2,1]]));
+  batch.recordStep([2],[0,1]);
   assert.equal(batch.done,true);
-  assert.deepEqual([...batch.weights],[[0,-3]]);
+  assert.deepEqual(batch.cells('safe'),[2]);
+  assert.deepEqual(batch.cells('mine'),[0,1]);
   notes.undo();
   assert.deepEqual([...batch.marked],[[1,'mine']]);
-  assert.equal(batch.weights.size,0);
   notes.redo();
-  assert.deepEqual([...batch.weights],[[0,-3]]);
+  assert.deepEqual(batch.cells('safe'),[2]);
+  assert.deepEqual(batch.cells('mine'),[0,1]);
   notes.undo();
   notes.discardCells([2]);
   notes.discardConfirmations();

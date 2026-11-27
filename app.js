@@ -319,7 +319,7 @@
       for(const [cell,mark] of notes[i]??[]) history.layers[color].set(cell,
         color==='red' && mark.symbol==='s'?{...mark,symbol:'/'}:mark);
     }
-    return {board,original:board,originalVisible:visible,originalFlags:[...flags],originalNotes:notes,p:{...p,w:board.w,h:board.h,mines:board.mines},
+    return {board,original:board,originalVisible:visible,originalFlags:[...flags],p:{...p,w:board.w,h:board.h,mines:board.mines},
       numbers,visible,flags:new Set(flags),notes:history,proven:new Set(),opened,
       state:opened===visible.length-board.mines?'won':'playing',started:null,ended:null,highlight:null,focus:board.first,
       judgment:null,answers:false,selection:regionSelection.history()};
@@ -560,10 +560,7 @@
       if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
       let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? `<span class="cell-number">${n}</span>` : '';
       const confirmed=game.manual?.marked.get(i);
-      const markDepth=coefficientDepth(game.manual?.weights.get(i));
-      const hintDepth=coefficientDepth(highlight?.weights?.get(i));
-      if(markDepth) marks.push('weighted-confirmation');
-      const depth=hintDepth||markDepth;
+      const depth=coefficientDepth(highlight?.weights?.get(i));
       if(depth) b.style.setProperty('--hint-depth',`${depth*100}%`);
       else if(b.style.getPropertyValue('--hint-depth')) b.style.removeProperty('--hint-depth');
       const red=n<0?confirmedInk(game,i):undefined;
@@ -1408,7 +1405,7 @@
     return list;
   }
 
-  function display(a, weak, weights=new Map()) {
+  function display(a, weak) {
     if(!proofVisible) return;
     const panel=$('proof'), m=a.move;
     clearProofHover();
@@ -1423,7 +1420,7 @@
       const sources=[...new Set([...a.prior.flatMap(p=>p.sources),...m.sources])];
       const safe=m.safe.filter(v=>!game.manual?.marked.has(v));
       const mines=m.mines.filter(v=>!game.manual?.marked.has(v) && !game.flags.has(v));
-      const stepsList=weak?null:steps(m,weights);
+      const weights=new Map(), stepsList=weak?null:steps(m,weights);
       game.highlight = {sources,safe:weak?[]:safe,mines:weak?[]:mines,weights};
       const card=element('article','proof-card');
       const top=element('div','proof-top');
@@ -1476,9 +1473,7 @@
 
   async function stageStep(a) {
     const g=game, task=run;
-    const weights=new Map();
-    if(proofVisible) display(a,false,weights);
-    else if(a.move?.proofs.some(proof=>proof.inequality)) steps(a.move,weights);
+    if(proofVisible) display(a,false);
     if(!a.move) return false;
     const judgment=await judge(g);
     if(task!==run || g!==game || !ready()) return false;
@@ -1490,7 +1485,7 @@
     g.manual??=makeManualBatch(judgment.state,g.flags,engine.confirmationTargets,g.notes);
     const added=[...safe,...mines].filter(i=>!g.manual.marked.has(i));
     const wasDone=g.manual.done;
-    g.manual.recordStep(safe,mines,weights);
+    g.manual.recordStep(safe,mines);
     const confirmed=added.filter(i=>g.manual.marked.has(i));
     if(!confirmed.length) return false;
     showMarks(g,confirmed,wasDone);
@@ -2163,10 +2158,9 @@
     if (!game || worker || pending && !auto) return;
     dismissSearchResult();
     stopAuto();
-    const {original,p,originalVisible,originalFlags,originalNotes,selection}=game;
+    const {original,p,originalVisible,originalFlags}=game;
     try {
-      const position=await prepareGame({board:original,visible:originalVisible,flags:originalFlags,notes:originalNotes},p);
-      position.selection=selection;
+      const position=await prepareGame({board:original,visible:originalVisible,flags:originalFlags},p);
       mount(position);
       say(game.state === 'won' ? '首开通关 · 所有安全格已打开' : '已恢复原始开局。');
     } catch(error) {say(error.message,'error');}
