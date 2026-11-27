@@ -6,15 +6,17 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261126-26">
-  <link rel="stylesheet" href="game-motion.css?v=20261126-4">
-  <script defer src="engine.js?v=20261126-17"></script>
+  <link rel="stylesheet" href="styles.css?v=20261127-2">
+  <link rel="stylesheet" href="game-motion.css?v=20261127-1">
+  <script defer src="region-selection.js?v=20261127-4"></script>
+  <script defer src="radial-layout.js?v=20261127-9"></script>
+  <script defer src="engine.js?v=20261127-1"></script>
   <script defer src="proof-format.js?v=20261126-7"></script>
-  <script defer src="board-input.js?v=20261126-14"></script>
+  <script defer src="board-input.js?v=20261126-15"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
-  <script defer src="app.js?v=20261126-32"></script>
+  <script defer src="app.js?v=20261127-9"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -31,6 +33,9 @@
     <symbol id="pen" viewBox="0 0 24 24"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4Zm9-12 3 3"/></symbol>
     <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
     <symbol id="formulaIcon" viewBox="0 0 24 24"><path d="M18 5H6l6 7-6 7h12"/></symbol>
+    <symbol id="selectionIcon" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="1" stroke-dasharray="3 2"/></symbol>
+    <symbol id="selectionAddIcon" viewBox="0 0 24 24"><path d="M15 8H4v12h12v-8" stroke-dasharray="2.5 2"/><path d="M20 1v6m-3-3h6"/></symbol>
+    <symbol id="selectionSubtractIcon" viewBox="0 0 24 24"><path d="M15 8H4v12h12v-8" stroke-dasharray="2.5 2"/><path d="M17 4h6"/></symbol>
     <symbol id="stepIcon" viewBox="0 0 24 24"><path d="m5 5 10 7-10 7V5Zm14 0v14"/></symbol>
     <symbol id="stopIcon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12"/></symbol>
     <symbol id="eraser" viewBox="0 0 24 24"><path d="m4 14 9-9a2 2 0 0 1 3 0l4 4a2 2 0 0 1 0 3l-7 7H9l-5-5Zm5-5 8 8M13 19h8"/></symbol>
@@ -117,6 +122,11 @@
         </div>
         <footer class="board-footer" tabindex="-1" aria-label="本轮状态">
           <div class="round-feedback">
+            <dl id="selectionReadout" class="selection-readout" hidden>
+              <div><dt>选区</dt><dd id="selectionTerms"></dd></div>
+              <div><dt>加权雷数</dt><dd id="selectionBounds"></dd></div>
+              <div id="selectionClueRow"><dt>线索剩余</dt><dd id="selectionClues"></dd></div>
+            </dl>
             <p id="status" class="status" role="status">等待生成或导入棋局</p>
             <p id="roundText" class="status" role="status" hidden></p>
             <progress id="roundProgress" class="is-inactive" max="1" value="0" aria-label="本轮确认进度" aria-hidden="true"></progress>
@@ -163,19 +173,26 @@
   </dialog>
   <nav id="toolDock" class="tool-dock" aria-label="棋盘工具">
     <button type="button" id="markMenu" class="orb launcher" title="蓝色记号（长按清空）" aria-label="蓝色记号" aria-expanded="false" aria-controls="markFlower"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg></button>
+    <button type="button" id="selectionMenu" class="orb launcher" title="选区（长按清空）" aria-label="选区" aria-expanded="false" aria-controls="selectionFlower"><svg class="icon" aria-hidden="true"><use href="#selectionIcon"/></svg></button>
     <button type="button" id="reasonMenu" class="orb launcher" title="推理工具" aria-label="推理工具" aria-expanded="false" aria-controls="reasonFlower"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg></button>
   </nav>
   <div id="reasonFlower" class="radial flower" role="group" aria-label="推理工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-78" y1="-8" x2="78" y2="-78"><stop stop-color="#4d78ec"/><stop offset=".52" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path pathLength="1" stroke="url(#reasonArc)" d="M -78 -8 A 78 78 0 0 1 0 -78 A 78 78 0 0 1 78 -8"/></svg>
-    <button type="button" id="closeReason" class="orb black center" title="返回" aria-label="折叠推理工具"><svg class="icon" aria-hidden="true"><use href="#closeIcon"/></svg></button>
-    <button type="button" id="focus" class="orb petal" style="--x:-78px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
-    <button type="button" id="hint" class="orb petal" style="--x:-55px;--y:-55px"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
-    <button type="button" id="answers" class="orb petal" style="--y:-78px" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
-    <button type="button" id="apply" class="orb petal" style="--x:55px;--y:-55px"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
-    <button type="button" id="solve" class="orb petal" style="--x:78px;--y:-8px"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-138" y1="0" x2="138" y2="0"><stop stop-color="#4d78ec"/><stop offset=".5" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path id="reasonTrack" pathLength="1" stroke="url(#reasonArc)"/></svg>
+    <button type="button" id="focus" class="orb petal"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg>线索</button>
+    <button type="button" id="hint" class="orb petal"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg>推导</button>
+    <button type="button" id="answers" class="orb petal" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>
+    <button type="button" id="apply" class="orb petal"><svg class="icon" aria-hidden="true"><use href="#stepIcon"/></svg>求解一步</button>
+    <button type="button" id="solve" class="orb petal"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>自动求解</button>
+  </div>
+  <div id="selectionFlower" class="radial selection-flower" role="group" aria-label="选区工具" inert>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="selectionArc" gradientUnits="userSpaceOnUse" x1="-65" x2="65"><stop stop-color="#8c57c9"/><stop offset="1" stop-color="#e3b238"/></linearGradient></defs><path id="selectionTrackLeft" pathLength="1" stroke="url(#selectionArc)"/><path id="selectionTrackRight" pathLength="1" stroke="url(#selectionArc)"/></svg>
+    <button type="button" id="selectionAdd" class="orb petal" aria-label="增加选区" title="增加选区" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#selectionAddIcon"/></svg></button>
+    <button type="button" id="selectionUndo" class="orb petal" aria-label="撤销选区" title="撤销选区" disabled><svg class="icon" aria-hidden="true"><use href="#undoIcon"/></svg></button>
+    <button type="button" id="selectionSubtract" class="orb petal" aria-label="减去选区" title="减去选区" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#selectionSubtractIcon"/></svg></button>
+    <button type="button" id="selectionRedo" class="orb petal" aria-label="重做选区" title="重做选区" disabled><svg class="icon" aria-hidden="true"><use href="#redoIcon"/></svg></button>
   </div>
   <div id="markFlower" class="radial marking" role="group" aria-label="蓝色记号工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient><linearGradient id="redInkArc"><stop stop-color="#d67089"/><stop offset="1" stop-color="#9b1e42"/></linearGradient></defs><path id="inkTrackLeft" pathLength="1" stroke="url(#inkArc)"/><path id="inkTrackRight" pathLength="1" stroke="url(#inkArc)"/><path id="redInkTrack" d="M -54 -26 Q -32 0 0 0 T 54 -26" pathLength="1" stroke="url(#redInkArc)"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="inkArc" gradientUnits="userSpaceOnUse" x1="0" y1="-93" x2="0" y2="55"><stop stop-color="#398dbe"/><stop offset="1" stop-color="#6754d0"/></linearGradient><linearGradient id="redInkArc" gradientUnits="userSpaceOnUse" x1="-65" x2="65"><stop stop-color="#d67089"/><stop offset="1" stop-color="#9b1e42"/></linearGradient></defs><path id="inkTrack" stroke="url(#inkArc)"/><path id="redInkTrack" d="M -54 -26 Q -32 0 0 0 T 54 -26" pathLength="1" stroke="url(#redInkArc)"/></svg>
   </div>
   </div>
 </body>

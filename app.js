@@ -2,8 +2,11 @@
   'use strict';
   const engine = makeMinesEngine();
   const format = makeProofFormat();
+  const regionSelection=makeRegionSelection(engine.adj);
+  const radialLayout=makeRadialLayout();
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
+  const selectionReadout=$('selectionReadout');
   const viewport = $('gameViewport');
   const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('fullscreenStatus'));
   const feedback = makeGameFeedback($('soundToggle'),$('motionToggle'));
@@ -27,11 +30,18 @@
   let playWorker, pending;
   let verificationWorker, verificationTimer;
   let draftMarkJob, draftMarkJudgment;
-  const proofKinds=['cancelled','positive','negative','element'];
+  const proofKinds=['cancelled','positive','negative','element','selection-positive','selection-negative'];
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   let hoveredProof, focusedProof, pinnedProof;
   let activeProofRow;
   let activeAreaPreview = null;
+  const selectionHistory=regionSelection.history();
+  const {weights:selectedWeights,clueWeights:selectedClueWeights}=selectionHistory;
+  const selectionTargets=new WeakMap();
+  let hoveredSelection, focusedSelection, selectionReadoutKey='';
+  let activeSelectionClues=[];
+  let selectionMode='';
+  let selectionAdj=[];
 
   const say = (text, tone = '') => { $('status').textContent = text; $('status').dataset.tone = tone; };
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
@@ -80,20 +90,23 @@
     batchControls();
     for (const control of $('editorSettings').elements) control.disabled = locked;
     $('copyGamePosition').disabled = locked || !parkedGame;
-    for (const button of $('editTools').querySelectorAll('button')) button.disabled = locked;
+    for (const button of $('editTools').querySelectorAll('button'))
+      button.disabled = locked && !(editing && button.matches('[data-draft], [data-edit]'));
     $('reasonMenu').classList.toggle('is-inactive',editing);
     $('restart').hidden = editing;
     $('gameTime').hidden = editing;
     $('board').setAttribute('aria-busy',String(!!pending));
     for (const id of ['focus', 'hint', 'answers']) $(id).disabled = locked || !live;
     $('reasonMenu').disabled = editing || !game || !!worker;
+    $('selectionMenu').disabled = editing || !game || locked;
+    selectionHistoryControls();
     $('markMenu').disabled = !game || !!worker || !!pending || auto || !editing && !live;
     $('restart').disabled = !!worker || !!pending && !auto || !game;
     $('solve').disabled = !!worker || !live || (!!pending && !auto);
     $('solve').innerHTML = auto ? `${icon('stopIcon')}停止求解` : `${icon('play')}自动求解`;
-    $('reasonMenu').innerHTML=icon(auto?'stopIcon':'hintIcon');
-    $('reasonMenu').title=auto?'停止求解':'推理工具';
-    $('reasonMenu').setAttribute('aria-label',$('reasonMenu').title);
+    $('reasonMenu').innerHTML=icon('hintIcon');
+    $('reasonMenu').title='推理工具';
+    $('reasonMenu').setAttribute('aria-label','推理工具');
     $('answers').setAttribute('aria-pressed',String(!!game?.answers));
     $('answers').querySelector('span').textContent = game?.answers ? '隐藏答案' : '展示答案';
   }
@@ -150,7 +163,8 @@
   }
 
   function stopAuto() {
-    if (auto && proofVisible && proofPanel.querySelector('.proof-pending')) clearHint();
+    if (auto && proofVisible && proofPanel.querySelector('.proof-pending'))
+      proofPanel.replaceChildren(element('p','proof-pending','自动求解已停止。'));
     auto = false; run++;
     cancelPlayRequest();
     controls();
@@ -228,6 +242,8 @@
   function mount(position) {
     stopAuto();
     game=position;
+    selectionAdj=game?.board.ns??[];
+    clearSelection();
     input.reset(editing); showReason(false);
     clearHint();
     scheduleVerification();
@@ -370,85 +386,33 @@
     const dx=tile+parseFloat(style.columnGap), dy=height+parseFloat(style.rowGap);
     const left=columns[0]+dx-tile/2, top=rows[0]+dy-height/2;
     const width=parseFloat(style.width), boardHeight=parseFloat(style.height);
-    return Number.isFinite(left+top+dx+dy) ? {root,width,boardHeight,tile,dx,dy,left,top} : null;
+    return Number.isFinite(left+top+dx+dy) ? {width,boardHeight,tile,height,dx,dy,left,top} : null;
   }
 
   function paintProofAreas() {
     if(!activeAreaPreview || !game || !buttons.length) { proofDrawing.replaceChildren(); return; }
     const geo=proofGeometry();
     if(!geo) return;
-    const {w,h}=game.board, {width,boardHeight,tile,dx,dy,left,top}=geo;
-    const gapX=Math.max(0,dx-tile), gapY=Math.max(0,dy-tile);
-    const originX=left-tile/2-gapX/2, originY=top-tile/2-gapY/2;
-    const point=([x,y])=>[originX+x*dx,originY+y*dy];
-    const edgeKey=(x,y)=>`${x},${y}`;
-    const boundaryLoops=cells=>{
-      const set=new Set(cells), edges=[];
-      for(const i of set) {
-        const x=i%w,y=Math.floor(i/w);
-        if(y===0 || !set.has(i-w)) edges.push({x,y,d:0});
-        if(x===w-1 || !set.has(i+1)) edges.push({x:x+1,y,d:1});
-        if(y===h-1 || !set.has(i+w)) edges.push({x:x+1,y:y+1,d:2});
-        if(x===0 || !set.has(i-1)) edges.push({x,y:y+1,d:3});
-      }
-      const outgoing=new Map();
-      edges.forEach((edge,index)=>{
-        const key=edgeKey(edge.x,edge.y), list=outgoing.get(key)??[];
-        list.push(index); outgoing.set(key,list);
-      });
-      const used=new Set(), loops=[];
-      for(let start=0;start<edges.length;start++) {
-        if(used.has(start)) continue;
-        const first=edges[start], ring=[[first.x,first.y]];
-        let edgeIndex=start, closed=false;
-        while(!used.has(edgeIndex)) {
-          used.add(edgeIndex);
-          const edge=edges[edgeIndex];
-          const x=edge.x+(edge.d===0?1:edge.d===2?-1:0);
-          const y=edge.y+(edge.d===1?1:edge.d===3?-1:0);
-          ring.push([x,y]);
-          const candidates=outgoing.get(edgeKey(x,y))??[];
-          if(!candidates.length) break;
-          // At a diagonal contact take the left turn, joining the two cells.
-          edgeIndex=candidates.find(i=>(edges[i].d-edge.d+4)%4===3)??candidates[0];
-          if(edgeIndex===start) {closed=true;break;}
-        }
-        if(closed && ring.length>=5) loops.push(ring);
-      }
-      return loops;
-    };
-    const roundedPath=ring=>{
-      const walk=ring.slice(0,-1);
-      const points=walk.filter(([x,y],i)=>{
-        const [px,py]=walk[(i+walk.length-1)%walk.length], [nx,ny]=walk[(i+1)%walk.length];
-        return x-px!==nx-x || y-py!==ny-y;
-      }).map(point);
-      if(points.length<4) return '';
-      const radius=tile*.18;
-      const toward=(p,q,d)=>{const length=Math.hypot(q[0]-p[0],q[1]-p[1])||1;return [p[0]+(q[0]-p[0])*d/length,p[1]+(q[1]-p[1])*d/length];};
-      const corners=points.map((p,i)=>({p,start:toward(p,points[(i+points.length-1)%points.length],radius),end:toward(p,points[(i+1)%points.length],radius)}));
-      let d=`M${corners[0].start[0]},${corners[0].start[1]}`;
-      for(let i=0;i<corners.length;i++) {
-        const corner=corners[i], next=corners[(i+1)%corners.length];
-        d+=`Q${corner.p[0]},${corner.p[1]} ${corner.end[0]},${corner.end[1]}L${next.start[0]},${next.start[1]}`;
-      }
-      return d+'Z';
-    };
+    const {w,h}=game.board, {width,boardHeight,tile,height,dx,dy,left,top}=geo;
+    const step=Math.min(tile,height);
+    const grid={x:left-dx/2,y:top-dy/2,dx,dy,radius:Math.min(6,step*.16),inset:Math.min(1.75,step*.1)};
     const paths=document.createDocumentFragment();
+    const {areas}=activeAreaPreview;
+    const append=(kind,d)=>{
+      const path=document.createElementNS(proofDrawing.namespaceURI,'path');
+      path.setAttribute('class',kind);
+      path.setAttribute('d',d);
+      path.setAttribute('fill-rule','evenodd');
+      paths.append(path);
+    };
     for(const [i,kind] of proofKinds.entries()) {
-      const cells=activeAreaPreview.areas[i];
+      const cells=areas[i];
       if(!cells?.size) continue;
-      const rings=boundaryLoops(cells).map(roundedPath).filter(Boolean);
-      const path=(cls,d)=>{
-        const outline=document.createElementNS(proofDrawing.namespaceURI,'path');
-        outline.setAttribute('class',cls);
-        outline.setAttribute('d',d);
-        outline.setAttribute('fill-rule','evenodd');
-        paths.append(outline);
-      };
-      path(kind,rings.join(''));
-      if(kind==='element') path('element-hatch',rings.join(''));
-      for(const d of rings) path(`${kind} boundary`,d);
+      const opposite={positive:2,negative:1,'selection-positive':5,'selection-negative':4}[kind];
+      const d=regionSelection.contour(cells,w,h,grid,areas[opposite]);
+      append(kind,d);
+      if(kind==='element') append('element-hatch',d);
+      append(`${kind} boundary`,d);
     }
     proofDrawing.setAttribute('viewBox',`0 0 ${width} ${boardHeight}`);
     proofDrawing.replaceChildren(proofPattern,paths);
@@ -471,7 +435,7 @@
       if (n > 0) marks.push(`n${n}`);
       if (marked) marks.push('flagged');
       if (mine) marks.push('edit-mine');
-      if (proofClues.has(i)) marks.push('clue');
+      if (proofClues.has(i) || activeSelectionClues.includes(i)) marks.push('clue');
       const answer=game.answers && game.judgment?.state[i];
       if (proofSafe.has(i) || answer==='safe') marks.push('target-safe');
       if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
@@ -499,6 +463,10 @@
     $('totalMines').classList.toggle('clue-total', !!highlight?.sources.includes(-1));
     paintInk();
     time();
+    if(selectedWeights.size || selectedClueWeights.size) {
+      updateSelectionReadout();
+      updateProofPreview();
+    }
   }
 
   function updateProofPreview() {
@@ -509,7 +477,18 @@
       row?.classList.add('proof-active');
       activeProofRow=row;
     }
-    const next=(proofTargets.get(target)??proofRows.get(target))??null;
+    const proof=proofTargets.get(target)??proofRows.get(target);
+    const selection=selectionTargets.get(hoveredSelection??focusedSelection);
+    const clues=proof?[]:selection?.clues??[];
+    if(clues!==activeSelectionClues) {
+      const hintClues=new Set(game?.highlight?.sources);
+      for(const cell of activeSelectionClues) {
+        if(!hintClues.has(cell)) buttons[cell]?.classList.remove('clue');
+      }
+      for(const cell of clues) buttons[cell]?.classList.add('clue');
+      activeSelectionClues=clues;
+    }
+    const next=proof??selection?.preview??(selectedWeights.size?selectionPreview():null);
     if(next===activeAreaPreview) return;
     for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
@@ -526,6 +505,123 @@
 
   function proofPreview(areas,total=false) {
     return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total};
+  }
+
+  function selectionPreview() {
+    const {positive,negative}=regionSelection.bounds(selectionUnknownWeights(),new Map());
+    return proofPreview([[],[],[],[],positive,negative]);
+  }
+
+  function selectionKnown() {
+    return regionSelection.knownCells({visible:game.visible,flags:game.flags,proven:game.proven,
+      manual:game.manual?.marked??[],red:game.notes.layers.red});
+  }
+
+  function selectionUnknownWeights() {
+    const known=selectionKnown();
+    return new Map([...selectedWeights].filter(([cell])=>!known.has(cell)));
+  }
+
+  function selectionRemainder(known) {
+    let total=0;
+    for(const [clue,weight] of selectedClueWeights) {
+      let fixedMines=0;
+      for(const cell of selectionAdj[clue]) fixedMines+=known.get(cell)??0;
+      total+=weight*(game.visible[clue]-fixedMines);
+    }
+    return total;
+  }
+
+  function selectionTarget(target) {
+    const token=target?.closest?.('.selection-token, #selectionClueRow');
+    return selectionReadout.contains(token)?token:undefined;
+  }
+  function updateSelectionHover(event,target) {
+    if(event.pointerType!=='mouse') return;
+    hoveredSelection=selectionTarget(target);
+    updateProofPreview();
+  }
+
+  function updateSelectionReadout() {
+    const weights=selectedWeights.size?selectionUnknownWeights():new Map();
+    const clues=[...selectedClueWeights].sort(([a],[b])=>a-b);
+    const shown=weights.size>0 || clues.length>0;
+    selectionReadout.hidden=!shown;
+    if(!shown) {
+      hoveredSelection=focusedSelection=undefined;
+      selectionReadoutKey='';
+      return;
+    }
+    const {w,h}=game.board;
+    const groups=[...new Set(weights.values())].flatMap(weight=>
+      format.regions([...weights].filter(([,value])=>value===weight).map(([cell])=>cell),w,h,game.visible));
+    const terms=format.terms([...weights],groups).map(({coefficient,cells})=>({
+      coefficient,cells,label:format.label(cells,w,h,game.visible)
+    })).sort((a,b)=>a.label.localeCompare(b.label,undefined,{numeric:true}));
+    const {min,max}=regionSelection.bounds(weights,new Map());
+    const remaining=clues.length?selectionRemainder(selectionKnown()):null;
+    const key=JSON.stringify([terms,clues,remaining,w]);
+    if(key===selectionReadoutKey) return;
+    selectionReadoutKey=key;
+    hoveredSelection=focusedSelection=undefined;
+    const prefix=(coefficient,index)=>
+      `${index?(coefficient<0?' − ':' + '):(coefficient<0?'−':'')}${Math.abs(coefficient)>1?`${Math.abs(coefficient)}·`:''}`;
+    function token(label,kind,target) {
+      const node=element('span',`selection-token ${kind}`,label);
+      node.tabIndex=0;
+      selectionTargets.set(node,target);
+      return node;
+    }
+    $('selectionTerms').replaceChildren(...(terms.length?terms.flatMap(({coefficient,cells,label},index)=>[
+      prefix(coefficient,index),token(label,coefficient<0?'negative':'positive',{preview:proofPreview([[],[],[],cells])})
+    ]):['0']));
+    $('selectionBounds').textContent=min===max?String(min):`${min} 至 ${max}`;
+    $('selectionClues').replaceChildren(...(clues.length?[
+      ...clues.flatMap(([cell,weight],index)=>[prefix(weight,index),token(format.coordinate(cell,w),'clue-token',{clues:[cell]})]),
+      ` = ${remaining}`
+    ]:['—']));
+    selectionTargets.set($('selectionClueRow'),{clues:clues.map(([cell])=>cell)});
+  }
+
+  function setSelectionMode(mode='') {
+    selectionMode=mode;
+    $('selectionAdd').ariaPressed=String(mode==='add');
+    $('selectionSubtract').ariaPressed=String(mode==='subtract');
+    $('board').classList.toggle('selecting',!!mode);
+  }
+
+  function selectionHistoryControls() {
+    const locked=$('selectionMenu').disabled;
+    $('selectionUndo').disabled=locked || !selectionHistory.canUndo;
+    $('selectionRedo').disabled=locked || !selectionHistory.canRedo;
+  }
+
+  function refreshSelection() {
+    selectionHistoryControls();
+    updateSelectionReadout();
+    updateProofPreview();
+  }
+
+  function clearSelection(remember=false) {
+    if(remember) selectionHistory.clear();
+    else selectionHistory.reset();
+    setSelectionMode();
+    refreshSelection();
+  }
+
+  function selectBoardCell(i) {
+    if(!selectionMode || !game || editing || game.state!=='playing') return false;
+    if($('selectionMenu').disabled) return true;
+    const clue=game.visible[i]>=0?i:undefined;
+    const cells=regionSelection.unknown(clue===undefined?[i]:selectionAdj[clue],selectionKnown());
+    const sign=selectionMode==='add'?1:-1;
+    if(!selectionHistory.select(cells,clue,sign)) return true;
+    buttons[game.focus].tabIndex=-1;
+    game.focus=i;
+    buttons[i].tabIndex=0;
+    refreshSelection();
+    feedback.sound('click');
+    return true;
   }
 
   const proofPanel=$('proof');
@@ -659,6 +755,7 @@
 
   async function toggleAnswers() {
     if(!ready() || pending || auto) return;
+    clearSelection();
     const g=game;
     g.answers=!g.answers; controls(); render();
     if(!g.answers) return;
@@ -721,6 +818,7 @@
   async function commitBatch(g) {
     if(g!==game || !g.manual?.done || !ready() || pending) return false;
     const task=run;
+    const refreshProof=!auto&&proofVisible;
     const safe=g.manual.cells('safe'), mines=g.manual.cells('mine');
     const proven=new Set([...g.proven,...mines]);
     const flags=new Set([...g.flags,...mines]);
@@ -730,26 +828,36 @@
       const result=await ask('advance',{board:g.board,p:g.p,visible:g.visible,cells:safe,
         proven:new Set([...proven].filter(v=>flags.has(v))),flags,allowUnsolved:true,exact:true});
       if(task!==run || g!==game || !ready()) return false;
-      if(result?.opened!==safe.length) {
+      if(!result?.board || !result.visible || !(result.opened>=safe.length)) {
         feedback.sound('rejected');
         say('未能更新棋盘，红色标记已保留。','error'); return false;
       }
       Object.assign(g,{board:result.board,visible:result.visible,opened:g.opened+result.opened,judgment:null});
+      for(const i of result.cells??safe) flags.delete(i);
+      discardOpenedMarks(g,result.cells??safe);
     }
     feedback.handoff(inkDrawing);
     g.proven=proven;
     g.flags=flags;
     discardOpenedMarks(g,safe);
     g.manual=null;
+    clearSelection();
     g.current=g.verification=undefined; scheduleVerification();
     const won=g.opened===g.visible.length-g.board.mines;
-    clearHint(auto && !won && proofVisible);
+    clearHint(!won && proofVisible);
     if(won) finish();
     else {
       say(`本轮已打开 ${safe.length} 格，插旗 ${mines.length} 格。`,'success');
       feedback.sound(safe.length?'commit':'flag');
     }
     render();
+    if(refreshProof&&!won&&g===game&&run===task) {
+      const step=await next();
+      if(g===game&&run===task&&proofVisible) {
+        if(step) display(step,false);
+        else display({status:'confirmed'},false);
+      }
+    }
     if(safe.length && g.answers && ready()) {
       const result=await judge(g);
       if(g===game && run===task && g.answers && result?.status!=='complete') say('只显示已证实的答案；其余格尚未判定。','error');
@@ -759,6 +867,7 @@
 
   function play(i, marking) {
     if (!ready() || auto || pending) return;
+    clearSelection();
     const g = game;
     g.focus = i;
     say('');
@@ -1034,6 +1143,7 @@
   function display(a, weak) {
     if(!proofVisible) return;
     const panel=$('proof'), m=a.move;
+    clearSelection();
     clearProofHover();
     panel.replaceChildren();
     if (!m) {
@@ -1126,10 +1236,7 @@
     if (!ready() || pending) return;
     auto = true;
     const task=++run, g=game;
-    if(!proofVisible) {
-      showPendingProof();
-      setProofVisible(true);
-    }
+    if(proofVisible) showPendingProof();
     controls();
     try {
       while (task === run && ready()) {
@@ -1147,13 +1254,16 @@
 
   async function requestHint(show, trigger, selectStep=false) {
     if (!ready() || auto || pending) return;
+    clearSelection();
+    const openForRequest=trigger===$('hint') || trigger===$('focus');
+    if(openForRequest&&!proofVisible) {showPendingProof();setProofVisible(true);}
     if (!compactReason.matches && reasonCollapsed) setReasonCollapsed(false);
     const task = run;
     proofReturn=trigger;
-    clearHint(true); render();
+    clearHint(openForRequest||proofVisible); render();
     if(compactReason.matches && trigger===$('hint')) $('closeProof').focus({preventScroll:true});
     const a = await next();
-    if (task === run && ready() && a && (!selectStep || proofVisible)) {
+    if (task === run && ready() && a && (openForRequest || proofVisible || show===stageStep)) {
       if(selectStep && a.move) {
         game.selectedClues=a.move.sources.length;
         showVerification();
@@ -1165,15 +1275,101 @@
   function showReason(open,focus=false) {
     if(open) input.close();
     setRadial('reason',open);
-    if(focus) $(open?'closeReason':'reasonMenu').focus({preventScroll:true});
+    if(focus) $('reasonMenu').focus({preventScroll:true});
   }
 
   function setRadial(name,open) {
     const flower=$(`${name}Flower`), launcher=$(`${name}Menu`);
+    if(name==='selection') {
+      if(open) {input.close();showReason(false);}
+      else setSelectionMode();
+    }
+    if(name==='mark'&&open) {clearSelection();showReason(false);}
+    if(name==='reason'&&open) {clearSelection();input.close();}
+    if(open) for(const other of ['mark','selection','reason']) {
+      if(other===name) continue;
+      const otherFlower=$(`${other}Flower`),otherLauncher=$(`${other}Menu`);
+      otherFlower.inert=true;otherFlower.classList.remove('expanded');
+      otherLauncher.setAttribute('aria-expanded','false');otherLauncher.classList.remove('is-open');
+    }
+    if(open) layoutRadial(name);
+    else if(flower.contains(document.activeElement)) launcher.focus({preventScroll:true});
     flower.inert=!open;
     flower.classList.toggle('expanded',open);
     launcher.setAttribute('aria-expanded',String(open));
+    launcher.classList.toggle('is-open',open);
   }
+
+  function layoutRadial(name) {
+    const flower=$(`${name}Flower`),launcher=$(`${name}Menu`);
+    const items=[...flower.querySelectorAll('.petal,.mark-option')].filter(item=>!item.hidden);
+    if(!items.length) return;
+    const dock=$('toolDock'), dockRect=dock.getBoundingClientRect();
+    const dockButtonRect=button=>{
+      const left=dockRect.left+button.offsetLeft, top=dockRect.top+button.offsetTop;
+      const width=button.offsetWidth, height=button.offsetHeight;
+      return {left,top,width,height,right:left+width,bottom:top+height};
+    };
+    const anchor=dockButtonRect(launcher);
+    const viewport=document.documentElement;
+    const originX=anchor.left+anchor.width/2, originY=anchor.top+anchor.height/2;
+    const obstacles=[...dock.querySelectorAll('.launcher')].filter(item=>item!==launcher && !item.hidden).map(dockButtonRect);
+    const kind=name==='reason'?'reason':name==='mark'&&!editing?'ring':name==='selection'?'paired':'fan';
+    const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
+      width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind
+    });
+    // A fixed element's origin may include a reserved scrollbar gutter.
+    const frame=flower.getBoundingClientRect(), style=getComputedStyle(flower);
+    const [movingX=0,movingY=0]=style.translate.split(' ').map(value=>parseFloat(value)||0);
+    const frameX=frame.left-movingX-parseFloat(style.left);
+    const frameY=frame.top-movingY-parseFloat(style.top);
+    flower.style.left=`${originX-frameX}px`;
+    flower.style.top=`${originY-frameY}px`;
+    for(const point of positioned.items) {
+      point.item.style.setProperty('--x',`${point.x}px`);
+      point.item.style.setProperty('--y',`${point.y}px`);
+    }
+    for(const element of [flower,launcher]) {
+      element.style.setProperty('--menu-x',`${positioned.center.x}px`);
+      element.style.setProperty('--menu-y',`${positioned.center.y}px`);
+    }
+    const track=flower.querySelector('.radial-track');
+    if(track) {
+      const mark=positioned.items;
+      const launcherPoint={x:0,y:0};
+      if(kind==='ring') {
+        track.querySelector('#inkTrack').setAttribute('d',radialLayout.ringArcPath(mark));
+      } else if(name==='selection') {
+        const [left,right]=radialLayout.pairedGroups(mark,launcherPoint);
+        const ids=['selectionTrackLeft','selectionTrackRight'];
+        for(const [index,group] of [left,right].entries()) {
+          track.querySelector(`#${ids[index]}`).setAttribute('d',radialLayout.pairedArcPath(group,launcherPoint,index?'right':'left'));
+        }
+      } else if(name==='reason') {
+        track.querySelector('#reasonTrack')?.setAttribute('d',radialLayout.semicirclePath(mark));
+      } else {
+        const path=track.querySelector('path:not([id])')??track.querySelector('#redInkTrack');
+        const ordered=radialLayout.orderAlongArc(mark,launcherPoint);
+        path?.setAttribute('d',radialLayout.pathThrough(ordered,launcherPoint));
+      }
+      const coords=[[launcherPoint.x,launcherPoint.y],...positioned.items.map(point=>[point.x,point.y])];
+      const xs=coords.map(point=>point[0]),ys=coords.map(point=>point[1]);
+      const left=Math.min(...xs)-12,top=Math.min(...ys)-12,width=Math.max(...xs)-left+12,height=Math.max(...ys)-top+12;
+      track.setAttribute('viewBox',`${left} ${top} ${width} ${height}`);
+      track.style.left=`${left}px`;track.style.top=`${top}px`;track.style.width=`${width}px`;track.style.height=`${height}px`;
+      track.style.transformOrigin=`${-left}px ${-top}px`;
+    }
+  }
+
+  let radialLayoutFrame=0;
+  const refreshOpenRadials=()=>{
+    cancelAnimationFrame(radialLayoutFrame);
+    radialLayoutFrame=requestAnimationFrame(()=>{
+      for(const name of ['mark','selection','reason']) if(!$(`${name}Flower`).inert) layoutRadial(name);
+    });
+  };
+  addEventListener('resize',refreshOpenRadials);
+  window.visualViewport?.addEventListener('resize',refreshOpenRadials);
 
   function setProofVisible(visible) {
     if(!visible && proofPane.contains(document.activeElement)) focusProofReturn();
@@ -1211,6 +1407,8 @@
     $('gameMode').setAttribute('aria-pressed',String(!next));
     $('editMode').setAttribute('aria-pressed',String(next));
     $('settings').hidden=next;
+    if(next) setRadial('selection',false);
+    $('selectionMenu').hidden=next;
     for(const id of ['editorSettings','editTools','playPosition']) $(id).hidden=!next;
   }
 
@@ -1313,13 +1511,14 @@
       boardSize();
     } else if(b.bombs[i]) {feedback.sound('rejected');say('有雷的格子不能设为已开。','error');return;}
     else {
-      g.visible[i]=n>=0?-1:b.clues[i];
+      if(n>=0) g.visible[i]=-1;
+      else engine.reveal(b,g.visible,i,g.flags);
       feedback.sound(n>=0?'erase':'open');
     }
-    if(n<0 && g.visible[i]>=0) discardOpenedMarks(g,[i]);
+    if(n<0 && g.visible[i]>=0) discardOpenedMarks(g,g.visible.flatMap((value,cell)=>value>=0?[cell]:[]));
     b.opening=g.visible.flatMap((v,at)=>v>=0?[at]:[]);
     b.first=b.opening[0]??0;
-    g.opened=b.opening.length;
+    g.opened=g.visible.filter(value=>value>=0).length;
     g.verification=g.current=g.witness=undefined;
     scheduleVerification(); render(); say('');
   }
@@ -1560,7 +1759,7 @@
     const button=e.target.closest('[data-edit]');
     if(!button) return;
     editTool=button.dataset.edit;
-    for(const item of $('editTools').querySelectorAll('button')) item.setAttribute('aria-pressed',String(item===button));
+    for(const item of $('mineTools').querySelectorAll('[data-edit]')) item.setAttribute('aria-pressed',String(item===button));
   };
   $('draftMines').oninput=()=>{
     const value=$('draftMines').valueAsNumber;
@@ -1602,6 +1801,7 @@
     g.manual=null;
     g.visible=result.visible; g.opened+=result.cells.length;
     discardOpenedMarks(g,result.cells);
+    clearSelection();
     if(editing) {
       g.board.opening=g.visible.flatMap((n,i)=>n>=0?[i]:[]);
       g.board.first=g.board.opening[0]??0;
@@ -1698,8 +1898,92 @@
   $('commitMarks').onclick = () => {if(!auto) void commitBatch(game);};
   $('solve').onclick = solve;
   $('answers').onclick = toggleAnswers;
-  $('reasonMenu').onclick = ()=>{if(auto) pauseSolve();else showReason($('reasonFlower').inert,true);};
-  $('closeReason').onclick = ()=>showReason(false,true);
+  const reasonLauncher=$('reasonMenu');
+  let reasonHold, suppressReasonClick=false;
+  function stopReasonHold(e) {
+    if(!reasonHold || (e && e.pointerId!==reasonHold.id)) return;
+    clearTimeout(reasonHold.timer);
+    reasonHold=undefined;
+    reasonLauncher.classList.remove('holding');
+  }
+  reasonLauncher.onpointerdown=e=>{
+    if(e.button!==0 || !e.isPrimary || reasonLauncher.disabled) return;
+    suppressReasonClick=false;
+    const timer=setTimeout(()=>{
+      suppressReasonClick=true;
+      stopReasonHold();
+      if(reasonLauncher.disabled) return;
+      if(game) game.answers=false;
+      clearSelection();
+      clearHint(false);
+      showReason(false);
+      controls(); render();
+    },650);
+    reasonHold={timer,id:e.pointerId,x:e.clientX,y:e.clientY};
+    reasonLauncher.classList.add('holding');
+    reasonLauncher.setPointerCapture(e.pointerId);
+  };
+  reasonLauncher.onpointermove=e=>{
+    if(reasonHold?.id!==e.pointerId) return;
+    const {left,right,top,bottom}=reasonLauncher.getBoundingClientRect();
+    const outside=e.clientX<left || e.clientX>right || e.clientY<top || e.clientY>bottom;
+    if(outside || Math.hypot(e.clientX-reasonHold.x,e.clientY-reasonHold.y)>9) {
+      suppressReasonClick=true;
+      stopReasonHold(e);
+    }
+  };
+  reasonLauncher.onpointerup=reasonLauncher.onpointercancel=reasonLauncher.onlostpointercapture=stopReasonHold;
+  reasonLauncher.onclick=e=>{
+    const blocked=e.detail!==0 && suppressReasonClick;
+    suppressReasonClick=false;
+    if(!blocked) showReason($('reasonFlower').inert,true);
+  };
+  selectionReadout.addEventListener('pointerover',e=>updateSelectionHover(e,e.target));
+  selectionReadout.addEventListener('pointerout',e=>updateSelectionHover(e,e.relatedTarget));
+  selectionReadout.addEventListener('focusin',e=>{
+    focusedSelection=selectionTarget(e.target);
+    updateProofPreview();
+  });
+  selectionReadout.addEventListener('focusout',e=>{
+    focusedSelection=selectionTarget(e.relatedTarget);
+    updateProofPreview();
+  });
+  const selectionLauncher=$('selectionMenu');
+  let selectionHold, suppressSelectionClick=false;
+  function stopSelectionHold() {
+    clearTimeout(selectionHold?.timer);
+    selectionHold=undefined;
+    selectionLauncher.classList.remove('holding');
+  }
+  selectionLauncher.onpointerdown=e=>{
+    if(e.button!==0 || !e.isPrimary || selectionLauncher.disabled) return;
+    suppressSelectionClick=false;
+    const timer=setTimeout(()=>{
+      suppressSelectionClick=true;
+      stopSelectionHold();
+      if(!selectionLauncher.disabled) clearSelection(true);
+    },650);
+    selectionHold={timer,id:e.pointerId,x:e.clientX,y:e.clientY};
+    selectionLauncher.classList.add('holding');
+    selectionLauncher.setPointerCapture(e.pointerId);
+  };
+  selectionLauncher.onpointermove=e=>{
+    if(selectionHold?.id===e.pointerId && Math.hypot(e.clientX-selectionHold.x,e.clientY-selectionHold.y)>9) {
+      suppressSelectionClick=true;
+      stopSelectionHold();
+    }
+  };
+  selectionLauncher.onpointerup=selectionLauncher.onpointercancel=selectionLauncher.onlostpointercapture=stopSelectionHold;
+  selectionLauncher.oncontextmenu=e=>e.preventDefault();
+  selectionLauncher.onclick=e=>{
+    const blocked=e.detail!==0 && suppressSelectionClick;
+    suppressSelectionClick=false;
+    if(!blocked) setRadial('selection',$('selectionFlower').inert);
+  };
+  $('selectionAdd').onclick=()=>setSelectionMode('add');
+  $('selectionSubtract').onclick=()=>setSelectionMode('subtract');
+  $('selectionUndo').onclick=()=>{if(selectionHistory.undo()) refreshSelection();};
+  $('selectionRedo').onclick=()=>{if(selectionHistory.redo()) refreshSelection();};
   $('closeProof').onclick = closeProof;
   openReasonPanel.onclick = () => setReasonCollapsed(false,true);
   for(const button of document.querySelectorAll('[data-collapse-reason]')) {
@@ -1710,6 +1994,7 @@
     if(!proofPane.inert) closeProof();
     else if(!difficultyOptions.inert) {setDifficultyOpen(false);difficultyToggle.focus({preventScroll:true});}
     else if(!$('reasonFlower').inert) showReason(false,true);
+    else if(!$('selectionFlower').inert) {setRadial('selection',false);selectionLauncher.focus({preventScroll:true});}
     else if(!$('markFlower').inert || input.writing) {input.close();$('markMenu').focus({preventScroll:true});}
     else fullscreen.escape();
   });
@@ -1747,6 +2032,7 @@
     const cell=e.target.closest('[data-cell]');
     if(!cell) return;
     const i=Number(cell.dataset.cell);
+    if(selectionMode) return;
     if(input.writing) {
       if(input.startStroke(i)) {
         inkDrag={id:e.pointerId,x:e.clientX,y:e.clientY,spacing:Math.max(1,cell.offsetWidth/4)};
@@ -1802,6 +2088,7 @@
     if(e.detail && skipDragClick) {skipDragClick=false;return;}
     const b=e.target.closest('[data-cell]'); if(!b) return;
     const i=Number(b.dataset.cell);
+    if(selectBoardCell(i)) return;
     if(input.stamp(i)) return;
     (editing?editCell:play)(i,e.shiftKey);
   });
@@ -1810,6 +2097,7 @@
       e.preventDefault();
       if(inkDrag) return;
       const i=Number(b.dataset.cell);
+      if(selectBoardCell(i)) return;
       if(input.erase(i)) return;
       (editing?editCell:play)(i,true);
     }
@@ -1828,6 +2116,7 @@
       case 'ArrowDown': if(i+w<buttons.length) n+=w; break;
       case 'f': case 'F':
         e.preventDefault();
+        if(selectBoardCell(i)) return;
         if(!input.writing) (editing?editCell:play)(i,true);
         return;
       default: return;

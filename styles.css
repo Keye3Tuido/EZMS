@@ -209,12 +209,10 @@ aside .proof-pane { padding: 0; border: 1px solid var(--line); border-radius: 8p
 .radial .petal .icon { width: 17px; height: 17px; }
 .radial .black { --face: #303842; --hover: #414d5a; color: white; border-color: #303842; }
 .radial .black .icon { width: 19px; height: 19px; }
-.radial .mark-option { --x: var(--blue-x); --y: var(--blue-y); --face: #eff5ff; --hover: #dce9ff; --diameter: 44px; color: #204f97; border-color: #a9bfdf; font: 650 19px/1 'Arial Rounded MT Bold', Arial, sans-serif; }
+.radial .mark-option { --x: 0px; --y: 0px; --face: #eff5ff; --hover: #dce9ff; --diameter: 44px; color: #204f97; border-color: #a9bfdf; font: 650 19px/1 'Arial Rounded MT Bold', Arial, sans-serif; }
 .radial .mark-option[aria-pressed="true"] { --face: #3465b0; --hover: #28528f; color: white; border-color: #284e8d; }
 .radial[data-red-pen] .mark-option { --face: #fff0f3; --hover: #f8dce5; color: #9b1e42; border-color: #e3a5b7; }
 .radial[data-red-pen] .mark-option[aria-pressed="true"] { --face: #a22648; --hover: #841b39; color: white; border-color: #841b39; }
-.radial[data-red-pen] [data-ink="x"] { --x: -54px; --y: -26px; }
-.radial[data-red-pen] [data-ink="/"] { --x: 54px; --y: -26px; }
 .radial .mark-option:is([data-ink="+"],[data-ink="−"]) { touch-action: none; }
 .mark-option .ink-glyph { width: 20px; height: 20px; }
 .mark-option sub { position: absolute; bottom: 6px; right: 5px; font-size: .59em; }
@@ -301,6 +299,17 @@ input, select { background: #fcfcfe; }
 .board-footer:focus { outline: none; }
 .round-feedback { grid-column: 1; min-width: 0; }
 .round-feedback .status { margin: 0; }
+.board-footer:has(#commitMarks.is-inactive):has(#selectionReadout:not([hidden])) .round-feedback { grid-column: 1 / -1; }
+.board-footer:has(#selectionReadout:not([hidden])) #commitMarks.is-inactive { display: none; }
+.selection-readout { margin: 3px 0 0; padding: 4px 7px; border-left: 3px solid #8052bd; background: #f4effb; color: #33234a; font: 600 13px/1.45 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.selection-readout > div { display: grid; grid-template-columns: 4.5em minmax(0,1fr); align-items: baseline; gap: 4px; padding-block: 1px; }
+.selection-readout dt { color: #604877; }
+.selection-readout dd { margin: 0; }
+.selection-token { display: inline-block; max-width: 100%; padding-inline: 4px; border-radius: 4px; color: #482368; background: #e9dcf8; }
+.selection-token.negative { color: #674b0b; background: #faecc0; }
+.selection-token.clue-token { color: #6c410a; background: #fce8b9; }
+.selection-token:is(:hover,:focus-visible) { outline: 1px solid currentColor; outline-offset: -1px; }
+
 #status:empty { display: none; }
 #roundText[data-complete] { color: var(--green); font-weight: 680; }
 .round-feedback .status[data-tone='rejected'] { color: #8e1634; background: #fff0f3; box-shadow: inset 3px 0 #ac153b; padding-inline: 9px 5px; align-content: center; font-weight: 750; }
@@ -409,23 +418,16 @@ input, select { background: #fcfcfe; }
 #gameViewport > .proof-pane.under-tools { z-index: 6; }
 #gameViewport > .proof-pane.under-tools .panel-head { flex-direction: row-reverse; }
 .radial {
-  --fan-right: 94px;
-  --fan-bottom: 76px;
-  --launcher-right: 24px;
-  --from-x: calc(var(--fan-right) - var(--launcher-right));
-  --from-y: calc(var(--fan-bottom) - 24px);
   position: fixed;
   z-index: 7;
-  right: calc(var(--dock-right) + var(--fan-right));
-  bottom: calc(var(--dock-bottom) + var(--fan-bottom));
+  left: 0;
+  top: 0;
   width: 0;
   height: 0;
   pointer-events: none;
 }
-.radial.marking { --fan-right: 112px; --fan-bottom: 127px; --launcher-right: 81px; }
-.radial.marking[data-red-pen] { --fan-right: 104px; --fan-bottom: 85px; }
 .marking:not([data-red-pen]) #redInkTrack,
-.marking[data-red-pen] :is(#inkTrackLeft,#inkTrackRight) { display: none; }
+.marking[data-red-pen] #inkTrack { display: none; }
 .radial-track {
   position: absolute;
   width: 268px;
@@ -447,9 +449,16 @@ input, select { background: #fcfcfe; }
 }
 .radial .orb:hover:not(:disabled) { background-color: var(--hover); }
 .tool-dock .launcher { --face: #26439b; --hover: #19347e; }
+.tool-dock #selectionMenu { --face: #7146aa; --hover: #613694; touch-action: none; }
 .radial .petal { --face: #f8f8ff; --hover: #e6ebfb; color: #263970; border-color: #bac5e3; }
 .radial .petal[aria-pressed='true'] { --face: #dce7ff; --hover: #cddcff; }
-
+.selection-flower .petal { --diameter: 50px; }
+.selection-flower .petal .icon { width: 24px; height: 24px; }
+.selection-flower #selectionAdd { --face: #f5effc; --hover: #ebdefa; color: #5f3593; border-color: #bda2dd; }
+.selection-flower #selectionSubtract { --face: #fff9e9; --hover: #faedc6; color: #775407; border-color: #d8bc70; }
+.selection-flower #selectionAdd[aria-pressed='true'] { --face: #7146aa; --hover: #613694; color: #fff; border-color: #613694; }
+.selection-flower #selectionSubtract[aria-pressed='true'] { --face: #8a620e; --hover: #745209; color: #fff; border-color: #745209; }
+.board.selecting .cell { cursor: crosshair; }
 
 /* Concrete formula element hover: blue border plus the requested green line
    shadow. This rule wins over answer/deduction colors while the pointer is on
@@ -465,15 +474,15 @@ input, select { background: #fcfcfe; }
   color: #153e79;
   box-shadow: inset 0 0 0 1px #ffffffbd, 0 0 0 3px #2466cf38;
 }
-.board-proof .positive { fill: #a975e9; fill-opacity: .43; }
-.board-proof .negative { fill: #f1ce46; fill-opacity: .48; }
+.board-proof :is(.positive,.selection-positive) { fill: #a975e9; fill-opacity: .38; }
+.board-proof :is(.negative,.selection-negative) { fill: #f1ce46; fill-opacity: .44; }
 .board-proof .cancelled { fill: #8799a6; fill-opacity: .32; }
 .board-proof .element { fill: #91c0ff; fill-opacity: .52; }
 .board-proof .element-hatch { fill: url(#proof-hatch); }
 #proof-hatch rect { fill: #168971; fill-opacity: .36; }
-.board-proof .boundary { fill: none; stroke-width: 3px; }
-.board-proof .boundary.positive { stroke: #7b35c2; stroke-opacity: .95; }
-.board-proof .boundary.negative { stroke: #c49612; stroke-opacity: .95; }
+.board-proof .boundary { fill: none; stroke-width: 2px; }
+.board-proof .boundary:is(.positive,.selection-positive) { stroke: #7b35c2; }
+.board-proof .boundary:is(.negative,.selection-negative) { stroke: #a87909; }
 .board-proof .boundary.cancelled { stroke: #697781; stroke-opacity: .78; }
 .board-proof .boundary.element { stroke: #2466cf; }
 

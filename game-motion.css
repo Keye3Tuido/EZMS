@@ -1,7 +1,7 @@
 :root {
-  --glide: cubic-bezier(.18,.78,.26,1);
-  --control-time: 155ms;
-  --fan-time: 350ms;
+  --glide: cubic-bezier(.22,.72,.28,1);
+  --control-time: 160ms;
+  --fan-time: 300ms;
   --panel-time: 260ms;
 }
 
@@ -9,34 +9,35 @@ button {
   transition: scale var(--control-time) var(--glide), background-color var(--control-time) ease,
     border-color var(--control-time) ease, color var(--control-time) ease, opacity var(--control-time) ease;
 }
-button:active:not(:disabled) { scale: var(--press,.96); }
+button:active:not(:disabled) { scale: var(--press,.97); }
 summary { transition: background-color var(--control-time) ease, scale var(--control-time) var(--glide); }
 summary:active { scale: .98; }
 input, select { transition: border-color var(--control-time) ease, background-color var(--control-time) ease; }
 
-/* Position is reversible; press feedback never changes the opening path. */
+/* The launcher and its menu travel together. Petals expand relative to that shared origin. */
+.radial, .tool-dock .launcher { translate: 0 0; }
+.radial { transition: translate var(--fan-time) var(--glide); }
+.tool-dock .launcher {
+  transition: translate var(--fan-time) var(--glide), scale var(--control-time) var(--glide),
+    background-color var(--control-time) ease, border-color var(--control-time) ease, opacity var(--control-time) ease;
+}
+.radial.expanded, .tool-dock .launcher.is-open { translate: var(--menu-x,0px) var(--menu-y,0px); }
 .radial .orb {
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%,-50%) translate(var(--from-x),var(--from-y)) scale(.46);
-  transition: transform 235ms var(--glide), opacity 155ms ease, scale var(--control-time) var(--glide),
-    background-color var(--control-time) ease, border-color var(--control-time) ease, color var(--control-time) ease;
+  transform: translate(-50%,-50%) scale(.68);
+  transition: transform var(--fan-time) var(--glide), opacity 210ms ease,
+    scale var(--control-time) var(--glide), background-color var(--control-time) ease,
+    border-color var(--control-time) ease, color var(--control-time) ease;
 }
 .radial.expanded .orb {
   opacity: 1;
   pointer-events: auto;
   transform: translate(-50%,-50%) translate(var(--x,0px),var(--y,0px)) scale(1);
-  transition-duration: var(--fan-time), 240ms, var(--control-time), var(--control-time), var(--control-time), var(--control-time);
 }
 .radial.expanded .orb:disabled { opacity: .52; }
-.radial-track {
-  opacity: 0;
-  transform: translate(calc(var(--from-x) * .28),calc(var(--from-y) * .28)) scale(.77);
-  transition: transform 270ms var(--glide), opacity 240ms ease;
-}
-.radial.expanded .radial-track { opacity: .76; transform: translate(0,0) scale(1); }
-.radial-track path { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset 310ms var(--glide); }
-.radial.expanded .radial-track path { stroke-dashoffset: 0; transition-duration: 430ms; }
+.radial-track { opacity: 0; scale: .68; transition: scale var(--fan-time) var(--glide), opacity 210ms ease; }
+.radial.expanded .radial-track { opacity: .8; scale: 1; }
 
 #commitMarks:not(.is-inactive) { animation: commit-in 230ms var(--glide) both; }
 @keyframes commit-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
@@ -94,8 +95,7 @@ dialog[open].is-closing::backdrop { background-color: transparent; }
 @keyframes hold-ring { from { --hold-progress: 0deg; } to { --hold-progress: 360deg; } }
 
 :root[data-motion-mode='reduced'] :is(button, summary, input, select,
-  .radial .orb, .radial.expanded .orb, .radial-track,
-  .radial-track path, .radial.expanded .radial-track path,
+  .radial, .tool-dock .launcher, .radial .orb, .radial-track,
   .layout, .reason-fold, .reason-status, .proof-pane, .prior-fold, #openReasonPanel,
   #difficultyOptions, [data-collapse-reason] .icon, #openReasonPanel .icon, #difficultyToggle .icon,
   dialog[open]) { transition: none; }

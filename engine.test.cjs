@@ -326,10 +326,10 @@ test('certification does not open a partial round or count it as a solved board'
   const {board,visible}=reviewPosition(6,5,'220122021201112012010010022001');
   const report=engine.verify(board,board,{certify:true,trace:true});
   assert.equal(report.status,'stuck');
-  assert.equal(report.opened,visible.filter(v=>v>=0).length);
+  assert.equal(report.opened,engine.opening(board).filter(v=>v>=0).length);
   const confirmed=new Set(report.trace.flatMap(move=>[...move.safe,...move.mines]));
   const targets=engine.confirmationTargets(engine.classify(board,visible).state,new Set());
-  assert.deepEqual([...targets].filter(([i])=>!confirmed.has(i)),[[27,'safe']]);
+  assert.deepEqual([...targets].filter(([i])=>!confirmed.has(i)),[[6,'safe'],[27,'safe']]);
   assert.ok(report.trace.every(move=>!move.commit));
 });
 
@@ -377,6 +377,17 @@ test('expansion only discloses the fewest new clues on a blocked, feasible posit
   assert.equal(engine.expand(board,visible,[],0).status,'budget');
 });
 
+test('expansion minimizes actual disclosures when opening a zero can reveal many cells', () => {
+  const {board,visible}=positionSeeds.create(4,3,'112000000000');
+  assert.equal(engine.inspect(board,visible).status,'blocked');
+  assert.equal(engine.reveal(board,visible.slice(),3),9);
+  const result=engine.expand(board,visible);
+  assert.equal(result.status,'expanded');
+  assert.equal(result.cells.length,1);
+  assert.equal(result.visible.filter((n,i)=>n>=0&&visible[i]<0).length,1);
+  assert.equal(engine.inspect(board,result.visible).status,'deducible');
+});
+
 test('position verification accepts all-covered drafts and rejects a stuck route', () => {
   const verify=bits=>{
     const {board}=positionSeeds.create(3,2,bits);
@@ -405,7 +416,7 @@ function search(p,seed,limit=96) {
   }
 }
 
-test('opening givens are individual safe cells and need not touch', () => {
+test('opening givens are safe and zero clues automatically reveal adjacent cells', () => {
   const p = settings(7,5,6);
   const board = engine.candidate(p,0);
   const safe = board.bombs.flatMap((mine,i) => mine ? [] : [i]);
@@ -413,7 +424,8 @@ test('opening givens are individual safe cells and need not touch', () => {
   board.opening = [board.first,far];
   const visible = engine.opening(board);
   assert.equal(board.clues[board.first],0);
-  assert.deepEqual(visible.flatMap((v,i) => v < 0 ? [] : [i]),board.opening.slice().sort((a,b)=>a-b));
+  assert.ok(board.ns[board.first].every(i=>visible[i]>=0));
+  assert.ok(visible[far]>=0);
   assert.equal(visible[far],board.clues[far]);
   assert.throws(() => engine.opening({...board,opening:[board.bombs.indexOf(true)]}),/Invalid opening/);
 });
@@ -856,12 +868,22 @@ test('manual confirmations wait for all forced cells and reject incorrect batche
   assert.deepEqual(makeManualBatch(['mine','both'],new Set()).record([0],'mine'),{done:true,total:1});
 });
 
-test('exact manual reveal does not flood from a zero into cells outside the batch', () => {
+test('manual reveal automatically opens every connected zero neighbor without extra steps', () => {
   const {board,visible}=positionSeeds.create(3,2,'000000');
   const exact=engine.advance(board,board,visible,[0],new Set(),{exact:true,allowUnsolved:true});
-  assert.deepEqual(exact.visible,[0,-1,-1,-1,-1,-1]);
-  assert.equal(exact.opened,1);
-  assert.equal(engine.advance(board,board,visible,[0],new Set()).opened,6);
+  assert.deepEqual(exact.visible,Array(6).fill(0));
+  assert.equal(exact.opened,6);
+  assert.deepEqual(exact.cells,[0,1,2,3,4,5]);
+  const report=engine.verify(board,{w:3,h:2,mines:0},{visible:exact.visible,certify:true});
+  assert.equal(report.steps,0);
+});
+
+test('opening a zero ignores erroneous flags in its automatic reveal area', () => {
+  const {board,visible}=positionSeeds.create(3,2,'000000');
+  const flags=new Set([1,4]);
+  const opened=engine.reveal(board,visible,0,flags);
+  assert.equal(opened,6);
+  assert.deepEqual(visible,Array(6).fill(0));
 });
 
 test('solve-one uses the same staged-then-commit decision as auto solve', () => {
@@ -909,7 +931,7 @@ test('small boards can pass with low generation thresholds', () => {
     const {board,report}=search(p,0,24);
     assert.ok(board,`${w} × ${h}`);
     assert.equal(report.status,'passed');
-    assert.ok(report.steps>0);
+    assert.ok(report.steps>=0);
   }
 });
 
@@ -1013,7 +1035,11 @@ test('live verification replays the actual staged hints and exact manual commits
     if(commit) {
       assert.deepEqual(commit,{safe:manual.cells('safe'),mines:manual.cells('mine')});
       for(const v of commit.mines) proven.add(v);
-      for(const v of commit.safe) {visible[v]=board.clues[v];opened++;}
+      const advanced=engine.advance(board,config,visible,commit.safe,proven,
+        {allowUnsolved:true,exact:true,flags:proven});
+      assert.ok(advanced);
+      visible.splice(0,visible.length,...advanced.visible);
+      opened=visible.filter(value=>value>=0).length;
       manual=undefined;
     } else grouped=true;
   }

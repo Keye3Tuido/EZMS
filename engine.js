@@ -1,6 +1,6 @@
 function makeMinesEngine() {
   'use strict';
-  const version = 21;
+  const version = 22;
   const range = n => Array.from({length:n}, (_, i) => i);
   const adj = (w,h) => range(w*h).map(i => {
     const ns=[], x=i%w, y=Math.floor(i/w);
@@ -39,7 +39,7 @@ function makeMinesEngine() {
     const queue=[i];
     visible[i]=board.clues[i];
     for(let j=0;j<queue.length;j++) if(visible[queue[j]]===0) {
-      for(const v of board.ns[queue[j]]) if(visible[v]<0 && !flags.has(v)) {
+      for(const v of board.ns[queue[j]]) if(visible[v]<0) {
         visible[v]=board.clues[v];
         queue.push(v);
       }
@@ -53,7 +53,7 @@ function makeMinesEngine() {
       // Preprinted clues are individual givens.
       for(const i of board.opening) {
         if(!Number.isInteger(i) || i<0 || i>=visible.length || board.bombs[i]) throw Error('Invalid opening cell');
-        visible[i]=board.clues[i];
+        reveal(board,visible,i);
       }
     } else reveal(board,visible,board.first);
     return visible;
@@ -801,11 +801,9 @@ function makeMinesEngine() {
     const show=witness=>{
       const next=visible.slice();
       let opened=0;
-      for(const v of cells) {
-        if(!exact) opened+=reveal(witness,next,v);
-        else if(next[v]<0 && !witness.bombs[v]) {next[v]=witness.clues[v];opened++;}
-      }
-      return {board:witness,visible:next,opened};
+      for(const v of cells) opened+=reveal(witness,next,v,flags);
+      const openedCells=next.flatMap((value,index)=>visible[index]<0&&value>=0?[index]:[]);
+      return {board:witness,visible:next,opened:openedCells.length,cells:openedCells};
     };
     const fallback=show(board);
     const base=verify(board,p,{visible:fallback.visible,marks,flags,certify:true});
@@ -866,7 +864,10 @@ function makeMinesEngine() {
       const cells=kind=>[...round.targets].filter(([,state])=>state===kind).map(([v])=>v);
       const commit={safe:cells('safe'),mines:cells('mine')};
       for(const v of commit.mines) {marks.add(v);flags.add(v);}
-      for(const v of commit.safe) {visible[v]=board.clues[v];flags.delete(v);opened++;}
+      for(const v of commit.safe) {
+        flags.delete(v);
+        opened+=reveal(board,visible,v,flags);
+      }
       round=undefined;
       return commit;
     };
@@ -1062,21 +1063,31 @@ function makeMinesEngine() {
     };
     const initial=check(visible);
     if(initial!==false) return {status:initial?'not-blocked':'budget'};
-    const choices=visible.flatMap((x,i)=>x<0&&!board.bombs[i]?[i]:[]);
-    // Test smaller sets to completion before returning a larger disclosure.
-    for(let size=1;size<=choices.length;size++) {
-      const selected=eachSubset(choices,size,cells=>{
+    const choices=visible.flatMap((x,i)=>x<0&&!board.bombs[i]&&!flags.has(i)?[i]:[]);
+    const safeLeft=visible.filter(v=>v<0).length-board.mines;
+    let best=null, bestCost=Infinity, unresolvedCost=Infinity;
+    // Each chosen cell opens, so the subset size is a lower bound on disclosures.
+    for(let size=1;size<=choices.length && size<bestCost && size<=unresolvedCost;size++) {
+      const stop=eachSubset(choices,size,cells=>{
+        if(budget--<=0) return {status:'budget'};
         const view=visible.slice();
-        for(const v of cells) view[v]=board.clues[v];
-        if(view.filter(v=>v>=0).length===view.length-board.mines) return {status:'expanded',cells:[...cells],visible:view};
-        const next=check(view);
-        if(next===null) return {status:'budget'};
-        if(next) return {status:'expanded',cells:[...cells],visible:view};
+        for(const v of cells) reveal(board,view,v,flags);
+        const opened=view.flatMap((value,index)=>visible[index]<0&&value>=0?[index]:[]);
+        const cost=opened.length;
+        if(cost>=bestCost || cost>unresolvedCost) return null;
+        const next=cost===safeLeft || check(view);
+        if(next===null) unresolvedCost=Math.min(unresolvedCost,cost);
+        if(next) {
+          best={status:'expanded',cells:opened,visible:view};
+          bestCost=cost;
+          if(cost===size) return best;
+        }
         return null;
       });
-      if(selected) return selected;
+      if(stop) return stop;
     }
-    return {status:'not-blocked'};
+    if(unresolvedCost<bestCost) return {status:'budget'};
+    return best??{status:'not-blocked'};
   }
 
   const openingPlans = [
@@ -1652,7 +1663,7 @@ function makeMinesEngine() {
       const board=candidate({...p,mines:0},seed,ns);
       board.opening=[board.first];
       const report=verify(board,{...p,mines:0},{certify:true});
-      if(report.status!=='passed' || !report.steps) throw Error('未能验证最小棋盘的推理路线。');
+      if(report.status!=='passed') throw Error('未能验证最小棋盘的开局。');
       yield {board,report,target,tried:1,passed:1,constructed:1,route:'compact'};
       return;
     }

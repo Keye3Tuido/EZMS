@@ -250,7 +250,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
   const advanced=s=>['v','ʌ','e','//'].includes(s), buttons=new Map();
   let selected='',level=2,hold,suppress,stroke,red=false;
   const color=()=>red?'red':'blue';
-  const redLabels={x:'标记为雷（笔记）','/':'标记为安全（笔记）',cursor:'返回编辑'};
+  const redLabels={x:'标记为雷（笔记）','/':'标记为安全（笔记）'};
   function history() {
     const notes=getGame()?.notes;
     const visible=!(flower.inert && !selected);
@@ -263,7 +263,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
   function refresh() {
     for(const [symbol,{button,label}] of buttons) {
       const rank=advanced(symbol)?level:0;
-      button.innerHTML=symbol==='cursor'?icon('cursorIcon'):`${inkGlyph(symbol)||symbol}${rank>2?`<sub>${rank}</sub>`:''}`;
+      button.innerHTML=`${inkGlyph(symbol)||symbol}${rank>2?`<sub>${rank}</sub>`:''}`;
       button.title=rank?`第 ${rank} 层：${label}`:(red && redLabels[symbol] || label);
       if(symbol==='+') button.title=`${label}（长按取交集）`;
       if(symbol==='−') button.title+=level===2?'（长按清除第二层拟推）':'（长按清除最高层拟推）';
@@ -311,7 +311,6 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
     if(arc) for(const [name,value] of Object.entries(arc)) button.style.setProperty(`--blue-${name}`,value);
     buttons.set(symbol,{button,label}); root.append(button);
     const activate=()=>{
-      if(symbol==='cursor') {close();say('');launcher.focus({preventScroll:true}); return;}
       if(!canAct()) return;
       endStroke();
       if(symbol==='+' || symbol==='−') {level=Math.min(99,Math.max(2,level+(symbol==='+'?1:-1)));say(`拟定层级 ${level}`);}
@@ -338,19 +337,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
     },activate);
     else button.onclick=activate;
   }
-  add('cursor','返回游玩',flower);
-  const radius=96;
-  const points=[-75,-47.5,-20,7.5,35].map(deg=>{
-    const angle=deg*Math.PI/180;
-    return [Math.round(radius*Math.cos(angle)),Math.round(radius*Math.sin(angle))];
-  });
-  for(const [side,id] of [[-1,'inkTrackLeft'],[1,'inkTrackRight']]) {
-    $(id).setAttribute('d',`M ${side*points[0][0]} ${points[0][1]} ${points.slice(1).map(([x,y])=>`A ${radius} ${radius} 0 0 ${side>0?1:0} ${side*x} ${y}`).join(' ')}`);
-  }
-  for(const [side,row] of rows.entries()) for(const [i,[symbol,label]] of row.entries()) {
-    const [x,y]=points[i];
-    add(symbol,label,flower,{x:`${side?x:-x}px`,y:`${y}px`});
-  }
+  for(const row of rows) for(const [symbol,label] of row) add(symbol,label,flower,{});
   bindHold(launcher,()=>{
     endStroke();
     const notes=getGame().notes, ordinary=notes.layers.blue.size>0;
@@ -362,7 +349,7 @@ function makeBoardInput({$,icon,say,canAct,getGame,changed,sound,menu,closeReaso
     if(!canAct()) return;
     if(!flower.inert) {close();return;}
     closeReason();
-    menu('mark',true);refresh();buttons.get('x').button.focus({preventScroll:true});
+    menu('mark',true);refresh();launcher.focus({preventScroll:true});
   });
   function stamp(i,erase=false) {
     if(!selected && (flower.inert || !erase)) return false;
