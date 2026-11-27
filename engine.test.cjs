@@ -938,14 +938,14 @@ test('small boards can pass with low generation thresholds', () => {
 });
 
 test('difficulty floors are independent of board size and each can be overridden', () => {
-  const defaults={minAverage:2,minMultiPercent:30,minPeakClues:5};
+  const defaults={minAverage:1.5,minMultiPercent:8,minPeakClues:5};
   for(const [w,h] of [[1,1],[3,2],[5,5],[8,8],[12,12],[28,25]])
     assert.deepEqual(engine.difficultyDefaults(w,h),defaults);
   const p={w:4,h:4}, first=opts=>engine.generate({...p,...opts},0).next().value;
   assert.deepEqual(first({}),first(defaults));
-  assert.deepEqual(first({minAverage:1}).target,{average:1,multiPercent:30,peak:5});
-  assert.deepEqual(first({minMultiPercent:0}).target,{average:2,multiPercent:0,peak:5});
-  assert.deepEqual(first({minPeakClues:2}).target,{average:2,multiPercent:30,peak:2});
+  assert.deepEqual(first({minAverage:1}).target,{average:1,multiPercent:8,peak:5});
+  assert.deepEqual(first({minMultiPercent:0}).target,{average:1.5,multiPercent:0,peak:5});
+  assert.deepEqual(first({minPeakClues:2}).target,{average:1.5,multiPercent:8,peak:2});
   assert.throws(()=>engine.generate({w:2,h:2},0).next(),/难度下限/);
   assert.throws(()=>engine.generate({w:1,h:1,...easy},0).next(),/需要推理/);
 });
@@ -1020,15 +1020,15 @@ test('default generation uses staged clues and does not accept an inflated ten-c
 
   const p={w:5,h:5};
   const result=search(p,0,4);
-  assert.deepEqual(result.target,{average:2,multiPercent:30,peak:5});
+  assert.deepEqual(result.target,{average:1.5,multiPercent:8,peak:5});
   if(result.board) {
     const measured=engine.verify(result.board,p,{certify:true});
     assert.deepEqual(result.report,measured);
-    assert.ok(measured.averageClues>=2 && measured.advancedDensity>=.3 && measured.clues>=5);
+    assert.ok(measured.averageClues>=1.5 && measured.advancedDensity>=.08 && measured.clues>=5);
   } else {
     const {average,multiPercent,peak}=result.closest;
     assert.ok(result.passed>0);
-    assert.ok(average<2 || multiPercent<30 || peak<5);
+    assert.ok(average<1.5 || multiPercent<8 || peak<5);
   }
 });
 
@@ -1519,21 +1519,21 @@ test('各项难度目标提高时，生成使用更多初始种子',()=>{
   for(const change of [{minAverage:2},{minMultiPercent:30},{minPeakClues:5}]) {
     assert.ok(initial({...easy,...change})>initial(easy));
   }
-  assert.equal(initial({w:5,h:5}),6);
-  assert.equal(initial({w:1,h:25}),5);
-  assert.equal(initial({w:16,h:16}),5);
+  assert.equal(initial({w:5,h:5}),4);
+  assert.equal(initial({w:1,h:25}),3);
+  assert.equal(initial({w:16,h:16}),3);
 });
 
 test('生成每到一个轮数阈值增加一个种子，并遵守棋盘尺寸和核心数上限',()=>{
   const small=engine.generationSchedule({w:5,h:5},18);
   assert.equal(small.limit,12);
-  assert.deepEqual([0,31,32,63,64,Infinity].map(small.lanesAt),[6,6,7,7,8,12]);
+  assert.deepEqual([0,31,32,63,64,Infinity].map(small.lanesAt),[4,4,5,5,6,12]);
   const medium=engine.generationSchedule({w:16,h:16},18);
   assert.equal(medium.limit,10);
-  assert.deepEqual([0,15,16,32,96].map(medium.lanesAt),[5,5,6,7,10]);
+  assert.deepEqual([0,15,16,32,96].map(medium.lanesAt),[3,3,4,5,9]);
   const large=engine.generationSchedule({w:30,h:16},18);
   assert.equal(large.limit,8);
-  assert.deepEqual([0,7,8,16,100].map(large.lanesAt),[5,5,6,7,8]);
+  assert.deepEqual([0,7,8,16,100].map(large.lanesAt),[3,3,4,5,8]);
   assert.equal(engine.generationSchedule({w:5,h:5},8).lanesAt(1000),7);
   assert.equal(engine.generationSchedule({w:5,h:5},2).lanesAt(1000),1);
   assert.equal(engine.generationSchedule({w:2,h:2},18).lanesAt(1000),1);

@@ -2364,7 +2364,7 @@ function makeMinesEngine() {
   }
 
   function difficultyDefaults() {
-    return {minAverage:2,minMultiPercent:30,minPeakClues:5};
+    return {minAverage:1.5,minMultiPercent:8,minPeakClues:5};
   }
 
   function continuationReplay(p,board,previous,point) {
