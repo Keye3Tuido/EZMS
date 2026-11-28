@@ -262,8 +262,7 @@ header { padding-bottom: 18px; }
 .game-brand { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
 .guide-link { color: var(--green); font-size: 13px; font-weight: 650; padding-block: 6px; text-underline-offset: 3px; white-space: nowrap; }
 h1 { font-size: 29px; font-weight: 850; }
-.game-emblem { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 8px; color: #fff; background: var(--action); }
-h1 .game-emblem .icon { width: 24px; height: 24px; color: inherit; }
+.game-emblem { display: block; flex: none; width: 43px; height: 43px; }
 .header-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .mode-switch { flex-wrap: nowrap; gap: 2px; padding: 3px; background: #e7eae4; border-radius: 8px; }
 .mode-switch button { min-height: 34px; background: transparent; border-color: transparent; white-space: nowrap; }
