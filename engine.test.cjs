@@ -1545,18 +1545,18 @@ test('单路和并行生成都保留原目标，辅助线程失效时启用候�
   const source=readFileSync(`${__dirname}/app.js`,'utf8');
   const block=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
   const handlers=`function controls(){${block("    const cancel=$","    for (const id of ['gameMode'")}}`+
-    block('  function finishWorker(', '  function background(')+
-    block('  function generate(e)', '  function mountGenerated(')+
+    block('  const generation=makeGenerationController(', '  function mountGenerated(')+
     block("  $('useCandidate').onclick", "  $('restart').onclick");
   const p={w:5,h:5,minAverage:2,minMultiPercent:30,minPeakClues:15};
   for(const [hardwareConcurrency,failStartup] of [[2,false],[18,false],[18,true]]) {
     const launched=[], mounted=[], errors=[], elements=new Map();
     let startupAttempted=false;
     const state=runInNewContext(`${handlers}
-let worker, generationCandidate, pending, auto, game;
+let auto, game;
+const gameRequests={busy:false};
 generate();
-({candidate:()=>generationCandidate,searching:()=>!!worker})`,{
-      engine, navigator:{hardwareConcurrency}, readSettings:()=>p, stopAuto(){}, say(){},
+({candidate:()=>generation.candidate,searching:()=>generation.searching})`,{
+      engine, makeGenerationController:require('./generation-controller'), navigator:{hardwareConcurrency}, readSettings:()=>p, stopAuto(){}, say(){},
       $(id){
         if(!elements.has(id)) elements.set(id,{querySelector:()=>null,classList:{toggle(){}},setAttribute(){}});
         return elements.get(id);

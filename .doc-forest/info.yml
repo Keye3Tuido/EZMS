@@ -1,6 +1,6 @@
 schema_version: '1.0'
 purpose: 离线经典无猜扫雷游戏
-contents_summary: 页面管理对局与提示；独立引擎构造棋局、验证技巧解法并判定开格安全性。
+contents_summary: 页面协调对局与编辑器，独立模块控制搜索、生成推导公式和布置工具。引擎统一组装棋盘规则、公开约束、技巧推理和棋局生成。
 entry: index.html
 files:
 - name: LICENSE
@@ -8,13 +8,17 @@ files:
 - name: README.md
   purpose: 游戏操作、生成规则与难度指标说明
 - name: app.js
-  purpose: 管理游戏与局面编辑、公开答案和同屏证明，在后台执行构造与无猜验证
-  details: 游戏与编辑器共享种子、当前步判定、本局峰值与余局平均线索数和开扩。编辑器将旗和红标的校验与无猜验证分开，载入游戏前再核对标记。回合进度独立于操作反馈，先确认全部结论再提交。当前推理默认显示全局最少线索，点击线索或推导后显示所选步骤的线索。线索和推导共用可切换、可隐藏的提示面板，取消在途提示会丢弃旧结果。公式行和元素通过鼠标悬停、触屏点按联动棋盘高亮，系数底色只属于当前推导。手动选区与推导复用棋盘轮廓。选区与撤销历史由棋局保管，切换编辑器时保留原棋局选区，重开时清空选区、标记及历史。搜索结束后保留结果至首次棋盘操作。选区读数分为「选区」表达式和「=」可能取值两行，悬停联动棋盘区域和线索数字。完整线索邻域用公开线索和确认格直接算出精确值。复杂选区的表达式整理和精确统计在后台执行，取消过时任务并缓存最近的精确统计结果。生成按棋盘尺寸、三项难度和设备并发数确定初始搜索路数，再按累计轮数增加独立随机种子，受棋盘面积和设备上限约束。第一路持续搜索原始目标，首次异常退出时用新种子补位。汇总各路进度和最接近候选，首个达标结果结束整组搜索。异常结束后仍可手动采用已验证候选。圆弧菜单在展开前按按钮实测尺寸与视口确定落点，主按钮和子菜单一起移动。
+  purpose: 组装页面依赖，协调对局、编辑器、操作提示和棋盘渲染
+  details: 游戏与编辑器共享种子和公开局面判定。编辑器分别核验红标、旗子和无猜通关。对局在确认全部结论后提交，过期的提示结果会丢弃。公式行和选区文字可联动棋盘高亮。编辑时保留原棋局选区，重开时清空选区、标记及历史。复杂选区在后台整理表达式并精确计数，过期任务可取消。搜索结束后结果保留至首次棋盘操作。
   depends_on:
   - target: engine.js
     reason: 复用开局、判定、开格、提示及选区可能雷数的规则
   - target: proof-format.js
-    reason: 格式化不等式、组合变量和对应格子坐标
+    reason: 格式化选区表达式和格子坐标，并组装推导渲染器
+  - target: proof-renderer.js
+    reason: 创建推导步骤和可联动棋盘的公式元素
+  - target: generation-controller.js
+    reason: 管理并行搜索的状态、候选和 Worker 生命周期
   - target: board-input.js
     reason: 复用手动确认批次、红蓝标记历史、记号图形和棋盘笔迹路径
   - target: position-seed.js
@@ -24,16 +28,56 @@ files:
   - target: game-fullscreen.js
     reason: 控制原生和网页内全屏切换
   - target: radial-layout.js
-    reason: 根据菜单按钮尺寸计算圆弧布局及启动按钮位置
+    reason: 为页面工具布局提供纯几何算法
+  - target: game-tool-layout.js
+    reason: 为圆弧按钮和推导面板分配视口空间并保持焦点
+  - target: game-requests.js
+    reason: 发起提示、判定、开格和开扩等请求，并同步界面忙碌状态
   - target: region-selection.js
     reason: 合并选区系数并为选区和推导生成轮廓
 - name: board-input.js
   purpose: 收集手动求解确认，管理编辑器红笔及游戏红蓝标记的共用历史，生成可闭合的连格笔迹
   details: 根据公开局面分类核对旗和红标，恢复未提交的正确红标。画笔只在盖住格落笔。取交集使用所有层级的蓝标初始化或抵消绿色标记，并清空普通蓝标。
+- name: engine-board.js
+  purpose: 提供基础棋盘规则与可复现的随机序列
+  details: 定义八邻域、初始雷位、自动展开、数字格操作和种子随机数。
+- name: engine-constraints.js
+  purpose: 将公开线索转换为约束，求全部可行布局中的必然结论和选区可能取值
+  details: 区域传递跟踪各条边界线索的联合余量，按公开总雷数合并后反向分类。选区用分层动态规划保留离散取值。符合公开条件但后续需要猜的布局也计入。
+  depends_on:
+  - target: engine-board.js
+    reason: 由组装层注入八邻域规则
+- name: engine-generation.js
+  purpose: 用局部线索拼接、闭环和消去结构构造候选棋局，并以难度目标排名
+  details: 复用已拼子块，保留原峰值搜索和二分候选拼接。高峰值候选可交换未判定雷位，复用已认证的前缀并重新回放整局。峰值都达标时优先比较多线索步骤占比。
+  depends_on:
+  - target: engine-board.js
+    reason: 由组装层注入棋盘操作和随机数
+  - target: engine-constraints.js
+    reason: 由组装层注入约束能力，预筛开局和续接结构
+  - target: engine-inference.js
+    reason: 由组装层注入证明与全局认证能力，核验每个发放候选
+- name: engine-inference.js
+  purpose: 从公开线索构造技巧证明、找最少线索，协调开格和全局通关认证
+  details: 为游戏和生成认证提供同一套确认及回放规则。完整参考生成器按公开约束逆向枚举开局。
+  depends_on:
+  - target: engine-board.js
+    reason: 由组装层注入邻域、开局和揭示规则
+  - target: engine-constraints.js
+    reason: 由组装层注入局面约束和精确判定，用于核对最少线索及安全开格
 - name: engine.js
-  purpose: 从局部种子增量构造棋局，验证难度和最少线索技巧通关，判定安全格
-  details: 按邻域交叠构造局部雷位，每路保存已拼出的线索图，复用子块尝试最大规模，也支持固定搜索原始峰值。单路搜索同时推进原始目标和候选拼接。候选目标取区间中点，成功提高下界，连续抽样失败降低上界，并保留已拼最大结构。收敛后复查有机会改善候选的更高档位。也可使用偶数闭环或小盘总雷数相消结构。区域传递跟踪各条边界线索的联合余量，合并公开总雷数后反向分类；完整参考生成器按公开约束逆向枚举开局。高峰值候选可交换未判定格的雷位，保留公开数字和总雷数，优先续接由上一轮新揭示数字解锁的多线索推理。续接复用已验证的前缀，采用前重新回放整局。零格会自动揭示相邻格，自动揭示不增加推理步数；认证与游戏共享提示和确认规则，生成保留最接近的已认证候选，按实际峰值线索数比较候选，峰值都达标时优先比较实际多线索步骤占比。三项达标时自动载入，手动停止时可采用当前候选。选区统计传播可由公开条件确定的格，拆分相互独立的线索区域，以分层动态规划保留各个可能取值，最后按总雷数合并。游戏判定以公开条件为准，符合条件但需要猜的布局也计入取值和格子分类。
+  purpose: 组装棋盘、公开约束、技巧推理与生成能力，提供浏览器和 Node.js 共用的公开 API
+  details: 按模块的依赖顺序打包同一组工厂函数，供离线页面的 Blob Worker 执行。
   core: true
+  depends_on:
+  - target: engine-board.js
+    reason: 提供八邻域、开格和基础棋盘状态
+  - target: engine-constraints.js
+    reason: 提供公开约束、精确分类和加权选区的可能取值
+  - target: engine-inference.js
+    reason: 提供可展示的最少线索推导、确认和通关验证
+  - target: engine-generation.js
+    reason: 提供局部拼接、候选排名和棋局搜索
 - name: engine.test.cjs
   purpose: 检验区域传递、小盘穷举、线索图拼接、开格、最少线索证明、手动批次、红蓝标记历史与笔迹路径
   depends_on:
@@ -43,6 +87,8 @@ files:
     reason: 核验变量组合和区域坐标显示
   - target: board-input.js
     reason: 核验手动批次、记号历史与笔迹覆盖
+  - target: generation-controller.js
+    reason: 核验并行补位、原目标保留和采用候选
 - name: favicon.svg
   purpose: 与游戏标题徽标一致的浏览器标签图标
 - name: game-feedback.js
@@ -62,6 +108,17 @@ files:
     reason: 核验全屏控制器对浏览器事件和能力差异的处理
 - name: game-motion.css
   purpose: 统一按钮、圆弧菜单、面板和对话框的过渡，保留长按进度反馈
+- name: game-requests.js
+  purpose: 管理对局和编辑器共用的单请求 Worker 通道
+  details: 收到计算结果或传输失败后解除忙碌，失败和取消时回收旧线程并忽略迟到消息。
+- name: game-tool-layout.js
+  purpose: 测量圆弧按钮和推导窗的可用空间，管理侧栏和浮窗切换及焦点恢复
+  depends_on:
+  - target: radial-layout.js
+    reason: 使用页面注入的几何算法设置按钮、轨迹和面板位置
+- name: generation-controller.js
+  purpose: 调度搜索线程、汇总进度和最优候选，并报告搜索结果
+  details: 通过注入的并发策略、随机数与 Worker 接口启动搜索。第一路保留原目标，异常退出时补位。首个达标结果结束整组搜索，异常后可保留候选供手动载入。
 - name: index.html
   purpose: 离线游戏入口，定义生成设置、编辑器、局面种子对话框和棋盘证明区域
 - name: position-seed.js
@@ -71,12 +128,22 @@ files:
   purpose: 保留公式的比较关系，格式化负常数换位、组合变量与区域坐标
   details: 将连续加减合为一式，保留取整边界；按格区分相消项、正项和负项。按原式的上下界识别可直接定值的格子，供推导面板合并结论并裁剪未使用的步骤。
 - name: proof-panel.test.cjs
-  purpose: 用导入局面核验推导公式、引用编号与结论高亮
+  purpose: 用导入局面核验推导公式、引用编号与结论高亮，并验证请求取消
   depends_on:
   - target: app.js
+    reason: 核验提示显示切换和自动求解取消
+  - target: proof-renderer.js
     reason: 核验推导面板对重复证明和必要前提的取舍
+  - target: game-requests.js
+    reason: 验证取消后解除忙碌且不渲染迟到结果
+- name: proof-renderer.js
+  purpose: 把线索、推导公式和结论渲染为可联动棋盘的元素
+  details: 接收当前棋局、公式格式和坐标定位接口，生成推导节点及其高亮数据；页面控制悬停、点按和焦点事件。
+  depends_on:
+  - target: proof-format.js
+    reason: 使用页面注入的公式计算、关系整理和坐标格式能力
 - name: radial-browser.test.cjs
-  purpose: 在 Chromium 内验证提示圆弧的鼠标命中、展开后缩放和短窗口全屏切换
+  purpose: 在 Chromium 内验证按钮命中、全屏缩放、推导窗焦点和请求错误恢复
   depends_on:
   - target: index.html
     reason: 加载实际页面和样式，验证控件在浏览器绘制后仍可点击

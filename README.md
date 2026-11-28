@@ -115,6 +115,12 @@
 
 安装 Chromium 或 Chrome 后，`node --test radial-browser.test.cjs` 会在浏览器内实测提示圆弧的点击和短窗口全屏切换。使用非默认浏览器路径时可设置 `CHROME_BIN`。缺少可用浏览器或 Node.js WebSocket 时跳过这一项。
 
+## 代码结构
+
+- `engine-board.js` 管理棋盘、开格和随机序列。`engine-constraints.js` 用公开线索计算安全性和选区的可能雷数。`engine-inference.js` 生成可展示的技巧推导，并验证整局能否无猜通关。`engine-generation.js` 构造并排序候选，通过传入的推理和认证接口核验棋局。
+- `engine.js` 集中组装这些模块，向页面、后台 Worker 和 Node.js 测试提供同一套 API。页面通过 `index.html` 按依赖顺序加载脚本，打开本地文件时，Blob Worker 由同一组工厂函数创建。
+- `app.js` 协调游戏和编辑器。`game-requests.js` 封装对局和编辑器共用的后台请求，负责忙碌状态、失败恢复和取消。`generation-controller.js` 管理并行搜索，通过传入的 Worker 接口启动任务，并用回调报告进度、候选和结果。`proof-renderer.js` 接收棋局与公式格式接口，生成推导和棋盘联动所需的数据。`game-tool-layout.js` 布置圆弧工具和推导面板，管理侧栏与浮窗切换时的键盘焦点。
+
 ## 开源许可
 
 本仓库的原创代码和随附文档采用 [MIT 许可证](LICENSE)。引用的第三方攻略、论文和素材按各自的许可使用。

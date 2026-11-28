@@ -441,7 +441,7 @@ input, select { background: #fcfcfe; }
   .header-tools .icon-button { flex: none; width: 34px; }
   .board-head .icon-button { width: 32px; min-height: 32px; }
 }
-/* Match the layout used by syncReasonLayout(), including phones in landscape. */
+/* Match the layout used by syncProofLayout(), including phones in landscape. */
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1000px) {
   :root:not([data-fullscreen-mode]) .layout {
     --stage: max(180px, calc(100dvh - 400px));
@@ -628,6 +628,14 @@ input, select { background: #fcfcfe; }
   [data-fullscreen-mode] .header-tools .icon-button { width: var(--header-button-width); }
   [data-fullscreen-mode] .header-tools .mode-switch button { min-width: var(--header-button-width); font-size: 0; gap: 0; }
   [data-fullscreen-mode] .header-tools .mode-switch .icon { display: block; }
+}
+
+@media (max-width: 260px) and (max-height: 180px) {
+  /* Reclaim space around the 44 px hint petals and keep the same arc. */
+  [data-fullscreen-mode] header { min-height: 0; padding-block: max(2px, var(--safe-top)) 3px; }
+  [data-fullscreen-mode] .header-tools :is(.icon-button, .mode-switch button) { min-height: 28px; }
+  [data-fullscreen-mode] .tool-dock .launcher { --diameter: 36px; }
+  [data-fullscreen-mode] .tool-dock { gap: 5px; --dock-bottom: max(5px, var(--safe-bottom)); }
 }
 
 @media (max-height: 500px) {

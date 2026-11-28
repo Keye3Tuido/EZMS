@@ -2,17 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {readFileSync} = require('node:fs');
 const {Script} = require('node:vm');
+const {focusBoardCell} = require('./board-input');
 const engine = require('./engine');
 const format = require('./proof-format');
+const makeProofRenderer = require('./proof-renderer');
+const makeGameRequests = require('./game-requests');
 const seeds = require('./position-seed')(engine.adj);
-
-// Exercise the real formula renderer without starting browser workers or timers.
 const source = readFileSync(`${__dirname}/app.js`, 'utf8');
-const renderer = new Script([
-  source.slice(source.indexOf('  function proofPreview('),source.indexOf('  const proofPanel=')),
-  source.slice(source.indexOf('  function element('),source.indexOf('  function display(')),
-  'steps(move)'
-].join('\n'),{filename:'app.js'});
 
 class Node {
   constructor() {
@@ -40,6 +36,21 @@ class Node {
   }
 }
 
+// Use the same renderer interface as the browser, with a minimal DOM and board focus adapter.
+function renderSteps(game,move,proofTargets,proofRows,buttons=[]) {
+  return makeProofRenderer({
+    element(tag,className,text) {
+      const node=new Node();
+      node.className=className;
+      if(text!==undefined) node.textContent=text;
+      return node;
+    },
+    format,equivalentGroups:engine.equivalentGroups,proofTargets,proofRows,
+    focusBoardCell:target=>focusBoardCell(game,buttons,target),
+    scrollToTotal() {}
+  }).steps(game,move);
+}
+
 function render(seed, confirmed=[], target) {
   const game=seeds.decode(seed), {board,visible,flags}=game;
   const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true,confirmed,target});
@@ -50,11 +61,7 @@ function renderMove(game,move,confirmed=[]) {
   const {board}=game;
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   const descendants=node=>node.children.flatMap(child=>[child,...descendants(child)]);
-  const rows=renderer.runInNewContext({
-    game:{...game,manual:{marked:new Map(confirmed)}}, move, engine, format, document:{createElement:()=>new Node()},
-    proofTargets, proofRows,
-    coord:v=>format.coordinate(v,board.w)
-  }).children.map(row=>({
+  const rows=renderSteps({...game,manual:{marked:new Map(confirmed)}},move,proofTargets,proofRows).children.map(row=>({
     formula:row.children[1].textContent,
     chain:row.children[1].children.filter(node=>node.classes.has('formula-chain-row'))
       .map(node=>node.children.map(part=>part.textContent)),
@@ -85,10 +92,7 @@ test('a circled clue focuses the number cell and previews its unknown neighbors'
   const buttons=Array.from(visible,(_,v)=>({tabIndex:-1,focus:()=>{focused=v;}}));
   game.focus=3;
   buttons[3].tabIndex=0;
-  const rows=renderer.runInNewContext({
-    game, move, engine, format, document:{createElement:()=>new Node()},
-    proofTargets, proofRows, buttons, coord:v=>format.coordinate(v,board.w)
-  });
+  const rows=renderSteps(game,move,proofTargets,proofRows,buttons);
   const row=rows.children.find(row=>row.children[1].children[0]?.textContent==='E1');
   const clue=row.children[1].children[0];
   assert.ok(clue.classes.has('clue-region'));
@@ -245,7 +249,7 @@ test('显示不等式和移项后的结论时，正系数变量项统一排在�
   assert.deepEqual(terms(isolated.terms,[]).map(t=>t.cells[0]),[1,0]);
 });
 
-test('停止求解控件只在状态变化时更新，并立即作废待处理工作',()=>{
+test('停止求解控件只在状态变化时更新，并立即作废待处理工作',async()=>{
   const {readFileSync}=require('node:fs');
   const {runInNewContext}=require('node:vm');
   const source=readFileSync(`${__dirname}/app.js`,'utf8');
@@ -254,14 +258,18 @@ test('停止求解控件只在状态变化时更新，并立即作废待处理�
   const label={textContent:'自动求解'};
   const button={querySelector:s=>s==='use'?{setAttribute:(...args)=>calls.push(args)}:label,
     set innerHTML(_) {throw Error('不应重建停止按钮');}};
-  runInNewContext(section('  function updateSolveControl(', '  function controls(')+
-    section('  function cancelPlayRequest()', '  function finishWorker(')+`
-    let run=7, auto=true, proofVisible=false, worker;
-    let playWorker={terminate(){events.push('terminate');}},pending=value=>events.push({value,run,auto});
+  await runInNewContext(section('  function updateSolveControl(', '  function controls(')+
+    section('  function stopAuto()', '  function background(')+`
+    let run=7, auto=true, proofVisible=false;
+    const generation={searching:false};
+    const gameRequests=makeGameRequests({openWorker:()=>({postMessage(){},addEventListener(){},terminate(){events.push('terminate');}}),onBusyChange:controls});
+    const {cancel:cancelPlayRequest}=gameRequests;
+    const result=gameRequests.ask('hint',{}).then(value=>events.push({value,run,auto}));
     updateSolveControl(true);
     updateSolveControl(true);
     stopAuto();
-    `,{$:()=>button,controls(){},events:calls});
+    result;
+    `,{$:()=>button,controls(){},events:calls,makeGameRequests});
   assert.equal(label.textContent,'停止求解');
   assert.equal(calls.filter(Array.isArray).length,1);
   assert.deepEqual({...calls.at(-1)},{value:null,run:8,auto:false});
@@ -271,26 +279,26 @@ test('提交后自动刷新的线索可立即关闭，取消后不渲染旧结�
   const section=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b));
   const events=[];
   const state=new Script([
-    section('  function cancelPlayRequest()', '  function stopAuto()'),
     section('  function cancelProofRequest()', '  async function judge('),
     section('  async function commitBatch(', '  function play('),
     section('  async function stageStep(', '  function pauseSolve()'),
     section('  function toggleHint(', '  function showReason('),
     section('  function closeProof()', '  function setMode('),
-    `let auto=false, run=0, pending, playWorker, editing=false, worker;
+    `let auto=false, run=0, editing=false;
+    const generation={searching:false};
+    const worker={postMessage(){},addEventListener(){},terminate(){events.push('terminate');}};
+    const gameRequests=makeGameRequests({openWorker:()=>worker,onBusyChange:controls});
+    const {cancel:cancelPlayRequest}=gameRequests;
     let proofVisible=true, proofMode='focus', proofRequest, proofReturn;
     const game={state:'playing',visible:[0,-1,-1],opened:1,board:{mines:1},
       flags:new Set(),proven:new Set(),notes:{discardConfirmations(){}},
       manual:{done:true,cells:kind=>kind==='mine'?[1]:[]}};
     function setProofVisible(open){proofVisible=open;if(!open) proofMode=undefined;}
-    function next(){
-      playWorker={terminate(){events.push('terminate');}};
-      return new Promise(resolve=>{pending=resolve;});
-    }
+    function next(){return gameRequests.ask('hint',{});}
     const commit=commitBatch(game);
-    ({commit,toggleHint,visible:()=>proofVisible,pending:()=>pending})`
+    ({commit,toggleHint,visible:()=>proofVisible,pending:()=>gameRequests.busy && worker.onmessage ? data=>worker.onmessage({data}) : null})`
   ].join('\n'),{filename:'app.js'}).runInNewContext({
-    events, dismissSearchResult(){}, feedback:{handoff(){},sound(){}}, inkDrawing:{}, discardOpenedMarks(){},
+    events, makeGameRequests, dismissSearchResult(){}, feedback:{handoff(){},sound(){}}, inkDrawing:{}, discardOpenedMarks(){},
     scheduleVerification(){}, clearProofHover(){}, proofPanel:{replaceChildren(){}}, element(){},
     say(){}, render(){}, controls(){}, focusProofReturn(){}, display:(_result,weak)=>events.push(weak)
   });
@@ -309,7 +317,8 @@ test('求解一步落红标后按新局面刷新，并保留原模式和折叠�
   const stage=source.slice(source.indexOf('  async function stageStep('),source.indexOf('  function pauseSolve()'));
   const script=new Script([request,stage,
     `const game={flags:new Set()}, events=[];
-    let run=0, auto=false, pending, reasonCollapsed=true, proofMode=initialMode, proofReturn;
+    let run=0, auto=false, reasonCollapsed=true, proofMode=initialMode, proofReturn;
+    const gameRequests={busy:false};
     let proofVisible=initiallyVisible;
     const compactReason={matches:false};
     function setReasonCollapsed(value){reasonCollapsed=value;}

@@ -275,7 +275,15 @@ function inkPath(points,tile,offset=0,closed=false) {
   return closed?d+'Z':d+`L${move(parallel(points.at(-1),last),last,extent)}`;
 }
 
-if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,manualStepAction,checkPositionMarks,restoreManualMarks,inkTrails,inkPath});
+function focusBoardCell(game,buttons,target) {
+  if (!buttons[target]) return;
+  if (buttons[game.focus]) buttons[game.focus].tabIndex = -1;
+  game.focus = target;
+  buttons[game.focus].tabIndex = 0;
+  buttons[game.focus].focus();
+}
+
+if(typeof module!=='undefined') module.exports=Object.assign(makeMarkHistory,{makeManualBatch,manualStepAction,checkPositionMarks,restoreManualMarks,inkTrails,inkPath,focusBoardCell});
 
 const inkShapes=new Map([
   ['x','<path d="M4 4L20 20M20 4L4 20"/>'],

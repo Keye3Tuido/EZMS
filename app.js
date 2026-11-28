@@ -3,7 +3,6 @@
   const engine = makeMinesEngine();
   const format = makeProofFormat();
   const regionSelection=makeRegionSelection(engine.adj);
-  const radialLayout=makeRadialLayout();
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
   const selectionReadout=$('selectionReadout');
@@ -24,14 +23,18 @@
   inkDrawing.setAttribute('aria-hidden','true');
   let paintedInk='';
   const fields = ['width', 'height', 'minAverage', 'minMultiPercent', 'minPeakClues'];
-  let game, worker, generationCandidate, auto = false, run = 0, buttons = [];
+  let game, auto = false, run = 0, buttons = [];
   let editing=false, parkedGame, draft, editTool='mine';
   let digit=1, draftMinesValid=true;
-  let playWorker, pending;
   let verificationWorker, verificationTimer;
   let draftMarkJob, draftMarkJudgment;
   const proofKinds=['cancelled','positive','negative','element','selection-positive','selection-negative'];
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
+  const {chip,steps,regionChips,proofPreview}=makeProofRenderer({
+    element,format,equivalentGroups:engine.equivalentGroups,proofTargets,proofRows,
+    scrollToTotal:()=>$('totalMines')?.scrollIntoView({block:'nearest'}),
+    focusBoardCell:target=>focusBoardCell(game,buttons,target)
+  });
   let hoveredProof, focusedProof, pinnedProof;
   let activeProofRow;
   let activeAreaPreview = null;
@@ -66,9 +69,8 @@
   }
 
   function dismissSearchResult() {
-    if(worker) return;
-    if(generationCandidate) {
-      generationCandidate=undefined;
+    if(generation.searching) return;
+    if(generation.discardCandidate()) {
       $('useCandidate').disabled=true;
     }
     if(!$('searchCard').hidden) saySearch('');
@@ -78,7 +80,7 @@
 
   function batchControls() {
     const batch=game?.manual, complete=!!batch?.done, live=ready();
-    const locked = auto || !!pending;
+    const locked = auto || gameRequests.busy;
     const commit=$('commitMarks');
     const canCommit=live && complete;
     if(!canCommit && document.activeElement===commit) buttons[game?.focus]?.focus({preventScroll:true});
@@ -104,7 +106,7 @@
     const button=$('solve');
     const label=button.querySelector('span');
     const text=auto?'停止求解':'自动求解';
-    button.disabled=!auto && (!!worker || !live || !!pending);
+    button.disabled=!auto && (generation.searching || !live || gameRequests.busy);
     if(label.textContent!==text) {
       button.querySelector('use').setAttribute('href',auto?'#stopIcon':'#play');
       label.textContent=text;
@@ -112,15 +114,15 @@
   }
 
   function controls() {
-    const live = game?.state === 'playing', locked = !!worker || auto || !!pending;
-    for (const id of fields) $(id).disabled = !!worker;
-    $('generate').disabled = !!worker || !!pending && !auto;
-    const cancel=$('cancel'), canCancel=!!worker;
+    const live = game?.state === 'playing', locked = generation.searching || auto || gameRequests.busy;
+    for (const id of fields) $(id).disabled = generation.searching;
+    $('generate').disabled = generation.searching || gameRequests.busy && !auto;
+    const cancel=$('cancel'), canCancel=generation.searching;
     cancel.classList.toggle('is-inactive',!canCancel);
     cancel.setAttribute('aria-hidden',String(!canCancel));
     cancel.disabled=!canCancel;
     const useCandidate=$('useCandidate');
-    useCandidate.disabled=!generationCandidate;
+    useCandidate.disabled=!generation.candidate;
     useCandidate.textContent=canCancel?'停止并采用候选':'采用候选';
     for (const id of ['gameMode','editMode','importPosition']) $(id).disabled = locked;
     $('exportPosition').disabled = locked || !game;
@@ -136,14 +138,14 @@
     $('reasonMenu').classList.toggle('is-inactive',editing);
     $('restart').hidden = editing;
     $('gameTime').hidden = editing;
-    $('board').setAttribute('aria-busy',String(!!pending));
+    $('board').setAttribute('aria-busy',String(gameRequests.busy));
     $('answers').disabled=locked || !live;
-    for(const id of ['focus','hint']) $(id).disabled=!!worker || auto || !live || !!pending && !proofRequest;
-    $('reasonMenu').disabled = editing || !game || !!worker;
+    for(const id of ['focus','hint']) $(id).disabled=generation.searching || auto || !live || gameRequests.busy && !proofRequest;
+    $('reasonMenu').disabled = editing || !game || generation.searching;
     $('selectionMenu').disabled = editing || !game || locked;
     selectionHistoryControls();
-    $('markMenu').disabled = !game || !!worker || !!pending || auto || !editing && !live;
-    $('restart').disabled = !!worker || !!pending && !auto || !game;
+    $('markMenu').disabled = !game || generation.searching || gameRequests.busy || auto || !editing && !live;
+    $('restart').disabled = generation.searching || gameRequests.busy && !auto || !game;
     updateSolveControl(live);
     $('reasonMenu').innerHTML=icon('hintIcon');
     $('reasonMenu').title='推理工具';
@@ -201,14 +203,6 @@
     return {w,h,minAverage,minMultiPercent,minPeakClues};
   }
 
-  function cancelPlayRequest() {
-    if (!pending) return;
-    const resolve=pending, task=playWorker;
-    pending=playWorker=null;
-    task?.terminate();
-    resolve(null);
-  }
-
   function stopAuto() {
     const wasSolving=auto;
     auto=false;
@@ -218,142 +212,45 @@
       proofPanel.replaceChildren(element('p','proof-pending','自动求解已停止。'));
     controls();
   }
-  function finishWorker(keepCandidate=false) {
-    for(const lane of worker?.active??[]) lane.terminate();
-    worker=null;
-    if(!keepCandidate) generationCandidate=undefined;
-    controls();
-  }
-
   function background(code) {
-    const url = URL.createObjectURL(new Blob([`${makeMinesEngine.toString()}\n${code}`],{type:'text/javascript'}));
+    const url = URL.createObjectURL(new Blob([`${minesEngineWorkerSource()}\n${code}`],{type:'text/javascript'}));
     try { return new Worker(url); }
     finally { URL.revokeObjectURL(url); }
   }
 
-  function generate(e) {
-    e?.preventDefault();
-    if (worker || pending && !auto) return;
-    let p;
-    try { p = readSettings(); } catch (error) { saySearch(error.message, 'error'); return; }
-    stopAuto();
-    say('');
-    const {target,compareClosest}=engine.generationRanking(p);
-    const schedule=engine.generationSchedule(p,navigator.hardwareConcurrency);
-    const usedSeeds=new Set();
-    generationCandidate=undefined;
-    let canStartMore=true, originalLane, replacedOriginal=false, originalFallback;
-    const task=worker={lanes:new Map(),active:new Set()};
-    function progress() {
-      let tried=0,passed=0;
-      for(const lane of task.lanes.values()) {tried+=lane.tried;passed+=lane.passed;}
-      const report=generationCandidate?.report;
-      const closest=report&&{average:report.averageClues,multiPercent:report.advancedDensity*100,peak:report.clues};
-      return {tried,passed,closest,target};
-    }
-    function failed(lane,message) {
-      if(worker!==task || !task.active.delete(lane)) return;
-      lane.terminate();
-      if(lane===originalLane) {
-        if(!replacedOriginal) {
-          replacedOriginal=true;
-          try { startLane(true); return; }
-          catch { /* 补位失败，结束整组搜索。 */ }
-        }
-      } else if(task.active.size) {
-        updateCandidateFallback();
-        return;
-      }
-      finishWorker(true);
-      const candidate=generationCandidate;
+  const gameRequests=makeGameRequests({openWorker:background,onBusyChange:controls});
+  const {ask,cancel:cancelPlayRequest}=gameRequests;
+
+  const generation=makeGenerationController({
+    rank:engine.generationRanking,scheduleFor:engine.generationSchedule,
+    logicalCores:()=>navigator.hardwareConcurrency,
+    randomSeed:()=>crypto.getRandomValues(new Uint32Array(1))[0],openWorker:background,
+    onChange:controls,
+    onStart:()=>saySearch('正在构造开局'),
+    onCandidate:()=>{$('useCandidate').disabled=false;},
+    onProgress(progress,report) {
+      const {text,shortfall}=generationProgress(progress,report);
+      saySearch(text,'',shortfall);
+    },
+    onFailure(kind,detail,candidate) {
+      const message=kind==='startup' ? '浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。' :
+        kind==='search' ? `本次生成中止：${detail}` : `生成任务无法运行。${game ? '当前棋局已保留。' : ''}`;
       if(candidate) {
         const {text,shortfall}=generationProgress(candidate.progress,candidate.report);
         saySearch(`${message} ${text}`,'error',shortfall);
       } else saySearch(message,'error');
-    }
-    const code=`const options={};
-      onmessage = async ({data:{p,seed,originalTarget,candidateFallback}}) => {
-        options.candidateFallback=candidateFallback;
-        if(!p) return;
-        options.originalTarget=originalTarget;
-        try {
-          let updated = -Infinity, sentCandidate;
-          const sendProgress=({candidate,...progress})=>{
-            postMessage(candidate!==sentCandidate ? {progress,candidate} : {progress});
-            sentCandidate=candidate;
-            updated=performance.now();
-          };
-          for (const result of makeMinesEngine().generate(p,seed,sendProgress,options)) {
-            if (result.board) { postMessage({result}); return; }
-            if (performance.now() - updated >= 100) sendProgress(result);
-            // 原目标线程在轮次之间接收实际并发变化。
-            if(originalTarget) await new Promise(resolve=>setTimeout(resolve,0));
-          }
-        }
-        catch (error) { postMessage({error:error.message}); }
-      };`;
-    function startLane(originalTarget) {
-      let [seed]=crypto.getRandomValues(new Uint32Array(1));
-      while(usedSeeds.has(seed)) seed=(seed+1)>>>0;
-      usedSeeds.add(seed);
-      const lane=background(code);
-      lane.onmessage=({data})=>{
-        if(worker!==task || !task.active.has(lane)) return;
-        if(data.error) {failed(lane,`本次生成中止：${data.error}`);return;}
-        if(data.progress) {
-          task.lanes.set(lane,data.progress);
-          if(data.candidate && (!generationCandidate || compareClosest(data.candidate.report,generationCandidate.report)<0)) {
-            generationCandidate={...data.candidate,p};
-            $('useCandidate').disabled=false;
-          }
-          const merged=progress();
-          if(generationCandidate) generationCandidate.progress=merged;
-          startLanes(schedule.lanesAt(merged.tried));
-          const {text,shortfall}=generationProgress(merged,generationCandidate?.report);
-          saySearch(text,'',shortfall);
-          return;
-        }
-        const result=data.result;
-        task.lanes.set(lane,result);
-        const {tried}=progress();
-        finishWorker();
-        mountGenerated(result,p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${tried} 轮`);
-      };
-      lane.onerror=()=>failed(lane,`生成任务无法运行。${game ? '当前棋局已保留。' : ''}`);
-      const candidateFallback=originalTarget && !task.active.size;
-      try { lane.postMessage({p,seed,originalTarget,candidateFallback}); }
-      catch(error) { lane.terminate(); throw error; }
-      task.lanes.set(lane,{tried:0,passed:0});
-      task.active.add(lane);
-      if(originalTarget) {
-        originalLane=lane;
-        originalFallback=candidateFallback;
-      }
-    }
-    function updateCandidateFallback() {
-      if(!task.active.has(originalLane)) return;
-      const enabled=task.active.size===1;
-      if(enabled===originalFallback) return;
-      originalLane.postMessage({candidateFallback:enabled});
-      originalFallback=enabled;
-    }
-    function startLanes(desired) {
-      // 退役线程仍计入累计进度，补位只占原有的一个并发名额。
-      const scheduled=task.lanes.size-Number(replacedOriginal);
-      for(let count=scheduled;canStartMore && count<desired;count++) {
-        try { startLane(!originalLane); }
-        catch { canStartMore=false; }
-      }
-      updateCandidateFallback();
-    }
-    startLanes(schedule.initial);
-    if(!task.active.size) {
-      finishWorker();
-      saySearch('浏览器无法启动生成任务。请用 Edge 或 Chrome 打开本页。','error');
-      return;
-    }
-    controls();
-    saySearch('正在构造开局');
+    },
+    onResult:(result,p,tried)=>mountGenerated(result,p,`三项难度达标 · 技巧通关验证通过 · 搜索 ${tried} 轮`)
+  });
+
+  function generate(e) {
+    e?.preventDefault();
+    if (generation.searching || gameRequests.busy && !auto) return;
+    let p;
+    try { p = readSettings(); } catch (error) { saySearch(error.message, 'error'); return; }
+    stopAuto();
+    say('');
+    generation.start(p);
   }
 
   function mountGenerated({board,report},p,message,shortfall) {
@@ -679,16 +576,6 @@
     updateProofPreview();
   }
 
-  function proofPreview(areas,total=false,weights) {
-    return {areas:areas.map(vs=>new Set(vs)),cells:new Set(areas.flat()),total,weights};
-  }
-
-  function signedProofPreview(terms,weights) {
-    const positive=terms.filter(term=>term.coefficient>0).flatMap(term=>term.cells);
-    const negative=terms.filter(term=>term.coefficient<0).flatMap(term=>term.cells);
-    return proofPreview([[],positive,negative],false,weights);
-  }
-
   function selectionPreview() {
     const weights=selectionUnknownWeights();
     const {positive,negative}=regionSelection.bounds(weights,new Map());
@@ -913,57 +800,11 @@
   const header=viewport.querySelector('header');
   const compactReason=matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 1000px)');
   let proofVisible=false, reasonCollapsed=false, proofReturn, proofMode, proofRequest;
-  let reasonMenuBounds;
-
-  function positionProofWindow() {
-    if(!compactReason.matches || !proofVisible) return;
-    const top=document.documentElement.dataset.fullscreenMode ? header.getBoundingClientRect().bottom+8 : 12;
-    const minRoom=proofPane.querySelector('.panel-head').offsetHeight+24;
-    const gap=10;
-    // Use the settled layout, even while the circular buttons are in motion.
-    const {left:fanLeft,right:fanRight,top:fanTop}=$('reasonFlower').inert
-      ? $('toolDock').getBoundingClientRect() : reasonMenuBounds;
-    const aboveFan=fanTop-gap;
-    const shortLandscape=window.innerHeight <= 500 && window.innerWidth > window.innerHeight;
-    const tight=aboveFan-top<minRoom;
-    const rightRoom=window.innerWidth-fanRight;
-    const sideRoom=Math.max(fanLeft,rightRoom);
-    const side=(shortLandscape && sideRoom>=230) || (tight && sideRoom>=170);
-    const useRight=side && rightRoom>fanLeft;
-    proofPane.classList.toggle('proof-close-left',tight && !side);
-    proofPane.style.setProperty('--proof-left',useRight?`${fanRight+gap}px`:'12px');
-    if(side && !useRight) proofPane.style.setProperty('--proof-right',`${window.innerWidth-fanLeft+gap}px`);
-    else proofPane.style.removeProperty('--proof-right');
-    const bottom=side?window.innerHeight-12:Math.max(top+minRoom,aboveFan);
-    const rect=reasonSlot.getBoundingClientRect();
-    const above=Math.min(bottom,rect.top-8)-top;
-    const below=bottom-Math.max(top,rect.bottom+8);
-    // Leave the current reasoning visible even when the page is scrolled to it.
-    const useBelow=above<Math.min(180,(bottom-top)*.45) && below>above;
-    const y=useBelow?Math.max(top,rect.bottom+8):top;
-    const room=useBelow?below:above;
-    // Leave room for the title and a scrollable strip on short screens.
-    proofPane.style.setProperty('--proof-top',`${Math.min(y,Math.max(top,bottom-minRoom))}px`);
-    proofPane.style.setProperty('--proof-room',`${Math.max(minRoom,room)}px`);
-  }
-
-  function syncReasonLayout() {
-    const floating=compactReason.matches;
-    if(floating && proofPane.parentElement!==viewport) viewport.append(proofPane);
-    else if(!floating && proofPane.parentElement!==reasonContent) reasonContent.append(proofPane);
-    proofPane.setAttribute('role',floating?'dialog':'region');
-    reasonStatus.inert=reasonCollapsed || (!floating && proofVisible);
-    proofPane.inert=!proofVisible || (!floating && reasonCollapsed);
-    if(!floating && !proofPane.inert && !$('reasonFlower').inert) layoutRadial('reason');
-    positionProofWindow();
-  }
-  compactReason.addEventListener('change',syncReasonLayout);
-  document.addEventListener('scroll',event=>{
-    if(compactReason.matches) positionProofWindow();
-    else if(!proofPane.inert && !$('reasonFlower').inert &&
-      (event.target===document || event.target===header.parentElement)) refreshOpenRadials();
-  },{capture:true,passive:true});
-  syncReasonLayout();
+  const {layoutRadial,positionProofWindow,syncProofLayout,observe:observeToolLayout}=makeGameToolLayout({
+    $,radialLayout:makeRadialLayout(),viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,openReasonPanel,
+    compactReason,isProofVisible:()=>proofVisible,isReasonCollapsed:()=>reasonCollapsed,isEditing:()=>editing
+  });
+  syncProofLayout();
   let touchProof=false;
   function proofAt(target,includeRow) {
     if(!proofPanel.contains(target)) return;
@@ -1031,7 +872,7 @@
   function showPendingProof() {
     proofPanel.replaceChildren(element('p','proof-pending','正在推理…'));
   }
-  function ready() { return !editing && game?.state === 'playing' && !worker; }
+  function ready() { return !editing && game?.state === 'playing' && !generation.searching; }
 
   async function judge(g) {
     if(g.judgment?.status==='complete') return g.judgment;
@@ -1044,7 +885,7 @@
   }
 
   async function toggleAnswers() {
-    if(!ready() || pending || auto) return;
+    if(!ready() || gameRequests.busy || auto) return;
     dismissSearchResult();
     const g=game;
     g.answers=!g.answers;
@@ -1105,7 +946,7 @@
   }
 
   async function commitBatch(g) {
-    if(g!==game || !g.manual?.done || !ready() || pending) return false;
+    if(g!==game || !g.manual?.done || !ready() || gameRequests.busy) return false;
     dismissSearchResult();
     const task=run;
     const refreshProof=!auto&&proofVisible;
@@ -1150,7 +991,7 @@
   }
 
   function play(i, marking) {
-    if (!ready() || auto || pending) return;
+    if (!ready() || auto || gameRequests.busy) return;
     const g = game;
     g.focus = i;
     say('');
@@ -1168,34 +1009,6 @@
     render();
   }
 
-  function ask(kind,data) {
-    if (!playWorker) {
-      try { playWorker = background(`const engine = makeMinesEngine();
-        onmessage = ({data:{kind,board,p,visible,proven,flags,cells,opening,allowUnsolved,exact,confirmed}}) => {
-          try { postMessage(kind==='classify' ? engine.classify(p,visible,{nodeBudget:Infinity})
-            : kind==='advance' ? engine.advance(board,p,visible,cells,proven,{allowUnsolved,exact,flags})
-            : kind==='expand' ? engine.expand(board,visible,flags)
-            : kind==='materialize' ? engine.publicBoard(p,visible)
-            : engine.hint(p,visible,proven,flags,{opening,confirmed})); }
-          catch { postMessage({status:'error'}); }
-        };`); }
-      catch { return Promise.resolve({status:'error'}); }
-      const task = playWorker;
-      function finish(result) {
-        if (task !== playWorker || !pending) return;
-        pending(result); pending = null; controls();
-      }
-      playWorker.onmessage = ({data}) => finish(data);
-      playWorker.onerror = () => {
-        if (task !== playWorker) return;
-        finish({status:'error'}); task.terminate(); playWorker = null;
-      };
-    }
-    return new Promise(resolve => {
-      pending = resolve; controls();
-      playWorker.postMessage({kind,...data});
-    });
-  }
   function next() {
     const {p,visible,proven,flags} = game;
     return ask('hint',{p,visible,proven:[...proven].filter(v=>flags.has(v)),flags,opening:game.opened===game.original.opening.length,
@@ -1207,312 +1020,6 @@
     node.className = className;
     if (text !== undefined) node.textContent = text;
     return node;
-  }
-
-  function chip(indices, label, {clueRegion, description, weights, focusCell, total = indices === -1} = {}) {
-    const vs = indices === -1 ? [] : Array.isArray(indices) ? indices : [indices];
-    const {w,h} = game.board;
-    const text = label ?? (total ? '总雷数' : format.label(vs,w,h,game.visible));
-    const button = element('button','proof-cell');
-    button.type = 'button';
-    if (clueRegion) {
-      button.classList.add('clue-region');
-      button.append(element('span','clue-coordinate',text));
-    } else button.textContent = text;
-    proofTargets.set(button,proofPreview([[],[],[],vs],total,weights));
-    if (description) {
-      button.title = description;
-      button.setAttribute('aria-label',description);
-    } else if (vs.length > 1) button.title = `${vs.length} 格的雷数`;
-    button.onclick = () => {
-      if (total) { $('totalMines')?.scrollIntoView({block:'nearest'}); return; }
-      const target = focusCell ?? vs[0];
-      if (!buttons[target]) return;
-      if (buttons[game.focus]) buttons[game.focus].tabIndex = -1;
-      game.focus = target;
-      buttons[game.focus].tabIndex = 0;
-      buttons[game.focus].focus();
-    };
-    return button;
-  }
-
-  function regionChips(vs,kind,weights) {
-    const {w,h}=game.board;
-    return format.regions(vs,w,h,game.visible).map(group=>{
-      const text=format.label(group,w,h,game.visible);
-      return chip(group,text,{description:`${text}：${group.length} 格${kind}`,weights});
-    });
-  }
-
-  function cancellationChip(inputs, reflected=false) {
-    const {cancelled,positive,negative,weights}=format.cancellation(inputs,reflected);
-    if (!cancelled.length) return '';
-    const preview=element('button','proof-cell cancellation-chip','相消');
-    preview.type='button';
-    preview.title=`灰纹：相消 ${cancelled.length} 格；紫：正项 ${positive.length} 格；黄：负项 ${negative.length} 格`;
-    preview.setAttribute('aria-label',preview.title);
-    proofTargets.set(preview,proofPreview([cancelled,positive,negative],false,weights));
-    preview.setAttribute('aria-pressed','false');
-    return preview;
-  }
-
-  function steps(batch,conclusionWeights=new Map()) {
-    const list = element('ol','proof-steps'), rows = new Map(), emitted = new Map(), lines = [];
-    list.setAttribute('role','list');
-    const targets=new Map([...batch.safe.map(v=>[v,0]),...batch.mines.map(v=>[v,1])]);
-    const covered=new Set();
-    const visited = new Set();
-    const gather = node => {
-      if (visited.has(node)) return;
-      visited.add(node);
-      if (node.row) rows.set(node.row.source,node.row);
-      else { gather(node.a); if (node.b) gather(node.b); }
-    };
-    for (const m of batch.proofs) {
-      if (m.kind === 'count') rows.set(m.row.source,m.row);
-      if (m.kind === 'difference') for (const row of [m.a,m.b]) rows.set(row.source,row);
-      if (m.kind === 'resolution') for (const node of m.nodes) if (node.row) rows.set(node.row.source,node.row);
-      if (m.inequality) gather(m.inequality);
-    }
-    const groups = engine.equivalentGroups([...rows.values()]);
-    const ones = vs => vs.map(v => [v,1]);
-    const rowNumbers = new Map();
-    function equationNumber(id) {
-      const number=element('span','equation-number',String(id));
-      number.dataset.equation=String(id);
-      return number;
-    }
-    function arithmetic(refs, reflected=false) {
-      return format.referenceTerms(refs,reflected).flatMap(({id,operator,factor},i)=>{
-        const term=element('span','equation-ref');
-        term.append(factor,equationNumber(id));
-        const prefix=operator ? `${i?' ':''}${operator}${i?' ':''}` : '';
-        return [prefix,term];
-      });
-    }
-    function chainRow(formula,operator,...parts) {
-      const row=element('div','formula-chain-row');
-      const expression=element('div','formula-chain-expression');
-      expression.append(...parts);
-      row.append(element('span','operator',operator),expression);
-      formula.append(row);
-    }
-    function termElements(terms,weights,leadingPlus=false) {
-      return terms.map(({coefficient,cells},i)=>{
-        const token=element('span','formula-term');
-        if(i || leadingPlus || coefficient<0) token.append(element('span','operator',coefficient<0?'−':'+'));
-        if(Math.abs(coefficient)!==1) token.append(element('span','operator',`${Math.abs(coefficient)}·`));
-        token.append(chip(cells,undefined,{weights}));
-        return token;
-      });
-    }
-    function appendDerived(formula,kind,terms,weights,note,refs) {
-      const line=element('li',`proof-line conclusion-${kind}`);
-      proofRows.set(line,signedProofPreview(terms,weights));
-      const id=list.children.length+1, marker=equationNumber(id);
-      marker.classList.add('equation-marker');
-      const explanation=element('small','proof-note');
-      explanation.append(...note);
-      line.append(marker,formula,explanation);
-      list.append(line);
-      lines.push({keep:true,refs});
-    }
-    function appendMixed(terms,weights,constant,fresh,sourceId) {
-      const a=terms.filter(term=>term.coefficient>0);
-      const b=terms.filter(term=>term.coefficient<0).map(term=>({...term,coefficient:-term.coefficient}));
-      if(fresh.some(([,value])=>value===1)) {
-        const aResult=element('div','formula formula-chain');
-        chainRow(aResult,'',...termElements(a,weights));
-        chainRow(aResult,'=',String(constant),...termElements(b,weights,true));
-        chainRow(aResult,'≥',[constant,...b.map(()=>0)].join(' + '));
-        chainRow(aResult,'=',String(constant));
-        appendDerived(aResult,'mine',terms,weights,
-          ['由 ',equationNumber(sourceId),`，减项非负，正项至多为 ${constant}`],[sourceId]);
-      }
-      if(fresh.some(([,value])=>value===0)) {
-        const reversedTerms=terms.map(term=>({...term,coefficient:-term.coefficient}));
-        const reversedWeights=new Map([...weights].map(([v,weight])=>[v,-weight]));
-        const bResult=element('div','formula formula-chain');
-        chainRow(bResult,'',...termElements(b,reversedWeights));
-        chainRow(bResult,'=',...termElements(a,reversedWeights),element('span','operator',`− ${constant}`));
-        const upperBounds=a.map(({coefficient,cells})=>coefficient*cells.length);
-        chainRow(bResult,'≤',`${upperBounds.join(' + ')} − ${constant}`);
-        chainRow(bResult,'=','0');
-        appendDerived(bResult,'safe',reversedTerms,reversedWeights,
-          ['由 ',equationNumber(sourceId),`，正项至多为 ${constant}，减项非负，故为 0`],[sourceId]);
-      }
-    }
-    function appendIsolation(raw,sign,rhs,cells,value,sourceId) {
-      const {divisor,constant,terms,relation,bound,limit}=format.isolateConclusion(raw,sign,rhs,cells,value);
-      const isolated=format.terms(terms,groups.map(group=>group.filter(v=>!cells.includes(v))));
-      const signedTerms=[{cells,coefficient:divisor},
-        ...isolated.map(term=>({...term,coefficient:-term.coefficient}))];
-      const weights=new Map([...cells.map(v=>[v,divisor]),...terms.map(([v,c])=>[v,-c])]);
-      const factor=divisor===1?'':`1/${divisor} × `;
-      const formula=element('div','formula formula-chain');
-      const exactLimit=limit%divisor===0?String(limit/divisor):`${limit}/${divisor}`;
-      chainRow(formula,'',chip(cells,undefined,{weights}));
-      chainRow(formula,relation,`${factor}(${constant}`,...termElements(isolated,weights,true),')');
-      if(isolated.length) {
-        const substitutions=isolated.map(({coefficient,cells})=>{
-          const count=(coefficient>0)===(value===0)?cells.length:0;
-          return `${coefficient<0?'−':'+'} ${Math.abs(coefficient)*count}`;
-        });
-        chainRow(formula,bound,`${factor}(${[constant,...substitutions].join(' ')})`);
-        chainRow(formula,'=',exactLimit);
-      } else {
-        chainRow(formula,bound,exactLimit);
-      }
-      appendDerived(formula,value?'mine':'safe',signedTerms,weights,
-        ['由 ',equationNumber(sourceId),`，雷数为 0 至 ${cells.length} 的整数`],[sourceId]);
-    }
-    function add(raw, sign, rhs, note, sourceRow) {
-      const {key,flipped}=format.lineIdentity(raw,sign,rhs);
-      if(emitted.has(key)) {
-        const ref=emitted.get(key);
-        return {...ref,reflected:ref.reflected!==(ref.flipped!==flipped)};
-      }
-      const fixed=format.fixedCells(raw,sign,rhs).filter(([v,value])=>targets.get(v)===value);
-      const fresh=fixed.filter(([v])=>!covered.has(v));
-      const {w,h}=game.board;
-      const grouping=fresh.length ? format.conclusionGroups(raw,groups,w,h,game.visible) : groups;
-      const {terms,sign:comparison,constant,constantFirst}=format.comparison(raw,sign,rhs,grouping);
-      const weights=new Map(terms.flatMap(({cells,coefficient})=>cells.map(v=>[v,coefficient])));
-      const mixed=sign==='=' && constant>0 && terms.some(t=>t.coefficient>0) && terms.some(t=>t.coefficient<0);
-      const positiveCapacity=terms.reduce((sum,{coefficient,cells})=>sum+Math.max(0,coefficient)*cells.length,0);
-      // When the positive side is at capacity, the subtracted side has to be zero.
-      const mixedConclusion=mixed && fresh.length>0 && positiveCapacity===constant;
-      const isolate=!mixedConclusion && fresh.some(([v])=>Math.abs(weights.get(v))>1);
-      const expanded=mixedConclusion || isolate;
-      const line=element('li','proof-line'), formula=element('div','formula');
-      for(const [v,value] of fresh) {
-        if(!expanded) line.classList.add(value?'conclusion-mine':'conclusion-safe');
-        covered.add(v);
-        if(Math.abs(weights.get(v))>1) conclusionWeights.set(v,weights.get(v));
-      }
-      const id=list.children.length+1;
-      const marker=equationNumber(id);
-      marker.classList.add('equation-marker');
-      if (sourceRow) {
-        formula.classList.add('clue-equation');
-        const s=sourceRow.source, clueRegion=s>=0, name=clueRegion?coord(s):'全盘';
-        const scope=clueRegion?`${name} 的邻域`:name;
-        formula.append(chip(sourceRow.vs,name,{clueRegion,total:!clueRegion,focusCell:clueRegion?s:undefined,
-          description:`${scope}：${sourceRow.vs.length} 个格子计入本式`}),element('span','operator',`${sign} ${rhs}`));
-      } else {
-        if (constantFirst) formula.append(element('span','operator',`${constant} ${comparison}`));
-        if (!terms.length) formula.append('0');
-        formula.append(...termElements(terms,weights));
-        if (!constantFirst) formula.append(element('span','operator',`${comparison} ${constant}`));
-      }
-      proofRows.set(line,signedProofPreview(terms,weights));
-      line.append(marker,formula);
-      if (note) {
-        const small = element('small','proof-note');
-        small.append(...(Array.isArray(note) ? note : [note]));
-        line.append(small);
-      }
-      list.append(line);
-      lines.push({keep:!expanded && fresh.length>0,refs:[...line.querySelectorAll('.proof-note [data-equation]')]
-        .map(number=>Number(number.dataset.equation))});
-      if(mixedConclusion) appendMixed(terms,weights,constant,fresh,id);
-      if(isolate) {
-        for(const value of [0,1]) {
-          const sameValue=fresh.filter(([,fixedValue])=>fixedValue===value);
-          const targetTerms=sameValue.map(([v])=>[v,weights.get(v)]);
-          const targetCells=new Set(targetTerms.map(([v])=>v));
-          const targetGroups=groups.map(group=>group.filter(v=>targetCells.has(v)));
-          for(const {cells} of format.terms(targetTerms,targetGroups)) {
-            appendIsolation(raw,sign,rhs,cells,value,id);
-          }
-        }
-      }
-      const ref={id,reflected:constantFirst,exact:comparison==='=',flipped};
-      emitted.set(key,ref);
-      return ref;
-    }
-    for (const row of rows.values()) {
-      const shown = row.source < 0 ? game.board.mines : game.visible[row.source];
-      const details=[];
-      if (shown!==row.rhs) details.push(`${shown} − ${shown-row.rhs}（扣除已知雷）`);
-      if ([...game.manual?.marked??[]].some(([v,kind])=>kind==='safe' &&
-        (row.source<0 || game.board.ns[row.source].includes(v)))) details.push('已确认安全格计 0');
-      rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,details.join('，'),row).id);
-    }
-    for(const m of batch.proofs) {
-    const saturated=m.kind==='linear' && m.slack===0;
-    if(m.symmetric.every(v=>covered.has(v)) &&
-      (!saturated || m.inequality.terms.every(([v])=>covered.has(v)))) continue;
-    if (m.kind === 'difference') {
-      const shared = new Set(m.shared);
-      const capacity = row => row.vs.filter(v => !shared.has(v)).length;
-      const a = rowNumbers.get(m.a.source), b = rowNumbers.get(m.b.source);
-      const inside=m.vs.every(v => shared.has(v));
-      if(!inside && (!capacity(m.a) || !capacity(m.b))) {
-        const [large,small]=capacity(m.a)?[m.a,m.b]:[m.b,m.a];
-        const note=[equationNumber(rowNumbers.get(large.source)),' − ',equationNumber(rowNumbers.get(small.source)),
-          ' ',cancellationChip([ones(large.vs),small.vs.map(v=>[v,-1])])];
-        add(ones(m.vs),'=',m.value ? m.vs.length : 0,note);
-      } else {
-        // A single bound saturates the target; the other direction is its capacity.
-        const useLower=inside===Boolean(m.value);
-        const bound=useLower
-          ? add(ones(m.shared),'≥',m.low,['max(0, ',equationNumber(a),` − ${capacity(m.a)}, `,equationNumber(b),` − ${capacity(m.b)})`])
-          : add(ones(m.shared),'≤',m.high,[`min(${m.shared.length}, `,equationNumber(a),', ',equationNumber(b),')']);
-        if (!inside) {
-          const row = m.vs.every(v => m.a.vs.includes(v)) ? a : b;
-          add(ones(m.vs),m.value?'≥':'≤',m.value?m.lower:m.upper,
-            [equationNumber(row),' − ',equationNumber(bound.id)]);
-        }
-      }
-    } else if (m.kind === 'resolution') {
-      const numbers = [];
-      for (const n of m.nodes) {
-        const terms = [...ones(n.positive),...n.negative.map(v => [v,-1])];
-        const rhs=1-n.negative.length;
-        if (n.row && terms.length===n.row.vs.length && (n.positive.length?n.row.rhs:-n.row.rhs)===rhs) {
-          numbers.push(rowNumbers.get(n.row.source));
-          continue;
-        }
-        const note = n.row ? [equationNumber(rowNumbers.get(n.row.source)),`，取区外${n.positive.length?'上':'下'}界`]
-          : [equationNumber(numbers[n.from[0]]),'、',equationNumber(numbers[n.from[1]]),' 取整消去 ',chip(n.pivot)];
-        numbers.push(add(terms,'≥',rhs,note).id);
-      }
-    } else if (m.inequality) {
-      const inequality=format.simplifyInequality(m.inequality);
-      const labels = new Map();
-      const visit = r => {
-        if (labels.has(r)) return labels.get(r);
-        let ref;
-        if (r.row) {
-          ref={id:rowNumbers.get(r.row.source),k:r.k,exact:true};
-        } else if (r.kind==='sum') {
-          const parts=format.summands(r), refs=parts.map(visit);
-          const sign=refs.every(ref=>ref.exact)?'=':'≤';
-          const reflected=format.relation(sign,r.rhs).constantFirst;
-          const note=[...arithmetic(refs,reflected),' ',cancellationChip(parts.map(part=>part.terms),reflected)];
-          ref={...add(r.terms,sign,r.rhs,note),k:1};
-        } else {
-          const a=visit(r.a), reflected=format.relation('≤',r.rhs).constantFirst;
-          const note=[...arithmetic([a],reflected),` ÷ 2，系数与常数${format.rounding(reflected)}`];
-          ref={...add(r.terms,'≤',r.rhs,note),k:1};
-        }
-        labels.set(r,ref);
-        return ref;
-      };
-      visit(inequality);
-    }
-    const group=m.symmetric.filter(v=>!m.vs.includes(v) && !covered.has(v));
-    if(group.length) add(ones(group),'=',m.value?group.length:0,['与 ',chip(m.vs),' 等价']);
-    }
-    const numbering=new Map(format.usedLines(lines).map((id,i)=>[id,i+1]));
-    for(const [i,line] of [...list.children].entries()) {
-      if(!numbering.has(i+1)) line.remove();
-      else for(const number of line.querySelectorAll('[data-equation]')) {
-        number.textContent=String(numbering.get(Number(number.dataset.equation)));
-      }
-    }
-    return list;
   }
 
   function display(a, weak) {
@@ -1538,7 +1045,7 @@
       const sources=[...new Set([...a.prior.flatMap(p=>p.sources),...m.sources])];
       const safe=m.safe.filter(v=>!game.manual?.marked.has(v));
       const mines=m.mines.filter(v=>!game.manual?.marked.has(v) && !game.flags.has(v));
-      const weights=new Map(), stepsList=weak?null:steps(m,weights);
+      const weights=new Map(), stepsList=weak?null:steps(game,m,weights);
       game.highlight = {sources,safe:weak?[]:safe,mines:weak?[]:mines,weights};
       const card=element('article','proof-card');
       const top=element('div','proof-top');
@@ -1546,12 +1053,12 @@
       if (!weak) {
         for(const [vs,kind,label] of [[safe,'safe','安全'],[mines,'mine','必雷']]) if(vs.length) {
           const targets=element('div',`proof-chips targets ${kind}`);
-          targets.append(element('strong','target-label',label),...regionChips(vs,label,weights));
+          targets.append(element('strong','target-label',label),...regionChips(game,vs,label,weights));
           top.append(targets);
         }
       }
       const body=element('div','proof-body'), clues=element('div','proof-chips clues');
-      const tokens=ss=>ss.slice().sort((a,b)=>a-b).map(s=>chip(s,s<0?'总雷数':`${coord(s)} · ${game.visible[s]}`));
+      const tokens=ss=>ss.slice().sort((a,b)=>a-b).map(s=>chip(game,s,s<0?'总雷数':`${coord(s)} · ${game.visible[s]}`));
       clues.append(...tokens(weak?sources:m.sources));
       body.append(element('p','proof-caption',`最少 ${m.sources.length} 条线索`));
       if (weak) body.append(clues);
@@ -1573,9 +1080,9 @@
           };
           fold.append(content);
           for(const p of a.prior) {
-            const previousWeights=new Map(), previousSteps=steps(p,previousWeights);
+            const previousWeights=new Map(), previousSteps=steps(game,p,previousWeights);
             const targets=element('div','proof-chips targets mine');
-            targets.append(element('strong','target-label','必雷'),...regionChips(p.mines,'必雷',previousWeights));
+            targets.append(element('strong','target-label','必雷'),...regionChips(game,p.mines,'必雷',previousWeights));
             content.append(targets,previousSteps);
           }
           prior.append(toggle,fold);
@@ -1617,7 +1124,7 @@
 
   async function solve() {
     if (auto) { pauseSolve(); return; }
-    if (!ready() || pending) return;
+    if (!ready() || gameRequests.busy) return;
     dismissSearchResult();
     auto = true;
     const task=++run, g=game;
@@ -1638,7 +1145,7 @@
   }
 
   function toggleHint(mode) {
-    if(!ready() || auto || pending && !proofRequest) return;
+    if(!ready() || auto || gameRequests.busy && !proofRequest) return;
     if(proofVisible && proofMode===mode) {
       closeProof();
       return;
@@ -1661,7 +1168,7 @@
   }
 
   async function requestHint(trigger,mode) {
-    if(!ready() || auto || pending) return;
+    if(!ready() || auto || gameRequests.busy) return;
     dismissSearchResult();
     clearSelection();
     if(mode) {
@@ -1711,90 +1218,7 @@
     if(name==='reason') positionProofWindow();
   }
 
-  function layoutRadial(name) {
-    const flower=$(`${name}Flower`),launcher=$(`${name}Menu`);
-    const items=[...flower.querySelectorAll('.petal,.mark-option')].filter(item=>!item.hidden);
-    if(!items.length) return;
-    const dock=$('toolDock'), dockRect=dock.getBoundingClientRect();
-    const dockButtonRect=button=>{
-      const left=dockRect.left+button.offsetLeft, top=dockRect.top+button.offsetTop;
-      const width=button.offsetWidth, height=button.offsetHeight;
-      return {left,top,width,height,right:left+width,bottom:top+height};
-    };
-    const anchor=dockButtonRect(launcher);
-    const viewport=document.documentElement;
-    const originX=anchor.left+anchor.width/2, originY=anchor.top+anchor.height/2;
-    const obstacles=[...dock.querySelectorAll('.launcher')].filter(item=>item!==launcher && !item.hidden).map(dockButtonRect);
-    const kind=name==='reason'?'reason':name==='mark'&&!editing?'ring':name==='selection'?'selection':'fan';
-    const stickyHeader=kind==='reason' && viewport.dataset.fullscreenMode ? header.getBoundingClientRect() : null;
-    if(stickyHeader) {
-      for(const button of header.querySelectorAll('button:not([hidden])')) obstacles.push(button.getBoundingClientRect());
-    }
-    if(kind==='reason' && !compactReason.matches && !proofPane.inert) {
-      for(const button of proofPane.querySelectorAll('.panel-head button')) obstacles.push(button.getBoundingClientRect());
-    }
-    const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
-      width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind,header:stickyHeader
-    });
-    if(kind==='reason') reasonMenuBounds={
-      left:originX+positioned.center.x+positioned.bounds.left,
-      right:originX+positioned.center.x+positioned.bounds.right,
-      top:originY+positioned.center.y+positioned.bounds.top
-    };
-    // A fixed element's origin may include a reserved scrollbar gutter.
-    const frame=flower.getBoundingClientRect(), style=getComputedStyle(flower);
-    const [movingX=0,movingY=0]=style.translate.split(' ').map(value=>parseFloat(value)||0);
-    const frameX=frame.left-movingX-parseFloat(style.left);
-    const frameY=frame.top-movingY-parseFloat(style.top);
-    flower.style.left=`${originX-frameX}px`;
-    flower.style.top=`${originY-frameY}px`;
-    for(const point of positioned.items) {
-      point.item.style.setProperty('--x',`${point.x}px`);
-      point.item.style.setProperty('--y',`${point.y}px`);
-    }
-    for(const element of [flower,launcher]) {
-      element.style.setProperty('--menu-x',`${positioned.center.x}px`);
-      element.style.setProperty('--menu-y',`${positioned.center.y}px`);
-    }
-    flower.classList.toggle('over-header',positioned.overHeader);
-    launcher.classList.toggle('over-header',positioned.overHeader);
-    const track=flower.querySelector('.radial-track');
-    if(track) {
-      const mark=positioned.items;
-      const launcherPoint={x:0,y:0};
-      if(kind==='ring' || kind==='selection' || kind==='reason') {
-        const id=kind==='ring'?'inkTrack':`${kind}Track`;
-        track.querySelector(`#${id}`).setAttribute('d',radialLayout.ringArcPath(mark));
-      } else {
-        const path=track.querySelector('path:not([id])')??track.querySelector('#redInkTrack');
-        const ordered=radialLayout.orderAlongArc(mark,launcherPoint);
-        path?.setAttribute('d',radialLayout.pathThrough(ordered,launcherPoint));
-      }
-      const coords=[[launcherPoint.x,launcherPoint.y],...positioned.items.map(point=>[point.x,point.y])];
-      const xs=coords.map(point=>point[0]),ys=coords.map(point=>point[1]);
-      const left=Math.min(...xs)-12,top=Math.min(...ys)-12,width=Math.max(...xs)-left+12,height=Math.max(...ys)-top+12;
-      track.setAttribute('viewBox',`${left} ${top} ${width} ${height}`);
-      track.style.left=`${left}px`;track.style.top=`${top}px`;track.style.width=`${width}px`;track.style.height=`${height}px`;
-      track.style.transformOrigin=`${-left}px ${-top}px`;
-    }
-  }
-
-  let radialLayoutFrame=0;
-  const refreshOpenRadials=()=>{
-    cancelAnimationFrame(radialLayoutFrame);
-    radialLayoutFrame=requestAnimationFrame(()=>{
-      for(const name of ['mark','selection','reason']) if(!$(`${name}Flower`).inert) layoutRadial(name);
-      positionProofWindow();
-    });
-  };
-  addEventListener('resize',refreshOpenRadials);
-  window.visualViewport?.addEventListener('resize',refreshOpenRadials);
-  new MutationObserver(refreshOpenRadials).observe(document.documentElement,{
-    attributes:true,attributeFilter:['data-fullscreen-mode']
-  });
-  const toolLayoutObserver=new ResizeObserver(refreshOpenRadials);
-  toolLayoutObserver.observe(header);
-  toolLayoutObserver.observe(reasonSlot);
+  observeToolLayout();
 
   function updateProofButtons() {
     for(const [id,name] of [['focus','线索'],['hint','推导']]) {
@@ -1813,7 +1237,7 @@
     updateProofButtons();
     proofPane.classList.toggle('is-open',visible);
     reasonLayout.classList.toggle('show-proof',visible);
-    syncReasonLayout();
+    syncProofLayout();
   }
 
   function setReasonCollapsed(collapsed, focus=false) {
@@ -1822,7 +1246,7 @@
     reasonLayout.classList.toggle('reason-collapsed',collapsed);
     openReasonPanel.inert=!collapsed;
     openReasonPanel.setAttribute('aria-expanded',String(!collapsed));
-    syncReasonLayout();
+    syncProofLayout();
     if(focus) {
       const section=proofVisible && !compactReason.matches?proofPane:reasonStatus;
       (collapsed?openReasonPanel:section.querySelector('[data-collapse-reason]')).focus({preventScroll:true});
@@ -1870,7 +1294,7 @@
   }
 
   function switchMode(next) {
-    if(editing===next || worker || pending || auto) return;
+    if(editing===next || generation.searching || gameRequests.busy || auto) return;
     if(next) {
       let position=draft;
       if(!position) try {
@@ -1885,7 +1309,7 @@
   }
 
   function resizeDraft(blank) {
-    if(!editing || pending) return;
+    if(!editing || gameRequests.busy) return;
     try { resizeDraftTo(readDimensions('editWidth','editHeight'),blank); }
     catch(error) {say(error instanceof RangeError?'浏览器无法分配此棋盘，请缩小尺寸。':error.message,'error');}
   }
@@ -1920,7 +1344,7 @@
   }
 
   function editCell(i,marking=false,value=digit) {
-    if(!editing || pending) return;
+    if(!editing || gameRequests.busy) return;
     const g=game, {board:b}=g, n=g.visible[i], tool=marking?'flag':g.numbers?'number':editTool;
     g.focus=i;
     if(tool==='flag') {
@@ -2218,7 +1642,7 @@
   }
   chooseDigit(digit);
   $('playPosition').onclick=async()=>{
-    if(!editing || pending || $('playPosition').disabled) return;
+    if(!editing || gameRequests.busy || $('playPosition').disabled) return;
     try {
       const g=await prepareGame(copyPosition(game),undefined,game.witness);
       setMode(false);
@@ -2229,7 +1653,7 @@
   };
   $('expandPosition').onclick=async()=>{
     const g=game;
-    if(!g || g.current?.status!=='blocked' || pending || worker || auto) return;
+    if(!g || g.current?.status!=='blocked' || gameRequests.busy || generation.searching || auto) return;
     const board=g.numbers?g.witness:g.board;
     if(!board) return;
     dismissSearchResult();
@@ -2260,7 +1684,7 @@
   $('seedForm').onsubmit=async e=>{
     e.preventDefault();
     const dialog=$('seedDialog'), button=$('confirmImport');
-    if(!dialog.open || dialog.classList.contains('is-closing') || button.hidden || seedImport || pending) return;
+    if(!dialog.open || dialog.classList.contains('is-closing') || button.hidden || seedImport || gameRequests.busy) return;
     const job=seedImport={};
     button.disabled=true;
     try {
@@ -2291,7 +1715,7 @@
     seedFeedback('已复制。','success');
   };
 
-  const input = makeBoardInput({$,icon,say,sound:feedback.sound,canAct:()=>!!game && !worker && !pending && !auto && (editing || ready()),getGame:()=>game,changed:(cells,kind)=>{
+  const input = makeBoardInput({$,icon,say,sound:feedback.sound,canAct:()=>!!game && !generation.searching && !gameRequests.busy && !auto && (editing || ready()),getGame:()=>game,changed:(cells,kind)=>{
     if(game) {
       dismissSearchResult();
       if(editing) refreshDraftMarks();
@@ -2320,18 +1744,18 @@
       setDifficultyOpen(false);
     }
   });
-  $('cancel').onclick = () => { finishWorker(); saySearch(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
+  $('cancel').onclick = () => { generation.stop(); saySearch(`已取消生成。${game ? '当前棋局已保留。' : ''}`); };
   $('useCandidate').onclick = () => {
-    if(!generationCandidate) return;
-    const candidate=generationCandidate, wasSearching=!!worker;
-    finishWorker();
+    if(!generation.candidate) return;
+    const candidate=generation.candidate, wasSearching=generation.searching;
+    generation.stop();
     const {text,shortfall}=generationProgress(candidate.progress,candidate.report);
     const message=wasSearching?'已停止搜索并采用候选。':'已采用候选。';
     mountGenerated(candidate,candidate.p,`${message}${text}`,shortfall);
     $('board').querySelector('[tabindex="0"]')?.focus({preventScroll:true});
   };
   $('restart').onclick = async () => {
-    if (!game || worker || pending && !auto) return;
+    if (!game || generation.searching || gameRequests.busy && !auto) return;
     dismissSearchResult();
     stopAuto();
     const {original,p,originalVisible,originalFlags}=game;
@@ -2344,7 +1768,7 @@
   $('focus').onclick = () => toggleHint('focus');
   $('hint').onclick = () => toggleHint('hint');
   $('apply').onclick = () => {
-    if (!ready() || auto || pending) return;
+    if (!ready() || auto || gameRequests.busy) return;
     if (manualStepAction(game?.manual)==='commit') void commitBatch(game);
     else void requestHint($('apply'));
   };
@@ -2509,7 +1933,7 @@
       }
       return;
     }
-    if(!ready() || pending || auto || !$('markFlower').inert) return;
+    if(!ready() || gameRequests.busy || auto || !$('markFlower').inert) return;
     const from=game.flags.has(i)?i:undefined;
     if(game.visible[i]<0 && from===undefined) return;
     flagDrag={id:e.pointerId,x:e.clientX,y:e.clientY,from,game};
@@ -2537,7 +1961,7 @@
     if(!drag.ghost) return;
     drag.ghost.remove();
     skipDragClick=true;
-    if(!drop || drag.game!==game || !ready() || pending || auto || input.writing) return;
+    if(!drop || drag.game!==game || !ready() || gameRequests.busy || auto || input.writing) return;
     const i=cellAt(e.clientX,e.clientY);
     if(i===undefined || game.visible[i]>=0) {
       if(drag.from!==undefined) play(drag.from,true);

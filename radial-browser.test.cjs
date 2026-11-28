@@ -59,8 +59,8 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
       pending.set(id,{resolve,reject});
       socket.send(JSON.stringify({id,method,params}));
     });
-    const page=async expression=>{
-      const {exceptionDetails,result}=await send('Runtime.evaluate',{expression,returnByValue:true});
+    const page=async (expression,awaitPromise=false)=>{
+      const {exceptionDetails,result}=await send('Runtime.evaluate',{expression,returnByValue:true,awaitPromise});
       assert.ok(!exceptionDetails,exceptionDetails?.exception?.description);
       return result.value;
     };
@@ -72,6 +72,27 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
         await send('Input.dispatchMouseEvent',{type,x,y,button:'left',clickCount:1});
       }
     };
+    async function waitForHits(ids,label,checkArc=false) {
+      // Leave time for resize observers and radial layout to run before sampling the new frame.
+      await page('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',true);
+      await until(()=>page(`(() => {
+        const ids=${JSON.stringify(ids)};
+        const locations=ids.map(center);
+        if(!locations.every(([, ,hit],i)=>hit===ids[i])) return false;
+        if([q('reasonFlower'),...ids.map(q)].some(el=>el.getAnimations()
+          .some(animation=>['transform','translate'].includes(animation.transitionProperty)))) return false;
+        if(!${checkArc}) return true;
+        const [x,y]=locations[0];
+        const petals=[...q('reasonFlower').querySelectorAll('.petal')];
+        const radii=petals.map(petal=>{
+          const [px,py]=locations[ids.indexOf(petal.id)];
+          return Math.hypot(px-x,py-y);
+        });
+        return / A /.test(q('reasonTrack').getAttribute('d')) &&
+          radii.every(radius=>Math.abs(radius-radii[0])<.5) &&
+          petals.every(petal=>petal.offsetWidth>=44 && petal.scrollWidth<=petal.clientWidth);
+      })()`),`${label} 圆弧未就位、标签被裁剪或按钮被遮挡`);
+    }
     const loadGame=async()=>{
       await size(960,720);
       await send('Page.navigate',{url:pathToFileURL(join(__dirname,'index.html')).href});
@@ -97,20 +118,7 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
         await page("q('fullscreenToggle').click()");
       }
       await until(()=>page(`Boolean(document.documentElement.dataset.fullscreenMode)===${fullscreen}`),'网页内全屏状态错误');
-      await wait(380);
-      const hits=await page(`${JSON.stringify(actions)}.map(id=>center(id)[2])`);
-      assert.deepEqual(hits,actions,`${width}×${height} ${fullscreen?'网页内全屏':'普通窗口'}`);
-      assert.ok(await page(`/ A /.test(q('reasonTrack').getAttribute('d'))`));
-      assert.ok(await page(`(() => {
-        const [x,y]=center('reasonMenu');
-        const petals=[...q('reasonFlower').querySelectorAll('.petal')];
-        const radii=petals.map(petal=>{
-          const [px,py]=center(petal.id);
-          return Math.hypot(px-x,py-y);
-        });
-        return radii.every(radius=>Math.abs(radius-radii[0])<.5) &&
-          petals.every(petal=>petal.offsetWidth>=44 && petal.scrollWidth<=petal.clientWidth);
-      })()`),'圆弧同心且标签能完整显示');
+      await waitForHits(actions,`${width}×${height} ${fullscreen?'网页内全屏':'普通窗口'}`,true);
       await click('answers');
       await until(()=>page("q('answers').getAttribute('aria-pressed')==='true' && q('board').getAttribute('aria-busy')==='false'"),'答案未打开');
       await click('answers');
@@ -179,6 +187,87 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
       const controls=[...actions,'fullscreenToggle','closeProof','gameMode','editMode','soundToggle','motionToggle'];
       const hits=await page(`${JSON.stringify(controls)}.map(id=>center(id)[2])`);
       assert.deepEqual(hits,controls);
+      await click('closeProof');
+      assert.equal(await page("q('proofPane').inert"),true);
+      await click('fullscreenToggle');
+      await until(()=>page('!document.documentElement.dataset.fullscreenMode'),'未退出网页内全屏');
+    });
+    await t.test('桌面和窄屏切换后，键盘焦点留在推导窗的关闭按钮',async()=>{
+      await loadGame();
+      await click('reasonMenu');
+      await until(()=>page("center('hint')[2]==='hint'"),'推导按钮未展开');
+      await click('hint');
+      await until(()=>page("!!q('proof').querySelector('.proof-line')"),'推导未渲染');
+      await page("q('closeProof').focus({preventScroll:true})");
+      assert.equal(await page('document.activeElement.id'),'closeProof');
+      for(const width of [375,960]) {
+        await size(width,720);
+        await until(()=>page(`q('proofPane').getAttribute('role')===${JSON.stringify(width===375?'dialog':'region')}`),'推导窗未切换布局');
+        assert.equal(await page('document.activeElement.id'),'closeProof');
+      }
+    });
+
+    await t.test('推导请求发送失败或无法读取返回值时，棋盘解锁并可重试',async()=>{
+      await loadGame();
+      await click('reasonMenu');
+      await page(`window.sendWorkerMessage=Worker.prototype.postMessage;
+        Worker.prototype.postMessage=function(data,...rest) {
+          if(data.kind==='hint' && window.hintFault) {
+            const fault=window.hintFault;
+            window.hintFault=undefined;
+            if(fault==='send') throw new DOMException('模拟无法发送','DataCloneError');
+            setTimeout(()=>this.dispatchEvent(new MessageEvent('messageerror')),0);
+            return;
+          }
+          return window.sendWorkerMessage.call(this,data,...rest);
+        };`);
+      for(const fault of ['send','receive']) {
+        await page(`window.hintFault=${JSON.stringify(fault)};q('hint').click()`);
+        await until(()=>page("q('board').getAttribute('aria-busy')==='false' && q('proof').textContent.includes('计算失败')"),`提示失败后未解锁 ${fault}`);
+        await page("q('hint').click();q('hint').click()");
+        await until(()=>page("!!q('proof').querySelector('.proof-line')"),'重试未渲染推导');
+        await page("q('hint').click()");
+      }
+    });
+    await t.test('停止正在计算的自动求解时解锁一次并忽略迟到的提示',async()=>{
+      await loadGame();
+      await click('reasonMenu');
+      assert.deepEqual(await page(`(() => {
+        const sendWorkerMessage=Worker.prototype.postMessage;
+        let request;
+        Worker.prototype.postMessage=function(data,...args) {
+          if(data.kind==='hint') {request=this;return;}
+          return sendWorkerMessage.call(this,data,...args);
+        };
+        try {
+          q('solve').click();
+          const started=!!request && q('board').getAttribute('aria-busy')==='true';
+          const observer=new MutationObserver(()=>{});
+          observer.observe(q('reasonMenu'),{childList:true});
+          q('solve').click();
+          request?.onmessage({data:{status:'error'}});
+          const redraws=observer.takeRecords().length;
+          observer.disconnect();
+          return {started,redraws,busy:q('board').getAttribute('aria-busy'),label:q('solve').textContent};
+        } finally {
+          Worker.prototype.postMessage=sendWorkerMessage;
+        }
+      })()`),{started:true,redraws:1,busy:'false',label:'自动求解'});
+    });
+
+    await t.test('超矮全屏中提示圆弧和关闭推导可点击',async()=>{
+      await loadGame();
+      await click('fullscreenToggle');
+      await until(()=>page('!!document.documentElement.dataset.fullscreenMode'),'未进入网页内全屏');
+      await click('reasonMenu');
+      await until(()=>page("center('hint')[2]==='hint'"),'推导按钮未展开');
+      await click('hint');
+      await until(()=>page("!!q('proof').querySelector('.proof-line')"),'推导未渲染');
+      const controls=[...actions,'closeProof','fullscreenToggle'];
+      for(const [width,height] of [[240,150],[200,180]]) {
+        await size(width,height);
+        await waitForHits(controls,`${width}×${height} 网页内全屏`);
+      }
       await click('closeProof');
       assert.equal(await page("q('proofPane').inert"),true);
       await click('fullscreenToggle');
