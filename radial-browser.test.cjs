@@ -684,7 +684,11 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
       await touch('touchStart',x,y);
       await wait(360);
       await touch('touchMove',targetX,targetY);
-      assert.equal(await page("Boolean(document.querySelector('.drag-flag'))"),true);
+      const [ghostX,ghostY]=await page(`(() => {
+        const {left,top,width,height}=document.querySelector('.drag-flag').getBoundingClientRect();
+        return [left+width/2,top+height/2];
+      })()`);
+      assert.ok(Math.abs(targetX-ghostX-32)<1 && Math.abs(targetY-ghostY-32)<1,'触屏拖旗预览应在触点左上方');
       await touch('touchEnd');
       await until(()=>page(`q('board').querySelector('[data-cell="1"]').ariaLabel.includes('已确认有雷')`),'长按拖旗未确认雷格');
     });

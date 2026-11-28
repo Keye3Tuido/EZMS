@@ -1527,7 +1527,8 @@
       drag.ghost.setAttribute('aria-hidden','true');
       viewport.append(drag.ghost);
     }
-    drag.ghost.style.transform=`translate(${e.clientX}px,${e.clientY}px) translate(-50%,-50%)`;
+    const previewOffset=32;
+    drag.ghost.style.transform=`translate(${e.clientX-previewOffset}px,${e.clientY-previewOffset}px) translate(-50%,-50%)`;
   });
   function stopFlagDrag(e,drop=false) {
     const drag=flagDrag;

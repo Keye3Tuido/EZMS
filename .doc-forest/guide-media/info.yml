@@ -1,0 +1,3 @@
+schema_version: "1.0"
+purpose: 存放玩法指南中可离线播放的游戏实录动图
+contents_summary: 七段 GIF 分别演示生成棋局、基本操作、红标提交、分层记号、绿色交集、选区及提示。

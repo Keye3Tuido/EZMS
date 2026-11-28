@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>玩法指南 · 无猜扫雷 EZMS</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="guide.css?v=3">
+</head>
+<body>
+  <header class="guide-bar shell" id="top">
+    <a class="brand" href="index.html"><img src="favicon.svg" alt="" width="32" height="32">无猜扫雷 EZMS</a>
+    <a class="play-link" href="index.html">前往游戏 <span aria-hidden="true">→</span></a>
+  </header>
+  <main class="shell">
+    <div class="guide-hero">
+      <div>
+        <h1>玩法指南</h1>
+        <p>从数字和总雷数推理，标齐本轮的必雷和必安全格，再一起开格、插旗。</p>
+      </div>
+      <div class="hero-board" aria-hidden="true">
+        <span>1</span><span class="tile-cover"></span><span class="tile-cover"></span>
+        <span>1</span><span class="tile-cover">×</span><span class="tile-cover"></span>
+        <span>1</span><span class="tile-cover">━</span><span class="tile-cover"></span>
+      </div>
+    </div>
+    <div class="guide-layout">
+      <nav class="guide-nav" aria-label="指南目录">
+        <strong>目录</strong>
+        <ol>
+          <li><a href="#start">开始一局</a></li>
+          <li><a href="#play">无猜玩法</a></li>
+          <li><a href="#marks">红色标记</a></li>
+          <li><a href="#notes">假设记号</a></li>
+          <li><a href="#selection">选区与公式</a></li>
+          <li><a href="#hints">提示工具</a></li>
+        </ol>
+      </nav>
+      <div class="chapters">
+        <section id="start">
+          <h2>开始一局</h2>
+          <p>在游戏页填入棋盘的<strong>宽度</strong>和<strong>高度</strong>，点击「生成棋局」。默认是 5 × 5，雷数由游戏生成，开局后，棋盘上方的尺寸旁会显示总雷数。</p>
+          <p>展开「难度设置」可以指定三项下限，留空使用默认值。游戏用一条经过验证的无猜通关解法评估棋局，逐步计算得出结论最少需要几条线索。已开格的数字和公开总雷数都可以作为线索。</p>
+          <dl class="metrics">
+            <div><dt>平均最少线索下限 <span>默认 1.5</span></dt><dd>把每一步所需的最少线索数取平均。设为 1.5，整局平均至少要达到 1.5 条。</dd></div>
+            <div><dt>多线索步骤占比下限 <span>默认 8%</span></dt><dd>最少需要 3 条或更多线索的步骤，占整条解法的比例。</dd></div>
+            <div><dt>峰值线索数下限 <span>默认 5</span></dt><dd>取所有步骤所需的最少线索数中的最大值。设为 5，至少有一步需要 5 条或更多线索。</dd></div>
+          </dl>
+          <p class="callout">下限越高，满足条件的棋局可能越难生成。搜索中出现候选时，可以查看未达到的指标，再选择「停止并采用候选」。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/start.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 设置难度并生成棋局">
+              <img src="guide-media/start.gif" width="900" height="688" loading="lazy" alt="在游戏里填写棋盘尺寸和三项难度下限，然后点击生成棋局">
+            </a>
+            <figcaption>演示用 6 × 5 棋盘，三个难度下限依次填 1、0% 和 1。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+
+        <section id="play">
+          <h2>无猜玩法</h2>
+          <p>每个数字表示周围八格中有几颗雷。游戏生成的棋局可以全程靠推理通关。只要某格在所有符合公开线索的雷图中都有雷，就能确认它是必雷。每张雷图里都没有雷的格子，则是必安全。</p>
+          <ol class="steps">
+            <li><strong>确认格子。</strong>点按未开格确认安全，右键确认雷。也可以从已开的数字上拖出旗子，放到必雷格。旗子会显示在鼠标或手指的左上方，松手时以鼠标或手指所在的格子为准。手机推导分屏里，先在数字上按住再拖。</li>
+            <li><strong>标齐本轮。</strong>找出当前局面所有必雷和必安全格。标错会在对应格提示，进度不变，也不会输。</li>
+            <li><strong>提交并继续。</strong>完成棋盘下方的本轮进度后，点「开格并插旗」。安全格会打开，必雷格会正式插旗，再根据新出现的数字继续推理。</li>
+          </ol>
+          <h3>点击数字，批量确认邻格</h3>
+          <p>如果一个数字周围的剩余雷数等于尚未确认的邻格数，点这个数字就会补上红叉。如果剩余雷数为 0，则会给剩下的邻格补上红色安全线。已插旗和红叉都计作雷，红色安全线计作安全。右键点数字只尝试补红叉。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/play.gif?v=2" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 错点提示、拖旗和批量确认">
+              <img src="guide-media/play.gif?v=2" width="520" height="492" loading="lazy" alt="错点必雷格后出现提示，从数字拖旗确认该雷，再点另一个数字确认两个安全格">
+            </a>
+            <figcaption>先错点 B1，看到提示后从 A1 拖旗到 B1，再点 A2 一次确认两格安全。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+
+        <section id="marks">
+          <h2>红色标记</h2>
+          <div class="legend">
+            <div><span class="tile mark-red" aria-hidden="true">×</span><p><strong>红色 X</strong><br>已确认是雷，提交后插旗。</p></div>
+            <div><span class="tile mark-red" aria-hidden="true">━</span><p><strong>红色横线</strong><br>已确认安全，提交后开格。</p></div>
+          </div>
+          <p>红标计入本轮确认进度。提交前，可以使用棋盘上方的撤销、重做按钮调整。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/marks.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 标齐红标并提交">
+              <img src="guide-media/marks.gif" width="520" height="492" loading="lazy" alt="右键画红叉，左键画红色安全线，四个格子标齐后开格并插旗">
+            </a>
+            <figcaption>右键确认 B3 有雷，点按另外三格确认安全。进度到 4/4 后，点「开格并插旗」。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+
+        <section id="notes">
+          <h2>假设记号</h2>
+          <p>点开右下角的蓝笔，选记号后点按格子，或按住扫过多个格子。<strong>拟定</strong>表示先假定某格是雷或安全。<strong>拟推</strong>表示根据这些假设推出的结论。蓝色记号用于记录推理，不计入本轮确认进度。</p>
+          <div class="symbol-table">
+            <table>
+              <caption>蓝色记号对照</caption>
+              <thead><tr><th scope="col">层级</th><th scope="col">拟定为雷</th><th scope="col">拟推为雷</th><th scope="col">拟定安全</th><th scope="col">拟推安全</th></tr></thead>
+              <tbody>
+                <tr><th scope="row">第一层</th><td><code>x</code></td><td><code>o</code></td><td><code>s</code></td><td><code>/</code></td></tr>
+                <tr><th scope="row">第二层</th><td><code>v</code></td><td><code>ʌ</code></td><td><code>e</code></td><td><code>//</code></td></tr>
+                <tr><th scope="row">第三层</th><td><code>v<sub>3</sub></code></td><td><code>ʌ<sub>3</sub></code></td><td><code>e<sub>3</sub></code></td><td><code>//<sub>3</sub></code></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p>第二层是在第一层的假设上再加一层，第三层是在第二层上继续加一层。短按 <kbd>+</kbd>、<kbd>−</kbd> 调整新增的高层记号，棋盘上已有的记号保留原层级。第三层及以上用下标显示层数。</p>
+          <dl class="actions">
+            <div><dt>长按 <kbd>+</kbd></dt><dd>用各层蓝标取交集，再清空普通蓝标。棋盘没有绿标时，把当前蓝标记为绿色。已有绿标时，同格同向就保留，反向就清除，没写蓝标的格子保持原样。原来没有绿标的格子也保持原样。</dd></div>
+            <div><dt>长按 <kbd>−</kbd></dt><dd>画笔设在第二层时，清除第二层的拟推记号。设在更高层时，清除棋盘上最高层的拟推记号。拟定记号会保留。</dd></div>
+            <div><dt>长按蓝笔</dt><dd>先清空所有普通蓝标。在没有普通蓝标时，再长按一次即可清空绿色记号。</dd></div>
+          </dl>
+          <div class="legend">
+            <div><span class="tile mark-green" aria-hidden="true">○</span><p><strong>绿色小圆圈</strong><br>交集留下的雷记号。</p></div>
+            <div><span class="tile mark-green" aria-hidden="true">╱</span><p><strong>绿色小斜杠</strong><br>交集留下的安全记号。</p></div>
+          </div>
+          <p>绿标可以保留到下一次假设，仍属于推理笔记。退出画笔后，可按无猜玩法确认格子。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/notes.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 落笔、升层和清除拟推">
+              <img src="guide-media/notes.gif" width="886" height="540" loading="lazy" alt="蓝笔依次写入第一层与第二层记号，升到第三层再落笔，长按减号清除第三层拟推">
+            </a>
+            <figcaption>先写蓝色拟定和拟推，短按 + 升到第三层。长按 − 清除第三层拟推，保留第二层拟定。 点击动图可查看原图。</figcaption>
+          </figure>
+          <figure class="guide-demo">
+            <a href="guide-media/intersection.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 取交集和清除蓝绿标记">
+              <img src="guide-media/intersection.gif" width="886" height="540" loading="lazy" alt="长按加号生成绿色记号，再用相反结论消去一个绿标，两次长按蓝笔分别清除蓝标和绿标">
+            </a>
+            <figcaption>长按 + 取交集。用反向蓝标消去一处绿标后，长按蓝笔先清蓝标，再长按一次清绿标。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+
+        <section id="selection">
+          <h2>选区与公式</h2>
+          <p>点开右下角的虚线方框，选择「增加选区」或「减去选区」。点未确认格可增减单格，点数字可增减它周围尚未确定的格子。点行号、列名或左上角的 ↘，可对整行、整列或全盘执行相同操作。</p>
+          <p>每次增加使选中格的系数加 1，每次减去使它减 1。重叠的部分按格相加。紫色表示正系数，黄色表示负系数。系数绝对值越大，颜色越深，系数为 0 时高亮消失。</p>
+          <h3>读懂棋盘下方的两行</h3>
+          <ul>
+            <li><strong>「选区」</strong>显示带正负号的区域表达式。<code>A1:B2</code> 表示从 A1 到 B2 的矩形，表达式也可以用数字邻域或单格表示。鼠标悬停在某一项上可查看对应格子。</li>
+            <li><strong>「=」</strong>显示公开数字、总雷数和已确认标记允许的所有加权雷数。每颗雷按它所在格子的系数计入，安全格贡献 0。单个值表示总和已经确定，逗号分开的多个值表示这些结果都可能出现。</li>
+          </ul>
+          <div class="formula-example">
+            <code><span class="positive">2 × A1</span> <span class="negative">− B1</span></code>
+            <p>例如给 A1 加两次、给 B1 减一次。如果 A1 是雷且 B1 安全，这种雷图的加权雷数为 2。如果两格都是雷，则为 1。</p>
+          </div>
+          <p><strong>清空选区。</strong>长按虚线方框主按钮。也可以使用选区菜单里的撤销、重做。收起菜单会保留选区预览。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/selection.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 增减选区、读数和清空">
+              <img src="guide-media/selection.gif" width="886" height="540" loading="lazy" alt="给 B1 加两次，给 C1 减一次，查看加权雷数后长按选区按钮清空">
+            </a>
+            <figcaption>给 B1 加两次、给 C1 减一次。棋盘下方显示选区表达式和加权雷数。长按虚线方框清空。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+
+        <section id="hints">
+          <h2>提示工具</h2>
+          <p>点开右下角的灯泡，选择「显示线索」可高亮下一步用到的数字或总雷数，选择「显示推导」可查看公式和推理过程。「答案」会标出当前局面所有必雷与必安全格。</p>
+          <p>「求解一步」会确认一组结论，标齐后再点可提交整轮。「自动求解」会依次确认并提交。</p>
+          <p class="callout"><strong>关闭提示。</strong>长按灯泡主按钮，可关闭当前线索、推导和答案显示，并收起提示菜单。</p>
+          <figure class="guide-demo">
+            <a href="guide-media/hints.gif" target="_blank" rel="noopener" aria-label="在新标签页查看原图 · 显示线索、查看推导和关闭">
+              <img src="guide-media/hints.gif" width="886" height="540" loading="lazy" alt="灯泡菜单先显示线索，再打开推导，最后长按灯泡关闭提示">
+            </a>
+            <figcaption>先点「显示线索」，再切到「显示推导」。长按灯泡关闭提示。 点击动图可查看原图。</figcaption>
+          </figure>
+        </section>
+      </div>
+    </div>
+    <footer class="guide-footer"><a href="#top">回到指南顶部 ↑</a><a href="index.html">前往游戏 →</a></footer>
+  </main>
+</body>
+</html>

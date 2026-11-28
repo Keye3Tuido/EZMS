@@ -259,6 +259,8 @@ main > * { flex-shrink: 0; }
 }
 .site-footer a { color: var(--action); text-underline-offset: 3px; }
 header { padding-bottom: 18px; }
+.game-brand { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-width: 0; }
+.guide-link { color: var(--green); font-size: 13px; font-weight: 650; padding-block: 6px; text-underline-offset: 3px; white-space: nowrap; }
 h1 { font-size: 29px; font-weight: 850; }
 .game-emblem { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 8px; color: #fff; background: var(--action); }
 h1 .game-emblem .icon { width: 24px; height: 24px; color: inherit; }
@@ -652,7 +654,7 @@ input, select { background: #fcfcfe; }
 }
 
 @media (max-width: 260px), (max-width: 520px) and (max-height: 300px) {
-  [data-fullscreen-mode] header h1 { display: none; }
+  [data-fullscreen-mode] .game-brand { display: none; }
   [data-fullscreen-mode] .header-tools { --header-button-width: clamp(28px, calc((100dvw - 46px) / 5), 34px); gap: 4px; }
   [data-fullscreen-mode] .header-tools .icon-button { width: var(--header-button-width); }
   [data-fullscreen-mode] .header-tools .mode-switch button { min-width: var(--header-button-width); font-size: 0; gap: 0; }

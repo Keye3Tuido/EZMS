@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261128-12">
+  <link rel="stylesheet" href="styles.css?v=20261128-13">
   <link rel="stylesheet" href="game-motion.css?v=20261128-2">
   <script defer src="selection-expression.js?v=20261128-1"></script>
   <script defer src="region-selection.js?v=20261128-4"></script>
@@ -35,7 +35,7 @@
   <script defer src="view/reason-view.js?v=20261128-1"></script>
   <script defer src="view/controls-view.js?v=20261128-1"></script>
   <script defer src="view/selection-view.js?v=20261128-1"></script>
-  <script defer src="app.js?v=20261128-20"></script>
+  <script defer src="app.js?v=20261128-21"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -69,7 +69,10 @@
   <div id="gameViewport">
   <main>
     <header>
-      <h1><span class="game-emblem"><svg class="icon" aria-hidden="true"><use href="#mine"/></svg></span>无猜扫雷EZMS</h1>
+      <div class="game-brand">
+        <h1><span class="game-emblem"><svg class="icon" aria-hidden="true"><use href="#mine"/></svg></span>无猜扫雷EZMS</h1>
+        <a class="guide-link" href="guide.html" target="_blank" rel="noopener" aria-label="玩法指南（在新标签页打开）">玩法指南 <span aria-hidden="true">↗</span></a>
+      </div>
       <div class="header-tools">
         <div class="mode-switch" role="group" aria-label="棋盘模式">
           <button id="gameMode" type="button" aria-label="游戏" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>游戏</button>
