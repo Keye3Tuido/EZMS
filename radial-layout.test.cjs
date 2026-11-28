@@ -30,30 +30,22 @@ test('arc ordering stays continuous across the atan2 branch cut',()=>{
     ['lower-inner','lower-outer','upper-outer','upper-inner']);
 });
 
-test('reasoning track is an upper ellipse passing through the button centers',()=>{
-  const points=[{x:-137,y:69},{x:-97,y:-28},{x:0,y:-69},{x:97,y:-28},{x:137,y:69}];
-  const path=layout.semicirclePath(points);
-  assert.match(path,/^M -137 69 A 137 138 0 0 1 137 69$/);
-  assert.doesNotMatch(path,/[CQ]/);
-  for(const point of points) {
-    const normalizedX=point.x/137;
-    const normalizedY=(point.y-69)/138;
-    assert.ok(Math.abs(normalizedX**2+normalizedY**2-1)<0.02,
-      `button center ${point.x},${point.y} should sit on the track`);
-  }
-});
-
-test('reasoning menu keeps all five actions on one upper semicircle',()=>{
-  const items=['focus','hint','answers','apply','solve'].map(id=>({id,width:88,height:52}));
+test('reasoning petals form a compact circular arc centered on the launcher',()=>{
+  const size=52, items=Array.from({length:5},()=>({width:size,height:size}));
   const result=layout.arrange(items,{width:830,height:710,originX:780,originY:660,
     launcher:{width:48,height:48},kind:'reason'});
-  const byId=Object.fromEntries(result.items.map(item=>[item.id,item]));
-  assert.ok(byId.focus.x<byId.hint.x && byId.hint.x<byId.answers.x && byId.answers.x<byId.apply.x && byId.apply.x<byId.solve.x);
-  assert.ok(byId.hint.y<byId.focus.y && byId.answers.y<byId.focus.y && byId.apply.y<byId.solve.y);
-  assert.ok(byId.answers.x>byId.focus.x && byId.answers.x<byId.apply.x);
-  assert.ok(byId.answers.y<byId.focus.y && byId.answers.y<byId.apply.y);
-  assert.ok(Math.abs(byId.hint.x+byId.apply.x)<1e-8);
-  assert.ok(Math.abs(byId.focus.x+byId.solve.x)<1e-8);
+  const petals=result.items;
+  const radius=Math.hypot(petals[0].x,petals[0].y);
+  assert.ok(radius<=75,'the ring should stay close to the launcher');
+  assert.ok(petals.every(({x,y})=>Math.abs(Math.hypot(x,y)-radius)<1e-8));
+  assert.ok(petals.every(({x},i)=>i===0||x>petals[i-1].x));
+  assert.ok(petals[2].y<petals[1].y && petals[2].y<petals[3].y);
+  assert.ok(Math.abs(petals[0].x+petals[4].x)<1e-8);
+  for(const [index,point] of petals.entries()) {
+    assert.ok(Math.hypot(point.x,point.y)>=60);
+    assert.ok(petals.slice(0,index).every(other=>Math.hypot(point.x-other.x,point.y-other.y)>=size+10));
+  }
+  assert.match(layout.ringArcPath(petals),/^M .* A [\d.]+ [\d.]+ 0 1 1 /);
 });
 
 test('fan coordinates are calculated symmetrically around its arc center',()=>{
@@ -257,6 +249,33 @@ test('reasoning petals fit a 320px viewport while preserving their order',()=>{
   assert.ok(result.items.every(({screenX})=>originX+screenX-26>=19.99 && originX+screenX+26<=width-19.99));
   assert.ok(result.items.every(({x},i)=>i===0||x>result.items[i-1].x));
 });
+
+for(const {name,width,height,header} of [
+  {name:'neighboring tools in a narrow, short window',width:300,height:220},
+  {name:'the fullscreen header and neighboring tools',width:500,height:280,
+    header:{left:12,top:0,right:488,bottom:96.5}},
+]) {
+  test(`reasoning arc clears ${name}`,()=>{
+    const originX=width-40,originY=height-39;
+    const launcher={width:48,height:48},items=Array.from({length:5},()=>({width:52,height:52}));
+    const dock=[57,114].map(offset=>({left:originX-offset-24,right:originX-offset+24,
+      top:originY-24,bottom:originY+24}));
+    const blockers=header?[...dock,header]:dock;
+    const result=layout.arrange(items,{width,height,originX,originY,kind:'reason',
+      launcher,obstacles:blockers});
+    const {items:petals,center}=result;
+    for(const {screenX,screenY,width:w,height:h} of [...petals,{...launcher,screenX:center.x,screenY:center.y}]) {
+      const x=originX+screenX,y=originY+screenY;
+      const left=x-w/2,right=x+w/2,top=y-h/2,bottom=y+h/2;
+      assert.ok(left>=0 && right<=width && top>=0 && bottom<=height);
+      for(const obstacle of blockers) {
+        assert.ok(right<=obstacle.left || left>=obstacle.right || bottom<=obstacle.top || top>=obstacle.bottom,
+          `button at ${x},${y} overlaps ${JSON.stringify(obstacle)}`);
+      }
+    }
+    assert.ok(petals.every(({x,y})=>Math.abs(Math.hypot(x,y)-70.2)<1e-8));
+  });
+}
 
 test('blue marker petals share a circular arc centered on their launcher',()=>{
   const size=44;

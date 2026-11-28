@@ -30,16 +30,6 @@ function makeRadialLayout() {
       .join(' ');
   }
 
-  function semicirclePath(points) {
-    if(points.length<2) return '';
-    const first=points[0],last=points.at(-1);
-    const rx=(last.x-first.x)/2;
-    const baseline=(first.y+last.y)/2;
-    const ry=baseline-Math.min(...points.map(point=>point.y));
-    if(rx<=0||ry<=0) return pathThrough(points);
-    return `M ${first.x} ${first.y} A ${rx} ${ry} 0 0 1 ${last.x} ${last.y}`;
-  }
-
   function ringArcPath(points) {
     if(points.length<2) return '';
     const [start,...rest]=orderAlongArc(points,{x:0,y:0});
@@ -77,13 +67,17 @@ function makeRadialLayout() {
     return Math.max(diameter*1.35,(diameter+gap)/(2*Math.sin(step/2)));
   }
 
-  function center(points,sizes) {
-    const bounds=points.reduce((box,point,index)=>({
+  function buttonBounds(points,sizes) {
+    return points.reduce((box,point,index)=>({
       left:Math.min(box.left,point.x-sizes[index].width/2),
       right:Math.max(box.right,point.x+sizes[index].width/2),
       top:Math.min(box.top,point.y-sizes[index].height/2),
       bottom:Math.max(box.bottom,point.y+sizes[index].height/2),
     }),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
+  }
+
+  function center(points,sizes) {
+    const bounds=buttonBounds(points,sizes);
     return {x:(bounds.left+bounds.right)/2,y:(bounds.top+bounds.bottom)/2};
   }
 
@@ -126,7 +120,7 @@ function makeRadialLayout() {
     return buttonRects.some(rect=>obstacles.some(obstacle=>overlapsRect(rect,obstacle,gap)));
   }
 
-  function arrange(items,{width,height,kind='fan',originX=0,originY=0,padding=20,launcher=null,obstacles=[]}) {
+  function arrange(items,{width,height,kind='fan',originX=0,originY=0,padding=20,launcher=null,obstacles=[],header=null}) {
     if(!items.length) return {items:[],center:{x:0,y:0},bounds:{left:0,right:0,top:0,bottom:0}};
     const sizes=items.map(item=>({width:item.width,height:item.height}));
     const top=originY,right=width-originX,bottom=height-originY,left=originX;
@@ -138,8 +132,8 @@ function makeRadialLayout() {
       else if(nearest===right) twoItemArc=[135,225];
       else twoItemArc=[-45,45];
     }
-    const selection=kind==='selection';
-    const [fanStart,fanEnd]=selection?[186,354]:items.length===2?twoItemArc:[180,360];
+    const centeredArc=kind==='selection'||kind==='reason';
+    const [fanStart,fanEnd]=kind==='selection'?[186,354]:kind==='reason'?[160,380]:items.length===2?twoItemArc:[180,360];
     const span=kind==='ring'?300:kind==='paired'?110:fanEnd-fanStart;
     const diameter=Math.max(...sizes.map(size=>Math.max(size.width,size.height)));
     let radius=radiusFor(Math.ceil(items.length/(kind==='paired'?2:1)),
@@ -170,8 +164,8 @@ function makeRadialLayout() {
       const arc=fan(items.length,radius,120,420);
       const leftCount=Math.ceil(items.length/2);
       points=[...arc.slice(0,leftCount).reverse(),...arc.slice(leftCount)];
-    } else if(selection) {
-      // The four circular buttons and launcher share the same center of rotation.
+    } else if(centeredArc) {
+      // Circular buttons on these arcs share the launcher as their center of rotation.
       const launcherDiameter=launcher?Math.max(launcher.width,launcher.height):0;
       radius=Math.max(radius,(diameter+launcherDiameter)/2+10);
       points=fanPoints();
@@ -184,7 +178,7 @@ function makeRadialLayout() {
       points=pairedPoints();
     }
     else points=fanPoints();
-    for(let attempt=0;kind!=='ring'&&!selection&&(overlaps(points,sizes)||overlapsLauncher(points,sizes,launcher))&&attempt<96;attempt++) {
+    for(let attempt=0;kind!=='ring'&&!centeredArc&&(overlaps(points,sizes)||overlapsLauncher(points,sizes,launcher))&&attempt<96;attempt++) {
       if(kind==='paired') {
         radius*=1.08;
         if(pairedOrientation==='horizontal'&&radius*2+Math.max(...sizes.map(size=>size.width))>width-padding*2) {
@@ -195,57 +189,61 @@ function makeRadialLayout() {
       }
       else {radius*=1.18;points=fanPoints();}
     }
-    if(kind==='reason' && points.length>2) {
-      const halfWidth=(width-2*padding-diameter)/2;
-      const extent=Math.max(...points.map(point=>Math.abs(point.x)));
-      if(halfWidth>0 && extent>halfWidth) {
-        points=points.map(point=>({...point,x:point.x*halfWidth/extent}));
-      }
-    }
-    const target=(kind==='ring'||selection)?{x:0,y:0}:center(points,sizes);
-    const positioned=points.map(point=>({x:point.x-target.x,y:point.y-target.y}));
-    const bounds=positioned.reduce((box,point,index)=>({
-      left:Math.min(box.left,point.x-sizes[index].width/2),
-      right:Math.max(box.right,point.x+sizes[index].width/2),
-      top:Math.min(box.top,point.y-sizes[index].height/2),
-      bottom:Math.max(box.bottom,point.y+sizes[index].height/2),
-    }),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
-    const rawPoints=launcher?[...points,{x:0,y:0}]:points;
-    const rawSizes=launcher?[...sizes,{width:launcher.width,height:launcher.height}]:sizes;
-    const rawBounds=rawPoints.reduce((box,point,index)=>({
-      left:Math.min(box.left,point.x-rawSizes[index].width/2),
-      right:Math.max(box.right,point.x+rawSizes[index].width/2),
-      top:Math.min(box.top,point.y-rawSizes[index].height/2),
-      bottom:Math.max(box.bottom,point.y+rawSizes[index].height/2),
-    }),{left:Infinity,right:-Infinity,top:Infinity,bottom:-Infinity});
-    const margin=padding;
-    const minX=margin-originX-rawBounds.left,maxX=width-margin-originX-rawBounds.right;
-    const minY=margin-originY-rawBounds.top,maxY=height-margin-originY-rawBounds.bottom;
-    let dx=minX<=maxX?Math.min(maxX,Math.max(minX,0)):((minX+maxX)/2);
-    let dy=minY<=maxY?Math.min(maxY,Math.max(minY,0)):((minY+maxY)/2);
-    if(obstacles.length && minX<=maxX && minY<=maxY &&
-      overlapsObstacles(points,sizes,launcher,target,obstacles,originX,originY,dx,dy)) {
+    const target=(kind==='ring'||centeredArc)?{x:0,y:0}:center(points,sizes);
+    const placementSizes=launcher?[...sizes,launcher]:sizes;
+    function place(points,blockers,margin,gap,step=8) {
+      const rawBounds=buttonBounds(launcher?[...points,{x:0,y:0}]:points,placementSizes);
+      const minX=margin-originX-rawBounds.left,maxX=width-margin-originX-rawBounds.right;
+      const minY=margin-originY-rawBounds.top,maxY=height-margin-originY-rawBounds.bottom;
+      const x=minX<=maxX?Math.min(maxX,Math.max(minX,0)):((minX+maxX)/2);
+      const y=minY<=maxY?Math.min(maxY,Math.max(minY,0)):((minY+maxY)/2);
+      const fits=minX<=maxX && minY<=maxY;
+      const collides=(x,y)=>overlapsObstacles(points,sizes,launcher,target,blockers,originX,originY,x,y,gap);
+      if(!fits || !blockers.length || !collides(x,y)) return {x,y,clear:fits};
       const offsets=(min,max,preferred)=>{
         const values=new Set([min,max,preferred]);
-        for(let value=min;value<=max;value+=8) values.add(value);
+        for(let value=min;value<=max;value+=step) values.add(value);
         return [...values].sort((a,b)=>Math.abs(a-preferred)-Math.abs(b-preferred));
       };
-      const xOffsets=offsets(minX,maxX,dx),yOffsets=offsets(minY,maxY,dy);
+      const xOffsets=offsets(minX,maxX,x),yOffsets=offsets(minY,maxY,y);
       let best;
       for(const candidateY of yOffsets) for(const candidateX of xOffsets) {
-        const cost=(candidateX-dx)**2+(candidateY-dy)**2;
+        const cost=(candidateX-x)**2+(candidateY-y)**2;
         if(best && cost>=best.cost) continue;
-        if(!overlapsObstacles(points,sizes,launcher,target,obstacles,originX,originY,candidateX,candidateY))
-          best={x:candidateX,y:candidateY,cost};
+        if(!collides(candidateX,candidateY)) best={x:candidateX,y:candidateY,cost,clear:true};
       }
-      if(best) {dx=best.x;dy=best.y;}
+      return best??{x,y,clear:false};
     }
+    const blockers=header?[...obstacles,header]:obstacles;
+    let placement=place(points,blockers,padding,14),overHeader=false;
+    if(kind==='reason' && !placement.clear) {
+      // Preserve the arc and try the smallest radius that still separates every button.
+      const launcherDiameter=Math.max(launcher?.width??0,launcher?.height??0);
+      const halfStep=radians(span/(2*Math.max(1,items.length-1)));
+      const tightRadius=Math.max((diameter+launcherDiameter)/2+4,(diameter+2)/(2*Math.sin(halfStep)));
+      const tightArc=fan(items.length,tightRadius,fanStart,fanEnd);
+      const tight=(arc,blockers)=>place(arc,blockers,Math.min(padding,4),1,1);
+      for(const surfaces of header?[blockers,obstacles]:[blockers]) {
+        for(const arc of [points,tightArc]) {
+          const candidate=tight(arc,surfaces);
+          if(!candidate.clear) continue;
+          placement=candidate;
+          points=arc;
+          overHeader=Boolean(header && surfaces===obstacles);
+          break;
+        }
+        if(placement.clear) break;
+      }
+    }
+    const {x:dx,y:dy}=placement;
+    const positioned=points.map(point=>({x:point.x-target.x,y:point.y-target.y}));
+    const bounds=buttonBounds(positioned,sizes);
     const offset={x:target.x+dx,y:target.y+dy};
     return {items:items.map((item,index)=>({...item,x:positioned[index].x,y:positioned[index].y,
-      fromX:0,fromY:0,screenX:points[index].x+dx,screenY:points[index].y+dy})),center:offset,bounds};
+      fromX:0,fromY:0,screenX:points[index].x+dx,screenY:points[index].y+dy})),center:offset,bounds,overHeader};
   }
 
-  return {fan,radiusFor,center,arrange,pathThrough,pathsThrough,semicirclePath,ringArcPath,orderAlongArc};
+  return {fan,radiusFor,center,arrange,pathThrough,pathsThrough,ringArcPath,orderAlongArc};
 }
 
 if(typeof module!=='undefined') module.exports=makeRadialLayout;

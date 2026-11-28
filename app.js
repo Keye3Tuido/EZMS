@@ -913,24 +913,27 @@
   const header=viewport.querySelector('header');
   const compactReason=matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 1000px)');
   let proofVisible=false, reasonCollapsed=false, proofReturn, proofMode, proofRequest;
+  let reasonMenuBounds;
 
   function positionProofWindow() {
     if(!compactReason.matches || !proofVisible) return;
     const top=document.documentElement.dataset.fullscreenMode ? header.getBoundingClientRect().bottom+8 : 12;
     const minRoom=proofPane.querySelector('.panel-head').offsetHeight+24;
     const gap=10;
-    const fan=$('reasonFlower').getBoundingClientRect();
-    const focus=$('focus'), answers=$('answers');
-    // Reserve the fully expanded fan, independent of its opening animation.
-    const fanLeft=fan.left+parseFloat(focus.style.getPropertyValue('--x'))-focus.offsetWidth/2;
-    const fanTop=fan.top+parseFloat(answers.style.getPropertyValue('--y'))-answers.offsetHeight/2;
+    // Use the settled layout, even while the circular buttons are in motion.
+    const {left:fanLeft,right:fanRight,top:fanTop}=$('reasonFlower').inert
+      ? $('toolDock').getBoundingClientRect() : reasonMenuBounds;
     const aboveFan=fanTop-gap;
     const shortLandscape=window.innerHeight <= 500 && window.innerWidth > window.innerHeight;
     const tight=aboveFan-top<minRoom;
-    const side=(shortLandscape && fanLeft>=230) || (tight && fanLeft>=170);
-    // If neither placement fits, keep the controls above the scrollable proof.
-    proofPane.classList.toggle('under-tools',tight && !side);
-    proofPane.style.setProperty('--proof-right',side?`${window.innerWidth-fanLeft+gap}px`:'12px');
+    const rightRoom=window.innerWidth-fanRight;
+    const sideRoom=Math.max(fanLeft,rightRoom);
+    const side=(shortLandscape && sideRoom>=230) || (tight && sideRoom>=170);
+    const useRight=side && rightRoom>fanLeft;
+    proofPane.classList.toggle('proof-close-left',tight && !side);
+    proofPane.style.setProperty('--proof-left',useRight?`${fanRight+gap}px`:'12px');
+    if(side && !useRight) proofPane.style.setProperty('--proof-right',`${window.innerWidth-fanLeft+gap}px`);
+    else proofPane.style.removeProperty('--proof-right');
     const bottom=side?window.innerHeight-12:Math.max(top+minRoom,aboveFan);
     const rect=reasonSlot.getBoundingClientRect();
     const above=Math.min(bottom,rect.top-8)-top;
@@ -951,17 +954,15 @@
     proofPane.setAttribute('role',floating?'dialog':'region');
     reasonStatus.inert=reasonCollapsed || (!floating && proofVisible);
     proofPane.inert=!proofVisible || (!floating && reasonCollapsed);
+    if(!floating && !proofPane.inert && !$('reasonFlower').inert) layoutRadial('reason');
     positionProofWindow();
   }
   compactReason.addEventListener('change',syncReasonLayout);
-  window.addEventListener('resize',positionProofWindow);
-  document.addEventListener('scroll',positionProofWindow,{capture:true,passive:true});
-  new MutationObserver(positionProofWindow).observe(document.documentElement,{
-    attributes:true,attributeFilter:['data-fullscreen-mode']
-  });
-  const proofPositionObserver=new ResizeObserver(positionProofWindow);
-  proofPositionObserver.observe(reasonSlot);
-  proofPositionObserver.observe(header);
+  document.addEventListener('scroll',event=>{
+    if(compactReason.matches) positionProofWindow();
+    else if(!proofPane.inert && !$('reasonFlower').inert &&
+      (event.target===document || event.target===header.parentElement)) refreshOpenRadials();
+  },{capture:true,passive:true});
   syncReasonLayout();
   let touchProof=false;
   function proofAt(target,includeRow) {
@@ -1707,6 +1708,7 @@
     flower.classList.toggle('expanded',open);
     launcher.setAttribute('aria-expanded',String(open));
     launcher.classList.toggle('is-open',open);
+    if(name==='reason') positionProofWindow();
   }
 
   function layoutRadial(name) {
@@ -1724,9 +1726,21 @@
     const originX=anchor.left+anchor.width/2, originY=anchor.top+anchor.height/2;
     const obstacles=[...dock.querySelectorAll('.launcher')].filter(item=>item!==launcher && !item.hidden).map(dockButtonRect);
     const kind=name==='reason'?'reason':name==='mark'&&!editing?'ring':name==='selection'?'selection':'fan';
+    const stickyHeader=kind==='reason' && viewport.dataset.fullscreenMode ? header.getBoundingClientRect() : null;
+    if(stickyHeader) {
+      for(const button of header.querySelectorAll('button:not([hidden])')) obstacles.push(button.getBoundingClientRect());
+    }
+    if(kind==='reason' && !compactReason.matches && !proofPane.inert) {
+      for(const button of proofPane.querySelectorAll('.panel-head button')) obstacles.push(button.getBoundingClientRect());
+    }
     const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
-      width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind
+      width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind,header:stickyHeader
     });
+    if(kind==='reason') reasonMenuBounds={
+      left:originX+positioned.center.x+positioned.bounds.left,
+      right:originX+positioned.center.x+positioned.bounds.right,
+      top:originY+positioned.center.y+positioned.bounds.top
+    };
     // A fixed element's origin may include a reserved scrollbar gutter.
     const frame=flower.getBoundingClientRect(), style=getComputedStyle(flower);
     const [movingX=0,movingY=0]=style.translate.split(' ').map(value=>parseFloat(value)||0);
@@ -1742,15 +1756,15 @@
       element.style.setProperty('--menu-x',`${positioned.center.x}px`);
       element.style.setProperty('--menu-y',`${positioned.center.y}px`);
     }
+    flower.classList.toggle('over-header',positioned.overHeader);
+    launcher.classList.toggle('over-header',positioned.overHeader);
     const track=flower.querySelector('.radial-track');
     if(track) {
       const mark=positioned.items;
       const launcherPoint={x:0,y:0};
-      if(kind==='ring' || kind==='selection') {
-        const id=kind==='ring'?'inkTrack':'selectionTrack';
+      if(kind==='ring' || kind==='selection' || kind==='reason') {
+        const id=kind==='ring'?'inkTrack':`${kind}Track`;
         track.querySelector(`#${id}`).setAttribute('d',radialLayout.ringArcPath(mark));
-      } else if(name==='reason') {
-        track.querySelector('#reasonTrack')?.setAttribute('d',radialLayout.semicirclePath(mark));
       } else {
         const path=track.querySelector('path:not([id])')??track.querySelector('#redInkTrack');
         const ordered=radialLayout.orderAlongArc(mark,launcherPoint);
@@ -1770,10 +1784,17 @@
     cancelAnimationFrame(radialLayoutFrame);
     radialLayoutFrame=requestAnimationFrame(()=>{
       for(const name of ['mark','selection','reason']) if(!$(`${name}Flower`).inert) layoutRadial(name);
+      positionProofWindow();
     });
   };
   addEventListener('resize',refreshOpenRadials);
   window.visualViewport?.addEventListener('resize',refreshOpenRadials);
+  new MutationObserver(refreshOpenRadials).observe(document.documentElement,{
+    attributes:true,attributeFilter:['data-fullscreen-mode']
+  });
+  const toolLayoutObserver=new ResizeObserver(refreshOpenRadials);
+  toolLayoutObserver.observe(header);
+  toolLayoutObserver.observe(reasonSlot);
 
   function updateProofButtons() {
     for(const [id,name] of [['focus','线索'],['hint','推导']]) {

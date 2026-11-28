@@ -6,17 +6,17 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261128-3">
+  <link rel="stylesheet" href="styles.css?v=20261128-4">
   <link rel="stylesheet" href="game-motion.css?v=20261127-2">
   <script defer src="region-selection.js?v=20261127-8"></script>
-  <script defer src="radial-layout.js?v=20261127-10"></script>
+  <script defer src="radial-layout.js?v=20261128-3"></script>
   <script defer src="engine.js?v=20261128-1"></script>
   <script defer src="proof-format.js?v=20261128-1"></script>
   <script defer src="board-input.js?v=20261127-13"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
-  <script defer src="app.js?v=20261128-9"></script>
+  <script defer src="app.js?v=20261128-10"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -52,8 +52,8 @@
       <h1><span class="game-emblem"><svg class="icon" aria-hidden="true"><use href="#mine"/></svg></span>无猜扫雷EZMS</h1>
       <div class="header-tools">
         <div class="mode-switch" role="group" aria-label="棋盘模式">
-          <button id="gameMode" type="button" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>游戏</button>
-          <button id="editMode" type="button" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg>局面编辑器</button>
+          <button id="gameMode" type="button" aria-label="游戏" aria-pressed="true"><svg class="icon" aria-hidden="true"><use href="#play"/></svg>游戏</button>
+          <button id="editMode" type="button" aria-label="局面编辑器" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#pen"/></svg>局面编辑器</button>
         </div>
         <button id="motionToggle" class="icon-button" type="button" aria-label="动画效果" aria-pressed="true" title="关闭动画效果"><svg class="icon" aria-hidden="true"><use href="#motionIcon"/></svg></button>
         <button id="soundToggle" class="icon-button" type="button" aria-label="反馈音效" aria-pressed="true" title="关闭反馈音效"><svg class="icon" aria-hidden="true"><use href="#volumeOn"/></svg></button>
@@ -187,7 +187,7 @@
     <button type="button" id="reasonMenu" class="orb launcher" title="推理工具" aria-label="推理工具" aria-expanded="false" aria-controls="reasonFlower"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg></button>
   </nav>
   <div id="reasonFlower" class="radial flower" role="group" aria-label="推理工具" inert>
-    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-138" y1="0" x2="138" y2="0"><stop stop-color="#4d78ec"/><stop offset=".5" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path id="reasonTrack" pathLength="1" stroke="url(#reasonArc)"/></svg>
+    <svg class="radial-track" viewBox="-134 -138 268 240" aria-hidden="true"><defs><linearGradient id="reasonArc" gradientUnits="userSpaceOnUse" x1="-66" y1="0" x2="66" y2="0"><stop stop-color="#4d78ec"/><stop offset=".5" stop-color="#7758d2"/><stop offset="1" stop-color="#ce6260"/></linearGradient></defs><path id="reasonTrack" pathLength="1" stroke="url(#reasonArc)"/></svg>
     <button type="button" id="focus" class="orb petal" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#hintIcon"/></svg><span>显示线索</span></button>
     <button type="button" id="hint" class="orb petal" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#formulaIcon"/></svg><span>显示推导</span></button>
     <button type="button" id="answers" class="orb petal" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#eye"/></svg><span>答案</span></button>

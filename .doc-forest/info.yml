@@ -75,8 +75,13 @@ files:
   depends_on:
   - target: app.js
     reason: 核验推导面板对重复证明和必要前提的取舍
+- name: radial-browser.test.cjs
+  purpose: 在 Chromium 内验证提示圆弧的鼠标命中、展开后缩放和短窗口全屏切换
+  depends_on:
+  - target: index.html
+    reason: 加载实际页面和样式，验证控件在浏览器绘制后仍可点击
 - name: radial-layout.js
-  purpose: 按按钮实际尺寸和视口计算菜单位置，支持环绕主按钮的标记与选区圆弧
+  purpose: 按按钮实际尺寸和视口计算菜单位置，支持环绕主按钮的标记、选区和提示圆弧
 - name: radial-layout.test.cjs
   purpose: 核验圆弧菜单中心、边缘适配和双列按钮布局
   depends_on:

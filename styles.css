@@ -457,11 +457,11 @@ input, select { background: #fcfcfe; }
 
 #gameViewport > .proof-pane {
   position: fixed;
-  z-index: 9;
-  inset: max(var(--proof-top, 12px), env(safe-area-inset-top)) auto auto max(12px, env(safe-area-inset-left));
+  z-index: 6;
+  inset: max(var(--proof-top, 12px), env(safe-area-inset-top)) auto auto max(var(--proof-left, 12px), env(safe-area-inset-left));
   display: flex;
   flex-direction: column;
-  width: min(560px, calc(100% - max(12px, env(safe-area-inset-left)) - max(var(--proof-right, 12px), env(safe-area-inset-right))));
+  width: min(560px, calc(100% - max(var(--proof-left, 12px), env(safe-area-inset-left)) - max(var(--proof-right, var(--proof-edge, 12px)), env(safe-area-inset-right))));
   max-height: min(max(110px, 55dvh), var(--proof-room, 55dvh));
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -471,8 +471,7 @@ input, select { background: #fcfcfe; }
 }
 #gameViewport > .proof-pane .panel-head { flex: none; }
 #gameViewport > .proof-pane .proof { min-height: 0; max-height: none; }
-#gameViewport > .proof-pane.under-tools { z-index: 6; }
-#gameViewport > .proof-pane.under-tools .panel-head { flex-direction: row-reverse; }
+#gameViewport > .proof-pane.proof-close-left .panel-head { flex-direction: row-reverse; }
 .radial {
   position: fixed;
   z-index: 7;
@@ -611,8 +610,24 @@ input, select { background: #fcfcfe; }
 }
 [data-fullscreen-mode] .board-scroll { min-height: 0; }
 
-@media (max-height: 270px) {
-  [data-fullscreen-mode] #reasonFlower.expanded { z-index: 11; }
+[data-fullscreen-mode] #reasonFlower.expanded.over-header,
+[data-fullscreen-mode] .tool-dock:has(#reasonMenu.is-open.over-header) { z-index: 11; }
+
+@media (max-width: 360px) and (max-height: 240px), (max-width: 520px) and (max-height: 180px) {
+  #reasonFlower .petal { --diameter: 44px; padding: 0; font-size: 10px; }
+  /* Leave a continuous area to the right for the hint arc. */
+  [data-fullscreen-mode] .tool-dock { left: max(8px, var(--safe-left)); right: auto; flex-direction: column; }
+  [data-fullscreen-mode] #reasonMenu { position: absolute; left: calc(var(--diameter) + 9px); bottom: 0; }
+  [data-fullscreen-mode] #gameViewport > .proof-pane.proof-close-left { --proof-edge: 4px; }
+  [data-fullscreen-mode] #gameViewport > .proof-pane.proof-close-left .panel-head { flex-direction: row; padding-inline-end: 0; }
+}
+
+@media (max-width: 520px) and (max-height: 300px) {
+  [data-fullscreen-mode] header h1 { display: none; }
+  [data-fullscreen-mode] .header-tools { --header-button-width: clamp(28px, calc((100dvw - 46px) / 5), 34px); gap: 4px; }
+  [data-fullscreen-mode] .header-tools .icon-button { width: var(--header-button-width); }
+  [data-fullscreen-mode] .header-tools .mode-switch button { min-width: var(--header-button-width); font-size: 0; gap: 0; }
+  [data-fullscreen-mode] .header-tools .mode-switch .icon { display: block; }
 }
 
 @media (max-height: 500px) {
