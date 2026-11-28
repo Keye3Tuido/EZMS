@@ -1,10 +1,11 @@
-// 把圆弧几何应用到页面，并为紧凑布局中的推导浮窗留出空间。
+// 把圆弧几何应用到页面，管理推导窗口在侧栏、浮窗和手机分屏中的布局。
 function makeGameToolLayout({$,radialLayout,proofLayout,viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,
   openReasonPanel,compactReason,isProofVisible,isReasonCollapsed,isEditing,collapseReasonTools}) {
-  let reasonMenuBounds, reasonButtons=[];
+  const phoneProof=matchMedia('(pointer: coarse) and (max-width: 1000px)');
+  let reasonMenuBounds, reasonButtons=[], pageScroll;
 
   function positionProofWindow() {
-    if(proofPane.inert) return;
+    if(proofPane.inert || viewport.classList.contains('mobile-proof-split')) return;
     const fullscreen=!!document.documentElement.dataset.fullscreenMode;
     const rect=reasonSlot.getBoundingClientRect();
     if(!compactReason.matches) {
@@ -62,13 +63,26 @@ function makeGameToolLayout({$,radialLayout,proofLayout,viewport,header,reasonSl
   function syncProofLayout() {
     const floating=compactReason.matches;
     const collapsed=isReasonCollapsed(), visible=isProofVisible();
-    const parent=floating?viewport:reasonContent;
+    const split=phoneProof.matches && visible;
+    const wasSplit=viewport.classList.contains('mobile-proof-split');
+    const parent=split?header.parentElement:floating?viewport:reasonContent;
     const active=document.activeElement, focused=proofPane.contains(active);
     const moved=proofPane.parentElement!==parent;
     if(moved) parent.append(proofPane);
-    proofPane.setAttribute('role',floating?'dialog':'region');
+    proofPane.setAttribute('role',floating && !split?'dialog':'region');
     reasonStatus.inert=collapsed || (!floating && visible);
     proofPane.inert=!visible || (!floating && collapsed);
+    if(split!==wasSplit) {
+      if(split) {
+        pageScroll=window.scrollY;
+        proofPane.classList.remove('proof-close-left','proof-close-compact');
+        $('closeProof').style.removeProperty('left');
+        $('closeProof').style.removeProperty('top');
+      }
+      viewport.classList.toggle('mobile-proof-split',split);
+      if(!split) window.scrollTo(0,pageScroll);
+      refreshOpenRadials();
+    }
     if(focused && moved && !proofPane.inert) active.focus({preventScroll:true});
     else if(focused && visible && collapsed && !floating) openReasonPanel.focus({preventScroll:true});
     if(!floating && !proofPane.inert && !$('reasonFlower').inert) layoutRadial('reason');
@@ -86,19 +100,20 @@ function makeGameToolLayout({$,radialLayout,proofLayout,viewport,header,reasonSl
       return {left,top,width,height,right:left+width,bottom:top+height};
     };
     const anchor=dockButtonRect(launcher);
-    const viewport=document.documentElement;
+    const root=document.documentElement;
     const originX=anchor.left+anchor.width/2, originY=anchor.top+anchor.height/2;
     const obstacles=[...dock.querySelectorAll('.launcher')].filter(item=>item!==launcher && !item.hidden).map(dockButtonRect);
     const kind=name==='reason'?'reason':name==='mark'&&!isEditing()?'ring':name==='selection'?'selection':'fan';
-    const stickyHeader=kind==='reason' && viewport.dataset.fullscreenMode ? header.getBoundingClientRect() : null;
+    const stickyHeader=kind==='reason' && root.dataset.fullscreenMode ? header.getBoundingClientRect() : null;
     if(stickyHeader) {
       for(const button of header.querySelectorAll('button:not([hidden])')) obstacles.push(button.getBoundingClientRect());
     }
-    if(kind==='reason' && !compactReason.matches && !proofPane.inert) {
+    const split=viewport.classList.contains('mobile-proof-split');
+    if(!proofPane.inert && (split || (kind==='reason' && !compactReason.matches))) {
       for(const button of proofPane.querySelectorAll('.panel-head button')) obstacles.push(button.getBoundingClientRect());
     }
     const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
-      width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind,header:stickyHeader
+      width:root.clientWidth,height:root.clientHeight,originX,originY,obstacles,launcher:anchor,kind,header:stickyHeader
     });
     if(kind==='reason') {
       reasonMenuBounds={
@@ -160,6 +175,7 @@ function makeGameToolLayout({$,radialLayout,proofLayout,viewport,header,reasonSl
   };
   function observe() {
     compactReason.addEventListener('change',syncProofLayout);
+    phoneProof.addEventListener('change',syncProofLayout);
     document.addEventListener('scroll',event=>{
       if(compactReason.matches) positionProofWindow();
       else if(!proofPane.inert && !$('reasonFlower').inert &&

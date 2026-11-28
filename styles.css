@@ -680,3 +680,81 @@ input, select { background: #fcfcfe; }
   [data-fullscreen-mode] .layout:not(.reason-collapsed) .board-scroll { --board-pitch-limit: min(14cqw, calc(var(--stage) * .16)); }
   [data-fullscreen-mode] .current-metrics { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
+
+/* 手机打开推导时，把屏幕留给两个可独立滚动的区域。 */
+:root:has(#gameViewport.mobile-proof-split) {
+  --split-dock-gap: 6px;
+  --split-dock-size: 44px;
+  --split-dock-width: calc(3 * var(--split-dock-size) + 2 * var(--split-dock-gap));
+  overflow: hidden;
+  scrollbar-gutter: auto;
+}
+#gameViewport.mobile-proof-split {
+  position: fixed;
+  z-index: 7;
+  inset: 0;
+  width: auto;
+  height: 100dvh;
+  max-width: none;
+  margin: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overflow: hidden;
+  background: var(--paper);
+}
+#gameViewport.mobile-proof-split > main {
+  display: grid;
+  grid-template: repeat(2, minmax(0, 1fr)) / minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+.mobile-proof-split > main > :is(header, .setup-bar, .site-footer),
+.mobile-proof-split .reason-slot { display: none; }
+#gameViewport.mobile-proof-split .layout {
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+  align-items: stretch;
+}
+.mobile-proof-split .game {
+  display: grid;
+  grid-template: auto minmax(0, 1fr) fit-content(34%) / minmax(0, 1fr);
+  border-radius: 0;
+}
+.mobile-proof-split .board-head {
+  min-height: 42px;
+  padding-block: 3px;
+}
+.mobile-proof-split .mark-history.is-inactive { display: none; }
+.mobile-proof-split .board-footer {
+  min-height: calc(var(--split-dock-size) + 2 * var(--split-dock-gap));
+  align-items: center;
+  overflow: auto;
+  padding: 4px calc(var(--split-dock-width) + 2 * var(--split-dock-gap)) 4px 8px;
+}
+.mobile-proof-split .board-scroll {
+  --board-pad-top: 8px;
+  --board-pad-bottom: 10px;
+  container-type: size;
+  min-height: 0;
+  max-height: none;
+  overscroll-behavior: contain;
+}
+.mobile-proof-split .board {
+  --board-height: 100cqh;
+}
+.mobile-proof-split .board:not(.writing-ink, .flag-dragging) .cell.open { touch-action: pan-x pan-y; }
+:root:has(.mobile-proof-split) .tool-dock {
+  gap: var(--split-dock-gap);
+  right: calc(env(safe-area-inset-right) + var(--split-dock-gap));
+  bottom: calc((100% + env(safe-area-inset-bottom) - env(safe-area-inset-top)) / 2 + var(--split-dock-gap));
+}
+:root:has(.mobile-proof-split) .tool-dock .launcher { --diameter: var(--split-dock-size); }
+@media (orientation: landscape) {
+  #gameViewport.mobile-proof-split > main { grid-template: minmax(0, 1fr) / repeat(2, minmax(0, 1fr)); }
+  :root:has(.mobile-proof-split) .tool-dock {
+    right: calc((100% + env(safe-area-inset-right) - env(safe-area-inset-left)) / 2 + var(--split-dock-gap));
+    bottom: calc(env(safe-area-inset-bottom) + var(--split-dock-gap));
+  }
+}

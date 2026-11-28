@@ -532,6 +532,12 @@
     touchProof=e.pointerType==='touch' || e.pointerType==='pen';
   });
   document.addEventListener('click',e=>{
+    if(e.detail && skipDragClick && board.contains(e.target)) {
+      skipDragClick=false;
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if(pinnedProof && !proofAt(e.target,true)) clearProofHover();
   },true);
   proofPanel.addEventListener('click',e=>{
@@ -809,7 +815,11 @@
     }
     clearHint(!!mode || proofVisible);
     render();
-    if(compactReason.matches && mode==='hint') $('closeProof').focus({preventScroll:true});
+    if(mode && compactReason.matches) {
+      const split=viewport.classList.contains('mobile-proof-split');
+      if(split) showReason(false);
+      if(split || mode==='hint') $('closeProof').focus({preventScroll:true});
+    }
     if(mode) return previewNextProof(mode);
     const g=game, task=run, a=await next();
     if(task!==run || g!==game || !ready() || !a) return;
@@ -1445,9 +1455,14 @@
   });
 
   const board = $('board');
+  const touchFlagHold=320;
   let flagDrag, inkDrag, skipDragClick=false;
   board.addEventListener('touchstart',e=>{
     if(input.writing && e.target.closest('[data-cell]')) e.preventDefault();
+  },{passive:false});
+  board.addEventListener('touchmove',e=>{
+    // On the split board, a held touch on an open tile drags a flag; a swipe pans natively.
+    if(e.touches.length===1 && flagDrag?.holdUntil && e.timeStamp>=flagDrag.holdUntil) e.preventDefault();
   },{passive:false});
   function cellAt(x,y) {
     const cell=document.elementFromPoint(x,y)?.closest('[data-cell]');
@@ -1493,7 +1508,9 @@
     if(!ready() || gameRequests.busy || auto || !$('markFlower').inert) return;
     const from=game.flags.has(i)?i:undefined;
     if(game.visible[i]<0 && from===undefined) return;
-    flagDrag={id:e.pointerId,x:e.clientX,y:e.clientY,from,game};
+    const holdUntil=e.pointerType==='touch' && from===undefined && viewport.classList.contains('mobile-proof-split')
+      ? e.timeStamp+touchFlagHold : 0;
+    flagDrag={id:e.pointerId,x:e.clientX,y:e.clientY,from,game,holdUntil};
   });
   board.addEventListener('pointermove',e=>{
     if(inkDrag?.id===e.pointerId) {moveInk(e);return;}
@@ -1501,6 +1518,7 @@
     if(drag?.id!==e.pointerId || drag.game!==game) return;
     if(!drag.ghost) {
       if(!e.buttons || Math.hypot(e.clientX-drag.x,e.clientY-drag.y)<8) return;
+      if(e.timeStamp<drag.holdUntil) {flagDrag=null;return;}
       // 越过拖动阈值后再捕获指针，让直接点按仍落在原格子上。
       dismissSearchResult();
       board.setPointerCapture(e.pointerId);
@@ -1515,7 +1533,11 @@
     const drag=flagDrag;
     if(drag?.id!==e.pointerId) return;
     flagDrag=null;
-    if(!drag.ghost) return;
+    if(!drag.ghost) {
+      // Releasing a held touch without dragging must not play the tile's tap action.
+      if(drop && drag.holdUntil && e.timeStamp>=drag.holdUntil) skipDragClick=true;
+      return;
+    }
     drag.ghost.remove();
     skipDragClick=true;
     if(!drop || drag.game!==game || !ready() || gameRequests.busy || auto || input.writing) return;
@@ -1532,7 +1554,6 @@
   document.addEventListener('pointercancel',e=>{stopInk(e);stopFlagDrag(e);});
   board.addEventListener('lostpointercapture',e=>{if(e.target===board) {stopInk(e);stopFlagDrag(e);}});
   board.addEventListener('click',e=>{
-    if(e.detail && skipDragClick) {skipDragClick=false;return;}
     const b=e.target.closest('[data-cell]'); if(!b) return;
     dismissSearchResult();
     const i=Number(b.dataset.cell);
@@ -1543,7 +1564,7 @@
   board.addEventListener('contextmenu',e=>{
     const b=e.target.closest('[data-cell]'); if (b) {
       e.preventDefault();
-      if(inkDrag) return;
+      if(inkDrag || flagDrag?.holdUntil) return;
       dismissSearchResult();
       const i=Number(b.dataset.cell);
       if(selectBoardCell(i)) return;

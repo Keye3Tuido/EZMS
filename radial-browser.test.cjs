@@ -93,8 +93,8 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
           petals.every(petal=>petal.offsetWidth>=44 && petal.scrollWidth<=petal.clientWidth);
       })()`),`${label} 圆弧未就位、标签被裁剪或按钮被遮挡`);
     }
-    const loadGame=async(seed="C('JKn6a1FFf31{")=>{
-      await size(960,720);
+    const loadGame=async(seed="C('JKn6a1FFf31{",resize=()=>size(960,720))=>{
+      await resize();
       await send('Page.navigate',{url:pathToFileURL(join(__dirname,'index.html')).href});
       await until(()=>page("document.readyState==='complete' && typeof document.getElementById('importPosition')?.onclick==='function'"),'游戏未启动');
       await page(`window.q=id=>document.getElementById(id);
@@ -509,6 +509,184 @@ test('提示圆弧在普通、极小和网页内全屏窗口可点击',{
         if(!expanded) await click('reasonMenu');
         await waitForHits(actions,`${width}×${height} 关闭推导后提示圆弧可用`);
       }
+    });
+    await send('Emulation.setTouchEmulationEnabled',{enabled:true});
+    const phoneSize=(width,height)=>send('Emulation.setDeviceMetricsOverride',{
+      width,height,deviceScaleFactor:1,mobile:true,
+    });
+    const touch=(type,x,y)=>send('Input.dispatchTouchEvent',{
+      type,touchPoints:type==='touchEnd'?[]:[{x,y}],
+    });
+    async function tap(id) {
+      const [x,y,hit]=await page(`center('${id}')`);
+      assert.equal(hit,id,`${id} 在 ${x},${y} 被 ${hit} 挡住`);
+      await touch('touchStart',x,y);
+      await touch('touchEnd');
+    }
+    async function openTouchProof() {
+      await tap('reasonMenu');
+      await waitForHits(['hint'],'触屏推导按钮可点击');
+      await tap('hint');
+      await until(()=>page("!!q('proof').querySelector('.proof-line') && q('board').getAttribute('aria-busy')==='false'"),'触屏推导未就绪');
+    }
+    await t.test('手机竖屏和横屏时棋盘与推导各占半屏',async()=>{
+      await loadGame(undefined,()=>phoneSize(390,844));
+      assert.equal(await page("matchMedia('(pointer: coarse)').matches"),true);
+      await page('window.scrollTo(0,150)');
+      const previousScroll=await page('scrollY');
+      assert.ok(previousScroll>0);
+      await openTouchProof();
+      await page(`const longProof=document.createElement('div');
+        longProof.style.height='1200px';q('proof').append(longProof)`);
+      for(const [width,height] of [[390,844],[844,390],[360,640]]) {
+        await phoneSize(width,height);
+        const [board,proof]=await page(`[document.querySelector('.game'),q('proofPane')]
+          .map(el=>el.getBoundingClientRect().toJSON())`);
+        if(width<height) {
+          assert.deepEqual([board.top,board.bottom,proof.top,proof.bottom],[0,height/2,height/2,height]);
+          assert.deepEqual([board.width,proof.width],[width,width]);
+        } else {
+          assert.deepEqual([board.left,board.right,proof.left,proof.right],[0,width/2,width/2,width]);
+          assert.deepEqual([board.height,proof.height],[height,height]);
+        }
+        assert.equal(await page(`(() => {
+          const cell=q('board').querySelector('.cell');
+          const {x,y,width,height}=cell.getBoundingClientRect();
+          return document.elementFromPoint(x+width/2,y+height/2)?.closest('.cell')===cell;
+        })()`),true);
+        await waitForHits(['closeProof','markMenu','selectionMenu','reasonMenu'],`${width}×${height} 手机分屏`);
+        assert.equal(await page(`(() => {
+          const proof=q('proof'),board=document.querySelector('.board-scroll');
+          const boardTop=board.scrollTop;
+          proof.scrollTop=70;
+          return proof.scrollTop===70 && board.scrollTop===boardTop;
+        })()`),true);
+      }
+      assert.equal(await page(`(() => {
+        const board=document.querySelector('.board-scroll'), proof=q('proof');
+        q('board').style.minHeight='1200px';
+        board.scrollTop=90;
+        return board.scrollTop===90 && proof.scrollTop===70;
+      })()`),true);
+      await phoneSize(390,844);
+      await waitForHits(['closeProof'],'恢复竖屏后可关闭推导');
+      await tap('closeProof');
+      assert.equal(await page("q('proofPane').inert && getComputedStyle(document.querySelector('header')).display!=='none'"),true);
+      assert.equal(await page('scrollY'),previousScroll);
+    });
+    await t.test('矮屏打开推导后全部五行棋格可操作',async()=>{
+      await loadGame(undefined,()=>phoneSize(320,480));
+      await openTouchProof();
+      const visible=await page(`(() => {
+        const {top,bottom}=document.querySelector('.board-scroll').getBoundingClientRect();
+        return [...q('board').querySelectorAll('.cell')].filter(cell=>{
+          const r=cell.getBoundingClientRect();
+          return r.top>=top && r.bottom<=bottom &&
+            document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('.cell')===cell;
+        }).length;
+      })()`);
+      assert.equal(visible,25);
+    });
+    await t.test('分屏大棋盘可以从已开格起手滑动',async()=>{
+      await loadGame(undefined,()=>phoneSize(320,568));
+      const seed=await page(`(() => {
+        const codec=makePositionSeeds(makeMinesEngine().adj),w=25,h=34;
+        const cells=Array.from({length:w*h},(_,i)=>i%w===w-1 && (i/w|0)%2===0?'1':i%w<20?'2':'0').join('');
+        return codec.encode(codec.create(w,h,cells));
+      })()`);
+      await loadGame(seed,()=>phoneSize(320,568));
+      await openTouchProof();
+      assert.equal(await page("q('reasonFlower').inert"),true);
+      const [x,y]=await page(`(() => {
+        const r=document.querySelector('.board-scroll').getBoundingClientRect();
+        const x=r.left+70,y=r.bottom-6;
+        return document.elementFromPoint(x,y)?.closest('.cell.open')?[x,y]:[];
+      })()`);
+      assert.ok(Number.isFinite(x),'滑动起点不是已开格');
+      await touch('touchStart',x,y);
+      for(let step=1;step<=8;step++) {
+        await touch('touchMove',x,y-step*8);
+        await wait(20);
+      }
+      await touch('touchEnd');
+      await until(()=>page("document.querySelector('.board-scroll').scrollTop>25"),'从已开格上滑无法滚动');
+      assert.equal(await page("q('proofPane').inert || Boolean(document.querySelector('.drag-flag'))"),false);
+    });
+    async function loadTouchFlagPosition() {
+      const seed=await page(`(() => {
+        const codec=makePositionSeeds(makeMinesEngine().adj);
+        return codec.encode(codec.create(5,5,'21000'+'22000'+'0'.repeat(15)));
+      })()`);
+      await loadGame(seed,()=>phoneSize(390,640));
+      await openTouchProof();
+    }
+    await t.test('分屏长按后原地松手保留推导和高亮，随后点按仍生效',async()=>{
+      await loadTouchFlagPosition();
+      const [proofX,proofY]=await page(`(() => {
+        const {x,y,width,height}=q('proof').querySelector('.proof-line').getBoundingClientRect();
+        return [x+width/2,y+height/2];
+      })()`);
+      const proofHighlighted="!!q('proof').querySelector('.proof-line.proof-active')";
+      await touch('touchStart',proofX,proofY);
+      await touch('touchEnd');
+      await until(()=>page(proofHighlighted),'点按公式应保留高亮');
+      const [x,y,cell]=await page(`(() => {
+        const {x,y,width,height}=q('board').querySelector('[data-cell="0"]').getBoundingClientRect();
+        const cx=x+width/2,cy=y+height/2;
+        return [cx,cy,document.elementFromPoint(cx,cy)?.closest('.cell')?.dataset.cell];
+      })()`);
+      const mineConfirmed=`q('board').querySelector('[data-cell="1"]').ariaLabel.includes('已确认有雷')`;
+      assert.equal(cell,'0');
+      assert.equal(await page(mineConfirmed),false);
+      await touch('touchStart',x,y);
+      await wait(430);
+      await touch('touchEnd');
+      await page('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))',true);
+      assert.equal(await page("!q('proofPane').inert"),true,'长按后松手不应关闭推导');
+      assert.equal(await page(mineConfirmed),false,'长按后松手不应确认雷格');
+      assert.equal(await page(proofHighlighted),true,'长按后松手应保留公式高亮');
+      await touch('touchStart',x,y);
+      await touch('touchEnd');
+      await until(()=>page(mineConfirmed),'随后点按已开格仍应确认雷格');
+    });
+    await t.test('分屏画笔和长按拖旗保持可用',async()=>{
+      await loadTouchFlagPosition();
+      await tap('markMenu');
+      await page(`q('markFlower').querySelector('[data-ink="x"]').id='testBluePen'`);
+      await waitForHits(['testBluePen'],'分屏画笔可选');
+      await tap('testBluePen');
+      const points=await until(()=>page(`(() => {
+        const cells=[...q('board').querySelectorAll('.cell.covered')];
+        const point=cell=>{
+          const {x,y,width,height}=cell.getBoundingClientRect(), cx=x+width/2, cy=y+height/2;
+          return document.elementFromPoint(cx,cy)?.closest('.cell')===cell?[cx,cy,cell.dataset.cell]:null;
+        };
+        for(const cell of cells) {
+          const i=Number(cell.dataset.cell);
+          const next=i%5!==4 && cells.find(other=>Number(other.dataset.cell)===i+1);
+          if(next) {
+            const a=point(cell),b=point(next);
+            if(a && b) return [a,b];
+          }
+        }
+      })()`),'分屏没有可用于画线的相邻棋格');
+      await touch('touchStart',...points[0]);
+      await touch('touchMove',...points[1]);
+      await touch('touchEnd');
+      assert.equal(await page(`!q('proofPane').inert && ${JSON.stringify(points.map(point=>point[2]))}.every(i=>
+        q('board').querySelector('[data-cell="'+i+'"]').ariaLabel.includes('蓝色 x'))`),true);
+      await waitForHits(['markMenu'],'分屏可以退出画笔');
+      await tap('markMenu');
+      const [[x,y],[targetX,targetY]]=await page(`[0,1].map(i=>{
+        const {x,y,width,height}=q('board').querySelector('[data-cell="'+i+'"]').getBoundingClientRect();
+        return [x+width/2,y+height/2];
+      })`);
+      await touch('touchStart',x,y);
+      await wait(360);
+      await touch('touchMove',targetX,targetY);
+      assert.equal(await page("Boolean(document.querySelector('.drag-flag'))"),true);
+      await touch('touchEnd');
+      await until(()=>page(`q('board').querySelector('[data-cell="1"]').ariaLabel.includes('已确认有雷')`),'长按拖旗未确认雷格');
     });
   } finally {
     socket?.close();
