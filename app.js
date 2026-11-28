@@ -1208,7 +1208,7 @@
     return node;
   }
 
-  function chip(indices, label, {clueRegion, description, weights, total = indices === -1} = {}) {
+  function chip(indices, label, {clueRegion, description, weights, focusCell, total = indices === -1} = {}) {
     const vs = indices === -1 ? [] : Array.isArray(indices) ? indices : [indices];
     const {w,h} = game.board;
     const text = label ?? (total ? '总雷数' : format.label(vs,w,h,game.visible));
@@ -1225,9 +1225,10 @@
     } else if (vs.length > 1) button.title = `${vs.length} 格的雷数`;
     button.onclick = () => {
       if (total) { $('totalMines')?.scrollIntoView({block:'nearest'}); return; }
-      if (!buttons[vs[0]]) return;
+      const target = focusCell ?? vs[0];
+      if (!buttons[target]) return;
       if (buttons[game.focus]) buttons[game.focus].tabIndex = -1;
-      game.focus = vs[0];
+      game.focus = target;
       buttons[game.focus].tabIndex = 0;
       buttons[game.focus].focus();
     };
@@ -1322,7 +1323,8 @@
         const aResult=element('div','formula formula-chain');
         chainRow(aResult,'',...termElements(a,weights));
         chainRow(aResult,'=',String(constant),...termElements(b,weights,true));
-        chainRow(aResult,'≥',String(constant));
+        chainRow(aResult,'≥',[constant,...b.map(()=>0)].join(' + '));
+        chainRow(aResult,'=',String(constant));
         appendDerived(aResult,'mine',terms,weights,
           ['由 ',equationNumber(sourceId),`，减项非负，正项至多为 ${constant}`],[sourceId]);
       }
@@ -1332,7 +1334,9 @@
         const bResult=element('div','formula formula-chain');
         chainRow(bResult,'',...termElements(b,reversedWeights));
         chainRow(bResult,'=',...termElements(a,reversedWeights),element('span','operator',`− ${constant}`));
-        chainRow(bResult,'≤','0');
+        const upperBounds=a.map(({coefficient,cells})=>coefficient*cells.length);
+        chainRow(bResult,'≤',`${upperBounds.join(' + ')} − ${constant}`);
+        chainRow(bResult,'=','0');
         appendDerived(bResult,'safe',reversedTerms,reversedWeights,
           ['由 ',equationNumber(sourceId),`，正项至多为 ${constant}，减项非负，故为 0`],[sourceId]);
       }
@@ -1392,7 +1396,7 @@
         formula.classList.add('clue-equation');
         const s=sourceRow.source, clueRegion=s>=0, name=clueRegion?coord(s):'全盘';
         const scope=clueRegion?`${name} 的邻域`:name;
-        formula.append(chip(sourceRow.vs,name,{clueRegion,total:!clueRegion,
+        formula.append(chip(sourceRow.vs,name,{clueRegion,total:!clueRegion,focusCell:clueRegion?s:undefined,
           description:`${scope}：${sourceRow.vs.length} 个格子计入本式`}),element('span','operator',`${sign} ${rhs}`));
       } else {
         if (constantFirst) formula.append(element('span','operator',`${constant} ${comparison}`));
@@ -1429,7 +1433,7 @@
     for (const row of rows.values()) {
       const shown = row.source < 0 ? game.board.mines : game.visible[row.source];
       const details=[];
-      if (shown!==row.rhs) details.push(`扣除 ${shown-row.rhs} 个已知雷`);
+      if (shown!==row.rhs) details.push(`${shown} − ${shown-row.rhs}（扣除已知雷）`);
       if ([...game.manual?.marked??[]].some(([v,kind])=>kind==='safe' &&
         (row.source<0 || game.board.ns[row.source].includes(v)))) details.push('已确认安全格计 0');
       rowNumbers.set(row.source,add(ones(row.vs),'=',row.rhs,details.join('，'),row).id);

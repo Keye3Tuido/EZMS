@@ -77,6 +77,29 @@ function renderMove(game,move,confirmed=[]) {
   return rows;
 }
 
+test('a circled clue focuses the number cell and previews its unknown neighbors', () => {
+  const game=seeds.decode('J:eVyiz!}'), {board,visible,flags}=game;
+  const {move}=engine.hint(board,visible,new Set(),new Set(flags),{opening:true});
+  const proofTargets=new WeakMap(), proofRows=new WeakMap();
+  let focused;
+  const buttons=Array.from(visible,(_,v)=>({tabIndex:-1,focus:()=>{focused=v;}}));
+  game.focus=3;
+  buttons[3].tabIndex=0;
+  const rows=renderer.runInNewContext({
+    game, move, engine, format, document:{createElement:()=>new Node()},
+    proofTargets, proofRows, buttons, coord:v=>format.coordinate(v,board.w)
+  });
+  const row=rows.children.find(row=>row.children[1].children[0]?.textContent==='E1');
+  const clue=row.children[1].children[0];
+  assert.ok(clue.classes.has('clue-region'));
+  assert.deepEqual([...proofTargets.get(clue).cells],[3,5,10]);
+  clue.onclick();
+  assert.equal(game.focus,4);
+  assert.equal(focused,4);
+  assert.equal(buttons[3].tabIndex,-1);
+  assert.equal(buttons[4].tabIndex,0);
+});
+
 test('nine clue regions cancel in one equality after confirming C1:C3', () => {
   const seed='J:eVyiz!}';
   const first=render(seed).move;
@@ -108,11 +131,11 @@ test('nine clue regions cancel in one equality after confirming C1:C3', () => {
   assert.equal(cancellation.formula,'1 =B4−A1:B2−F5:F6−A6');
   assert.deepEqual(cancellation.refs.slice().sort((a,b)=>a-b),[1,2,3,4,5,6,7,8,9]);
   assert.equal(mine.mine,true);
-  assert.deepEqual(mine.chain,[['','B4'],['=','1+A1:B2+F5:F6+A6'],['≥','1']]);
+  assert.deepEqual(mine.chain,[['','B4'],['=','1+A1:B2+F5:F6+A6'],['≥','1 + 0 + 0 + 0'],['=','1']]);
   assert.deepEqual(mine.signedAreas,cancellation.signedAreas);
   assert.deepEqual(mine.refs,[10]);
   assert.equal(safe.safe,true);
-  assert.deepEqual(safe.chain,[['','A1:B2+F5:F6+A6'],['=','B4− 1'],['≤','0']]);
+  assert.deepEqual(safe.chain,[['','A1:B2+F5:F6+A6'],['=','B4− 1'],['≤','1 − 1'],['=','0']]);
   assert.deepEqual(safe.signedAreas,[[0,1,7,29,30,35],[19]]);
   assert.deepEqual(safe.weights,[[0,1],[1,1],[7,1],[19,-1],[29,1],[30,1],[35,1]]);
   assert.deepEqual(safe.formulaTargets.map(({label})=>label),['A1:B2','F5:F6','A6','B4']);
@@ -145,11 +168,11 @@ test('equivalent weighted targets share one isolation formula and one region pre
   assert.equal(rows[0].clueEquation,true);
 });
 
-test('a clue that subtracts a confirmed mine states only the adjustment', () => {
+test('a clue that subtracts a confirmed mine shows the original count and the subtraction', () => {
   const {rows}=render('J:eVyiz!}',[[2,'safe'],[8,'safe'],[14,'safe'],[19,'mine']]);
   const clue=rows.find(row=>row.formula.startsWith('A4='));
   assert.equal(clue.formula,'A4= 2');
-  assert.equal(clue.note,'扣除 1 个已知雷');
+  assert.equal(clue.note,'3 − 1（扣除已知雷）');
   assert.deepEqual(clue.clueCircles[1],[]);
   assert.ok(!clue.clueCircles[0][0].preview.includes(19));
 });
@@ -164,8 +187,8 @@ test('one mixed equality replaces a separate rounding proof of the same cells', 
   assert.deepEqual(rows.filter(row=>row.safe||row.mine),[mine,safe]);
   assert.equal(cancellation.formula,'1 =A1−A4:C5');
   assert.deepEqual(cancellation.refs.slice().sort(),[1,2,3,4]);
-  assert.deepEqual(mine.chain,[['','A1'],['=','1+A4:C5'],['≥','1']]);
-  assert.deepEqual(safe.chain,[['','A4:C5'],['=','A1− 1'],['≤','0']]);
+  assert.deepEqual(mine.chain,[['','A1'],['=','1+A4:C5'],['≥','1 + 0'],['=','1']]);
+  assert.deepEqual(safe.chain,[['','A4:C5'],['=','A1− 1'],['≤','1 − 1'],['=','0']]);
   assert.ok(rows.every(row=>!row.note.includes('÷ 2')));
 });
 
