@@ -65,7 +65,7 @@ dialog .status { margin: 7px 0; }
 .counter { display: inline-flex; justify-content: center; align-items: center; gap: 5px; min-width: 54px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .counter b { min-width: 3ch; text-align: start; }
 .icon-button { width: 37px; padding: 0; color: var(--muted); }
-.axis { display: grid; place-items: center; color: var(--muted); font-weight: 700; }
+.axis { display: grid; place-items: center; min-width: 0; min-height: 0; padding: 0; border: 0; color: var(--muted); background: transparent; font-weight: 700; }
 .cell { min-width: 0; min-height: 0; padding: 0; border: 1px solid #adbbb4; font-weight: 800; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
 .cell.covered { background: #cbd8d2; border-bottom: 2px solid #a7b8af; }
 .cell.edit-mine { color: #9c2440; background: #f5d8df; border-color: #c98d9c; }
@@ -83,9 +83,19 @@ dialog .status { margin: 7px 0; }
 .cell.n6 { color: #0c7178; }
 .cell.n7 { color: #433d32; }
 .cell.n8 { color: #60696b; }
-.cell.clue, .clue-total { outline: 2px solid var(--amber); outline-offset: -2px; background: #fff1c8; }
+.cell.clue { outline: 2px solid var(--amber); outline-offset: -2px; background: #fff1c8; }
 .cell:focus-visible { z-index: 1; outline: 2px solid #143e96; outline-offset: -2px; }
-#totalMines { border-radius: 4px; }
+#totalMines { display: inline-block; position: relative; isolation: isolate; margin-inline: 6px; white-space: nowrap; }
+#totalMines:is(.clue-total,.proof-hover)::before {
+  content: "";
+  position: absolute;
+  inset: -5px -6px;
+  z-index: -1;
+  border: 2px solid var(--amber);
+  border-radius: 5px;
+  background: #fff1c8;
+  pointer-events: none;
+}
 aside { min-width: 0; }
 aside section { border-top: 2px solid #b0c2b9; padding-top: 11px; }
 aside section + section { margin-top: 20px; }
@@ -176,10 +186,17 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .mark-history { display: flex; gap: 3px; }
 .is-inactive { visibility: hidden; pointer-events: none; }
 .reason-status { padding: 8px 0; }
-aside .proof-pane { padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
-.panel-head { min-height: 55px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+#gameViewport .proof-pane { display: flex; flex-direction: column; overflow: hidden; }
+aside .proof-pane {
+  padding: 0;
+  max-height: max(102px, calc(100dvh - var(--proof-start, 0px) - max(12px, env(safe-area-inset-bottom))));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.panel-head { flex: none; min-height: 55px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
 .panel-head h2 { margin: 0; }
-.proof { margin: 0; max-height: var(--stage); min-height: 45px; overflow: auto; overscroll-behavior: contain; }
+.proof { margin: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
 .proof-pending { margin: 12px; color: var(--muted); }
 .proof-card { border: 0; border-radius: 0; }
 .proof-top { padding: 8px 12px; }
@@ -323,6 +340,11 @@ input, select { background: #fcfcfe; }
   margin: 0 auto;
 }
 .axis { font-size: max(10px, calc(var(--pitch) * .185)); }
+.axis:disabled { opacity: 1; }
+.axis > .icon { width: clamp(14px, calc(var(--axis) * .55), 23px); height: auto; aspect-ratio: 1; }
+.board:not(.selecting) .axis > .icon { visibility: hidden; }
+.board.selecting .axis:not(:disabled) { color: #6232a0; background: #eee4fa; }
+.board.selecting .axis:not(:disabled):is(:hover,:focus-visible) { background: #e2d0f6; }
 .cell { --press: .92; border-radius: max(2px, calc(var(--tile) * .09)); font-size: max(5px, calc(var(--tile) * .375)); }
 .cell .icon { width: min(80%, calc(var(--tile) * .375)); height: min(80%, calc(var(--tile) * .375)); }
 .cell.covered { background: #c6d0e4; border: 1px solid #98a7c1; box-shadow: inset 0 -3px #aab8d2; }
@@ -458,20 +480,30 @@ input, select { background: #fcfcfe; }
 #gameViewport > .proof-pane {
   position: fixed;
   z-index: 6;
-  inset: max(var(--proof-top, 12px), env(safe-area-inset-top)) auto auto max(var(--proof-left, 12px), env(safe-area-inset-left));
-  display: flex;
-  flex-direction: column;
+  --proof-inset-top: max(var(--proof-top, 12px), env(safe-area-inset-top));
+  --proof-body-room: 24px;
+  --proof-heading-min: 30px;
+  --proof-space-below-top: calc(100dvh - var(--proof-inset-top));
+  --proof-inset-bottom: max(env(safe-area-inset-bottom),
+    clamp(4px, calc(var(--proof-space-below-top) - var(--proof-heading-min) - var(--proof-body-room)), 12px));
+  --proof-height: min(var(--proof-room, 100dvh), calc(var(--proof-space-below-top) - var(--proof-inset-bottom)));
+  --proof-heading-height: clamp(var(--proof-heading-min), calc(var(--proof-height) - var(--proof-body-room)), 55px);
+  inset: var(--proof-inset-top) auto auto max(var(--proof-left, 12px), env(safe-area-inset-left));
   width: min(560px, calc(100% - max(var(--proof-left, 12px), env(safe-area-inset-left)) - max(var(--proof-right, var(--proof-edge, 12px)), env(safe-area-inset-right))));
-  max-height: min(max(110px, 55dvh), var(--proof-room, 55dvh));
+  max-height: var(--proof-height);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--paper);
   box-shadow: 0 8px 28px #182c4633;
-  overflow: hidden;
 }
-#gameViewport > .proof-pane .panel-head { flex: none; }
-#gameViewport > .proof-pane .proof { min-height: 0; max-height: none; }
 #gameViewport > .proof-pane.proof-close-left .panel-head { flex-direction: row-reverse; }
+#gameViewport > .proof-pane .panel-head { min-height: var(--proof-heading-height); padding-block: 0; }
+#gameViewport > .proof-pane #closeProof {
+  min-height: clamp(28px, calc(var(--proof-heading-height) - 12px), 37px);
+  position: relative;
+}
+#gameViewport > .proof-pane.proof-close-compact #closeProof { width: 28px; min-height: 28px; }
+
 .radial {
   position: fixed;
   z-index: 7;
@@ -518,15 +550,12 @@ input, select { background: #fcfcfe; }
 /* Concrete formula element hover: blue border plus the requested green line
    shadow. This rule wins over answer/deduction colors while the pointer is on
    a formula element. */
-#totalMines.proof-hover {
-  z-index: 3;
-  outline: 3px solid #2466cf !important;
-  outline-offset: -3px;
-  border-color: #2466cf !important;
+#totalMines.proof-hover { color: #153e79; }
+#totalMines.proof-hover::before {
+  border: 3px solid #2466cf;
   background:
     repeating-linear-gradient(135deg, #16897142 0 2px, transparent 2px 7px),
-    #cfe3ff !important;
-  color: #153e79;
+    #cfe3ff;
   box-shadow: inset 0 0 0 1px #ffffffbd, 0 0 0 3px #2466cf38;
 }
 .board-proof :is(.positive,.selection-positive) { fill: #a975e9; fill-opacity: .38; }
@@ -613,7 +642,7 @@ input, select { background: #fcfcfe; }
 [data-fullscreen-mode] #reasonFlower.expanded.over-header,
 [data-fullscreen-mode] .tool-dock:has(#reasonMenu.is-open.over-header) { z-index: 11; }
 
-@media (max-width: 360px) and (max-height: 240px), (max-width: 520px) and (max-height: 180px) {
+@media (max-width: 260px), (max-width: 360px) and (max-height: 240px), (max-width: 520px) and (max-height: 180px) {
   #reasonFlower .petal { --diameter: 44px; padding: 0; font-size: 10px; }
   /* Leave a continuous area to the right for the hint arc. */
   [data-fullscreen-mode] .tool-dock { left: max(8px, var(--safe-left)); right: auto; flex-direction: column; }
@@ -622,7 +651,7 @@ input, select { background: #fcfcfe; }
   [data-fullscreen-mode] #gameViewport > .proof-pane.proof-close-left .panel-head { flex-direction: row; padding-inline-end: 0; }
 }
 
-@media (max-width: 520px) and (max-height: 300px) {
+@media (max-width: 260px), (max-width: 520px) and (max-height: 300px) {
   [data-fullscreen-mode] header h1 { display: none; }
   [data-fullscreen-mode] .header-tools { --header-button-width: clamp(28px, calc((100dvw - 46px) / 5), 34px); gap: 4px; }
   [data-fullscreen-mode] .header-tools .icon-button { width: var(--header-button-width); }
@@ -630,8 +659,8 @@ input, select { background: #fcfcfe; }
   [data-fullscreen-mode] .header-tools .mode-switch .icon { display: block; }
 }
 
-@media (max-width: 260px) and (max-height: 180px) {
-  /* Reclaim space around the 44 px hint petals and keep the same arc. */
+@media (max-width: 260px) {
+  /* Keep the controls compact at this width as the window grows taller. */
   [data-fullscreen-mode] header { min-height: 0; padding-block: max(2px, var(--safe-top)) 3px; }
   [data-fullscreen-mode] .header-tools :is(.icon-button, .mode-switch button) { min-height: 28px; }
   [data-fullscreen-mode] .tool-dock .launcher { --diameter: 36px; }

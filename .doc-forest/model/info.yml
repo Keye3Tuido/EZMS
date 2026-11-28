@@ -1,0 +1,10 @@
+schema_version: '1.0'
+purpose: 管理游戏、草稿和标记的领域状态
+contents_summary: 局面与标记规则可在 Node.js 测试。应用注入引擎、种子编码和历史工厂，并根据操作结果安排后台任务和渲染。
+files:
+- name: editor-model.js
+  purpose: 保管草稿及暂存游戏局面，应用尺寸、格子和总雷数变更
+- name: game-model.js
+  purpose: 创建及复制局面，准备回合提交，更新布雷、开格和旗标状态
+- name: mark-model.js
+  purpose: 记录红蓝标记及确认批次，复核草稿标记并维护撤销重做

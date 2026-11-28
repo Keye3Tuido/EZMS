@@ -6,7 +6,12 @@ function makeProofFormat() {
   }
   const coordinate = (v,w) => `${column(v%w)}${Math.floor(v/w)+1}`;
 
-  function label(cells,w,h,visible) {
+  function rectangleLabel([left,top,right,bottom],w) {
+    const first=coordinate(top*w+left,w), last=coordinate((bottom-1)*w+right-1,w);
+    return first===last?first:`${first}:${last}`;
+  }
+
+  function label(cells,w,h,visible,{namedRegions=true}={}) {
     const vs = [...cells].sort((a,b) => a-b);
     if (vs.length <= 1) return vs.length ? coordinate(vs[0],w) : '';
     let left=w,right=0;
@@ -17,10 +22,12 @@ function makeProofFormat() {
       const v=r*w+c;
       if (!targets.has(v) && !(visible?.[v]>=0)) return vs.map(v => coordinate(v,w)).join('');
     }
-    if (left === 0 && right === w-1 && top === 0 && bottom === h-1) return '全盘';
-    if (left === 0 && right === w-1 && top === bottom) return `第${top+1}行`;
-    if (top === 0 && bottom === h-1 && left === right) return `${column(left)}列`;
-    return `${coordinate(top*w+left,w)}:${coordinate(bottom*w+right,w)}`;
+    if(namedRegions) {
+      if (left === 0 && right === w-1 && top === 0 && bottom === h-1) return '全盘';
+      if (left === 0 && right === w-1 && top === bottom) return `第${top+1}行`;
+      if (top === 0 && bottom === h-1 && left === right) return `${column(left)}列`;
+    }
+    return rectangleLabel([left,top,right+1,bottom+1],w);
   }
 
   function regions(cells,w,h,visible) {
@@ -190,7 +197,7 @@ function makeProofFormat() {
     return [...needed].sort((a,b)=>a-b);
   }
 
-  return {column,coordinate,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,fixedCells,isolateConclusion,rounding,simplifyInequality,lineIdentity,usedLines};
+  return {column,coordinate,rectangleLabel,label,regions,terms,relation,comparison,conclusionGroups,referenceTerms,summands,cancellation,fixedCells,isolateConclusion,rounding,simplifyInequality,lineIdentity,usedLines};
 }
 
 if (typeof module !== 'undefined') module.exports = makeProofFormat();

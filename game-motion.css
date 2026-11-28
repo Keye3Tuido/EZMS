@@ -36,6 +36,12 @@ input, select { transition: border-color var(--control-time) ease, background-co
   transform: translate(-50%,-50%) translate(var(--x,0px),var(--y,0px)) scale(1);
 }
 .radial.expanded .orb:disabled { opacity: .52; }
+/* Interactive targets must stay at the positions used to clear the floating close button. */
+#gameViewport:has(> .proof-pane.is-open) > #reasonFlower { transition: none; }
+#gameViewport:has(> .proof-pane.is-open) > #reasonFlower .petal,
+#gameViewport:has(> .proof-pane.is-open) #toolDock #reasonMenu {
+  transition-property: opacity, background-color, border-color, color;
+}
 .radial-track { opacity: 0; scale: .68; transition: scale var(--fan-time) var(--glide), opacity 210ms ease; }
 .radial.expanded .radial-track { opacity: .8; scale: 1; }
 
@@ -58,6 +64,7 @@ input, select { transition: border-color var(--control-time) ease, background-co
   visibility: hidden;
   pointer-events: none;
 }
+#gameViewport > .proof-pane { translate: none; transition-property: opacity, visibility; }
 [data-collapse-reason] .icon, #openReasonPanel .icon, #difficultyToggle .icon {
   transition: rotate var(--panel-time) var(--glide);
 }

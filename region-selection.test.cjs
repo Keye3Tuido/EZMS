@@ -72,6 +72,64 @@ test('项数相同时线索邻域优先于矩形，正系数项统一排在前�
     {clue:0,coefficient:-1,cells:[1,5,6]}]);
 });
 
+test('全盘可以用一个矩形表示时，优先合并为一项',()=>{
+  const engine=require('./engine'), format=require('./proof-format');
+  const {visible,board:{w,h,ns}}=require('./position-seed')(engine.adj).decode("C('JKn6a1FFf31{");
+  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
+  const weights=new Map(visible.flatMap((value,cell)=>value<0?[[cell,1]]:[]));
+  const geometric=region=>selection.regionTerms(region,w,known,cells=>format.regions(cells,w,h,visible));
+  const {terms}=selection.readout(weights,new Map(),visible,ns,known,geometric);
+  assert.deepEqual(terms,[{coefficient:1,cells:[...weights.keys()]}]);
+});
+
+test('明确选择的矩形保留已知边界，撤销和重做一起恢复',()=>{
+  const w=4,h=3, ns=require('./engine').adj(w,h), format=require('./proof-format');
+  const visible=[1,-1,-1,1,1,-1,-1,-1,0,-1,-1,-1];
+  const known=selection.knownCells({visible,flags:[],proven:[],manual:[],red:[]});
+  const history=selection.history();
+  const rectangle=[0,0,4,1];
+  history.select([1,2],undefined,1,rectangle);
+  const read=()=>selection.readout(history.weights,history.clueWeights,visible,ns,known,
+    region=>selection.regionTerms(region,w,known,cells=>format.regions(cells,w,h,visible)),w,history.rectangleWeights);
+  assert.deepEqual(read().terms,[{coefficient:1,cells:[1,2],rectangle}]);
+  assert.equal(history.undo(),true);
+  assert.deepEqual(read().terms,[]);
+  assert.equal(history.redo(),true);
+  assert.deepEqual(read().terms,[{coefficient:1,cells:[1,2],rectangle}]);
+  assert.equal(format.rectangleLabel(rectangle,w),'A1:D1');
+});
+
+test('两倍线索邻域减去一个矩形，比逐个拆分正负区域更短',()=>{
+  const {regions}=require('./proof-format');
+  for(const [w,h,left,top] of [[5,5,0,0],[24,20,0,0],[24,20,10,8]]) {
+    const ns=require('./engine').adj(w,h);
+    const visible=Array(w*h).fill(-1);
+    const clue=(top+2)*w+left+2;
+    visible[clue]=2;
+    const known=new Map([[clue,0]]);
+    const clueCells=selection.unknown(ns[clue],known);
+    const rectangleCells=Array.from({length:16},(_,i)=>(top+Math.floor(i/4))*w+left+i%4)
+      .filter(cell=>cell!==clue);
+    const weights=new Map(rectangleCells.map(cell=>[cell,clueCells.includes(cell)?1:-1]));
+    const {terms}=selection.readout(weights,new Map(),visible,ns,known,
+      region=>selection.regionTerms(region,w,known,cells=>regions(cells,w,h,visible)),w);
+    assert.deepEqual(terms,[{clue,coefficient:2,cells:clueCells},{coefficient:-1,cells:rectangleCells}]);
+  }
+});
+
+test('外扩超过预算时仍检查实际选区内的两项表达',()=>{
+  const w=24,h=20, ns=require('./engine').adj(w,h), {regions}=require('./proof-format');
+  const visible=Array(w*h).fill(-1), clue=8*w+9;
+  visible[clue]=2;
+  const known=new Map([[clue,0]]), clueCells=selection.unknown(ns[clue],known);
+  const rectangle=Array.from({length:12},(_,i)=>(4+Math.floor(i/2))*w+8+i%2).filter(cell=>cell!==clue);
+  const weights=new Map(clueCells.map(cell=>[cell,1]));
+  for(const cell of rectangle) weights.set(cell,(weights.get(cell)??0)-2);
+  const {terms}=selection.readout(weights,new Map(),visible,ns,known,
+    region=>selection.regionTerms(region,w,known,cells=>regions(cells,w,h,visible)),w);
+  assert.deepEqual(terms,[{clue,coefficient:1,cells:clueCells},{coefficient:-2,cells:rectangle}]);
+});
+
 test('两个重叠矩形可以更简洁地表示不同系数的选区',()=>{
   const {regions}=require('./proof-format');
   const weights=new Map([[0,2],[1,1],[5,1]]);

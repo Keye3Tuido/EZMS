@@ -2,71 +2,37 @@
   'use strict';
   const engine = makeMinesEngine();
   const format = makeProofFormat();
-  const regionSelection=makeRegionSelection(engine.adj);
+  const regionSelection=makeRegionSelection(engine.adj,makeSelectionExpression());
   const seeds = makePositionSeeds(engine.adj);
   const $ = id => document.getElementById(id);
   const selectionReadout=$('selectionReadout');
   const viewport = $('gameViewport');
   const fullscreen = makeGameFullscreen(viewport, $('fullscreenToggle'), $('fullscreenStatus'));
   const feedback = makeGameFeedback($('soundToggle'),$('motionToggle'));
-  const proofDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  proofDrawing.classList.add('board-proof');
-  proofDrawing.setAttribute('aria-hidden','true');
-  const proofPattern=document.createElementNS(proofDrawing.namespaceURI,'defs');
-  const hatch=document.createElementNS(proofDrawing.namespaceURI,'pattern');
-  for(const [name,value] of Object.entries({id:'proof-hatch',patternUnits:'userSpaceOnUse',width:6,height:6,patternTransform:'rotate(45)'})) hatch.setAttribute(name,value);
-  const hatchLine=document.createElementNS(proofDrawing.namespaceURI,'rect');
-  hatchLine.setAttribute('width','2'); hatchLine.setAttribute('height','6');
-  hatch.append(hatchLine); proofPattern.append(hatch);
-  const inkDrawing=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  inkDrawing.classList.add('board-ink');
-  inkDrawing.setAttribute('aria-hidden','true');
-  let paintedInk='';
   const fields = ['width', 'height', 'minAverage', 'minMultiPercent', 'minPeakClues'];
-  let game, auto = false, run = 0, buttons = [];
-  let editing=false, parkedGame, draft, editTool='mine';
+  let game, auto = false, run = 0;
+  let editing=false, editTool='mine';
   let digit=1, draftMinesValid=true;
   let verificationWorker, verificationTimer;
   let draftMarkJob, draftMarkJudgment;
-  const proofKinds=['cancelled','positive','negative','element','selection-positive','selection-negative'];
   const proofTargets=new WeakMap(), proofRows=new WeakMap();
   const {chip,steps,regionChips,proofPreview}=makeProofRenderer({
     element,format,equivalentGroups:engine.equivalentGroups,proofTargets,proofRows,
     scrollToTotal:()=>$('totalMines')?.scrollIntoView({block:'nearest'}),
-    focusBoardCell:target=>focusBoardCell(game,buttons,target)
+    focusBoardCell:target=>focusBoardCell(game,boardView.buttons,target)
   });
+  const reasonView=makeReasonView({$,element,format,chip,steps,regionChips});
   let hoveredProof, focusedProof, pinnedProof;
-  let activeProofRow;
+  let activeProofRow, shownProofClues, proofHighlight=null;
   let activeAreaPreview = null;
   let selectionHistory=regionSelection.history();
-  const selectionTargets=new WeakMap();
+  const selectionView=makeSelectionView({$,element,proofPreview});
   let hoveredSelection, focusedSelection, selectionReadoutKey;
   let selectionCountWorker, selectionCountKey, selectionCountTimer;
   let selectionExpressionWorker, selectionExpressionJob;
   const selectionCountCache=new Map();
   let activeSelectionClues=[];
   let selectionMode='';
-
-  function updateOperationCard() {
-    $('operationCard').hidden=$('operationText').hidden && $('operationRound').hidden;
-  }
-
-  function say(text,tone='') {
-    const status=$('operationText');
-    status.textContent=text;
-    status.dataset.tone=tone;
-    status.hidden=!text;
-    updateOperationCard();
-  }
-
-  function saySearch(text,tone='',shortfall='') {
-    const status=$('status'), summary=$('candidateShortfall');
-    $('searchCard').hidden=!text;
-    status.textContent=text;
-    status.dataset.tone=tone;
-    if(summary.textContent!==shortfall) summary.textContent=shortfall;
-    summary.hidden=!shortfall;
-  }
 
   function dismissSearchResult() {
     if(generation.searching) return;
@@ -76,6 +42,13 @@
     if(!$('searchCard').hidden) saySearch('');
   }
   const icon = id => `<svg class="icon" aria-hidden="true"><use href="#${id}"/></svg>`;
+  const controlsView=makeControlsView({$,fields,icon});
+  const {updateOperationCard,say,saySearch}=controlsView;
+  const gameModel=makeGameModel({engine,seeds,makeMarkHistory,makeSelectionHistory:regionSelection.history});
+  const editorModel=makeEditorModel({engine,seeds,gameModel});
+  const {positionGame,copyPosition,removeFlag}=gameModel;
+  const boardOverlays=makeBoardOverlays({$,contour:regionSelection.contour,inkTrails,inkPath});
+  const boardView=makeBoardView({$,format,icon,element,feedback,overlays:boardOverlays,inkGlyph,selectBoardRectangle});
   const coord = i => format.coordinate(i,game.board.w);
 
   function batchControls() {
@@ -83,7 +56,7 @@
     const locked = auto || gameRequests.busy;
     const commit=$('commitMarks');
     const canCommit=live && complete;
-    if(!canCommit && document.activeElement===commit) buttons[game?.focus]?.focus({preventScroll:true});
+    if(!canCommit && document.activeElement===commit) boardView.buttons[game?.focus]?.focus({preventScroll:true});
     commit.hidden=!canCommit;
     commit.disabled=locked || !canCommit;
     const progress=$('roundProgress');
@@ -114,44 +87,9 @@
   }
 
   function controls() {
-    const live = game?.state === 'playing', locked = generation.searching || auto || gameRequests.busy;
-    for (const id of fields) $(id).disabled = generation.searching;
-    $('generate').disabled = generation.searching || gameRequests.busy && !auto;
-    const cancel=$('cancel'), canCancel=generation.searching;
-    cancel.classList.toggle('is-inactive',!canCancel);
-    cancel.setAttribute('aria-hidden',String(!canCancel));
-    cancel.disabled=!canCancel;
-    const useCandidate=$('useCandidate');
-    useCandidate.disabled=!generation.candidate;
-    useCandidate.textContent=canCancel?'停止并采用候选':'采用候选';
-    for (const id of ['gameMode','editMode','importPosition']) $(id).disabled = locked;
-    $('exportPosition').disabled = locked || !game;
-    $('playPosition').disabled = locked || !game || game.board.mines===game.visible.length || !!(game.numbers && !game.witness);
-    $('draftMines').disabled=locked;
-    $('exportPosition').disabled ||= editing && !draftMinesValid;
-    $('expandPosition').disabled=locked;
-    batchControls();
-    for (const control of $('editorSettings').elements) control.disabled = locked;
-    $('copyGamePosition').disabled = locked || !parkedGame;
-    for (const button of $('editTools').querySelectorAll('button'))
-      button.disabled = locked && !(editing && button.matches('[data-draft], [data-edit]'));
-    $('reasonMenu').classList.toggle('is-inactive',editing);
-    $('restart').hidden = editing;
-    $('gameTime').hidden = editing;
-    $('board').setAttribute('aria-busy',String(gameRequests.busy));
-    $('answers').disabled=locked || !live;
-    for(const id of ['focus','hint']) $(id).disabled=generation.searching || auto || !live || gameRequests.busy && !proofRequest;
-    $('reasonMenu').disabled = editing || !game || generation.searching;
-    $('selectionMenu').disabled = editing || !game || locked;
-    selectionHistoryControls();
-    $('markMenu').disabled = !game || generation.searching || gameRequests.busy || auto || !editing && !live;
-    $('restart').disabled = generation.searching || gameRequests.busy && !auto || !game;
-    updateSolveControl(live);
-    $('reasonMenu').innerHTML=icon('hintIcon');
-    $('reasonMenu').title='推理工具';
-    $('reasonMenu').setAttribute('aria-label','推理工具');
-    $('answers').setAttribute('aria-pressed',String(!!game?.answers));
-    $('answers').querySelector('span').textContent = game?.answers ? '隐藏答案' : '展示答案';
+    controlsView.controls({game,editing,auto,busy:gameRequests.busy,searching:generation.searching,
+      candidate:generation.candidate,hasParkedGame:!!editorModel.parkedGame,draftMinesValid,proofPending:!!proofRequest},
+    {batchControls,updateSelectionAxes,selectionHistoryControls,updateSolveControl});
   }
 
   function showDifficultyDefaults() {
@@ -261,21 +199,6 @@
     saySearch(message,'success',shortfall);
   }
 
-  const noteColors=['red','blue','archivedBlue'];
-
-  function positionGame({board,visible=engine.opening(board),flags=[],notes=[],numbers=false},p={}) {
-    const opened=visible.filter(n=>n>=0).length;
-    const history=makeMarkHistory();
-    for (const [i,color] of noteColors.entries()) {
-      for(const [cell,mark] of notes[i]??[]) history.layers[color].set(cell,
-        color==='red' && mark.symbol==='s'?{...mark,symbol:'/'}:mark);
-    }
-    return {board,original:board,originalVisible:visible,originalFlags:[...flags],p:{...p,w:board.w,h:board.h,mines:board.mines},
-      numbers,visible,flags:new Set(flags),notes:history,proven:new Set(),opened,
-      state:opened===visible.length-board.mines?'won':'playing',started:null,ended:null,highlight:null,focus:board.first,
-      judgment:null,answers:false,selection:regionSelection.history()};
-  }
-
   function mount(position) {
     stopAuto();
     dismissSearchResult();
@@ -288,43 +211,10 @@
     input.reset(editing); showReason(false);
     clearHint();
     scheduleVerification();
-    const root = $('board');
-    root.parentElement.hidden = !game;
-    root.hidden = !game;
-    if(!game) {
-      $('size').textContent='—'; $('remaining').textContent='—'; time();
-      root.replaceChildren(); buttons=[]; controls(); return;
-    }
-    const {board}=game;
-    boardSize();
-    root.style.setProperty('--cols',board.w);
-    root.style.setProperty('--rows',board.h);
-    buttons = Array.from({length:board.w*board.h}, (_,i) => {
-      const b = document.createElement('button'); b.type = 'button'; b.dataset.cell = i;
-      return b;
-    });
-    function axis(text) {
-      const label = document.createElement('span'); label.className = 'axis';
-      label.setAttribute('aria-hidden','true'); label.textContent = text;
-      return label;
-    }
-    const grid=document.createDocumentFragment();
-    grid.append(axis(''));
-    for(let x=0;x<board.w;x++) grid.append(axis(format.column(x)));
-    for(let y=0;y<board.h;y++) {
-      grid.append(axis(y+1));
-      for(let x=0;x<board.w;x++) grid.append(buttons[y*board.w+x]);
-    }
-    root.replaceChildren(grid,proofDrawing,inkDrawing);
+    boardView.mount(game);
+    if(!game) {controls();return;}
     render(); controls();
-    feedback.visual('board',root);
-  }
-
-  function boardSize() {
-    const {board}=game;
-    $('size').textContent = `${board.w} × ${board.h} · `;
-    const total = document.createElement('span'); total.id = 'totalMines'; total.textContent = `${board.mines} 雷`;
-    $('size').append(total);
+    feedback.visual('board',$('board'));
   }
 
   function verificationSummary({status,steps,averageClues,clues,advancedDensity}) {
@@ -332,210 +222,18 @@
       {averageClues,peakClues:clues,multiClueRatio:advancedDensity}:{})};
   }
 
-  function showVerification() {
-    const current=game?.current;
-    const verification=game?.verification;
-    const wholeGame=editing?verification:game?.openingVerification;
-    const count=n=>n==null?'—':`${current.partial?'≥ ':''}${n}`;
-    const texts={deducible:current?.clues?'有确定结论':'有确定结论，尚无可展示的最少线索推导',blocked:'无可解格',
-      invalid:'数字与总雷数互相矛盾',budget:'尚未完成验证',finished:'所有安全格已开',error:'验证未完成',
-      confirmed:'本轮已标齐，可以开格并插旗',
-      'invalid-total':'请输入有效的总雷数','no-safe-cell':'局面至少需要一个安全格'};
-    $('currentStatus').textContent=game?(current?texts[current.status]:'正在验证当前线索…'):'暂无棋局';
-    $('reasonStatus').dataset.state=current?.status??'';
-    $('currentSafe').textContent=count(current?.safe);
-    $('currentMines').textContent=count(current?.mines);
-    const selectedClues=game?.selectedClues;
-    $('currentClueLabel').textContent=selectedClues===undefined?'本步最少线索':'所示步骤最少线索';
-    $('currentClues').textContent=selectedClues??current?.clues??'—';
-    $('averageClues').textContent=verification?.averageClues?.toFixed(2)??'—';
-    $('peakClues').textContent=wholeGame?.peakClues??'—';
-    const ratio=wholeGame?.multiClueRatio;
-    $('multiClueRatio').textContent=ratio==null?'—':`${Number((ratio*100).toFixed(2))}%`;
-    $('expandPosition').hidden=current?.status!=='blocked' || !!(game.numbers && !game.witness);
-    const check=$('verificationStatus');
-    const showCheck=game && !['finished','invalid','invalid-total','no-safe-cell'].includes(current?.status);
-    check.textContent=!showCheck?'':verification?.status==='passed' ? (game.numbers?'可行雷图的无猜验证通过':'无猜验证通过') :
-      verification?.status==='stuck' ? '技巧推导卡住，未证实无猜可解' :
-      verification ? '未能证实无猜可解' : '正在验证无猜通关…';
-  }
+  function showVerification() {reasonView.showVerification(game,editing,shownProofClues);}
 
-  function time() {
-    $('time').textContent = game?.started == null ? '0' : String(Math.floor(((game.ended ?? Date.now()) - game.started)/1000));
-  }
+  function time() {boardView.time(game);}
 
-  function confirmedInk(g,i) {
-    const kind=g.manual?.marked.get(i);
-    return kind?{symbol:kind==='mine'?'x':'/',level:0}:editing?g.notes.layers.red.get(i):undefined;
-  }
-
-  function paintInk() {
-    if(!game || !buttons.length) return;
-    const {w}=game.board, root=$('board'), style=getComputedStyle(root);
-    const [axis,tile]=style.gridTemplateColumns.split(' ',2).map(parseFloat);
-    const [axisY,height]=style.gridTemplateRows.split(' ',2).map(parseFloat);
-    const dx=tile+parseFloat(style.columnGap),dy=height+parseFloat(style.rowGap);
-    const left=axis+dx-tile/2, top=axisY+dy-height/2;
-    if(!Number.isFinite(left+top)) return;
-    const redCells=editing?game.notes.layers.red.keys():game.manual?.marked.keys()??[];
-    const covered=([i])=>game.visible[i]<0;
-    const visibleRed=new Map([...redCells].map(i=>[i,confirmedInk(game,i)]).filter(covered));
-    const layers=[['red',visibleRed],['blue',[...game.notes.layers.blue].filter(covered)]];
-    const width=parseFloat(style.width), boardHeight=parseFloat(style.height);
-    const key=JSON.stringify([w,width,boardHeight,tile,height,dx,dy,left,top,...layers.map(([,ink])=>[...ink])]);
-    if(key===paintedInk) return;
-    paintedInk=key;
-    const center=i=>[left+i%w*dx,top+Math.floor(i/w)*dy];
-    const paths=document.createDocumentFragment();
-    const draw=(color,d,weight)=>{
-      const path=document.createElementNS(inkDrawing.namespaceURI,'path');
-      path.setAttribute('class',color);
-      path.setAttribute('d',d);
-      path.setAttribute('stroke-width',weight);
-      paths.append(path);
-    };
-    const weight=Math.max(1.2,tile*.054);
-    for(const [color,ink] of layers) {
-      const lines=new Map();
-      for(const [i,{symbol,level}] of ink) {
-        if(symbol==='x') {
-          const [x,y]=center(i), r=tile*(color==='blue'?.29:.36);
-          draw(color,`M${x-r},${y-r}L${x+r},${y+r}M${x-r},${y+r}L${x+r},${y-r}`,weight);
-        } else if(symbol==='/' || symbol==='//') {
-          const group=symbol==='/'?0:level;
-          if(!lines.has(group)) lines.set(group,[]);
-          lines.get(group).push(i);
-        }
-      }
-      for(const [rank,cells] of lines) for(const {cells:trail,closed} of inkTrails(cells,w)) {
-        const points=trail.map(center);
-        const overlaps=color==='blue' && !rank && trail.some(i=>visibleRed.get(i)?.symbol==='/');
-        for(const shift of rank?[-tile*.09,tile*.09]:[overlaps?tile*.13:0]) {
-          draw(color,inkPath(points,tile,shift,closed),weight*(rank?.78:1));
-        }
-      }
-    }
-    inkDrawing.setAttribute('viewBox',`0 0 ${width} ${boardHeight}`);
-    inkDrawing.replaceChildren(paths);
-  }
-  function proofGeometry() {
-    const root=$('board'), style=getComputedStyle(root);
-    const columns=style.gridTemplateColumns.split(' ',2).map(parseFloat);
-    const rows=style.gridTemplateRows.split(' ',2).map(parseFloat);
-    if(columns.length<2 || rows.length<2) return null;
-    const tile=columns[1], height=rows[1];
-    const dx=tile+parseFloat(style.columnGap), dy=height+parseFloat(style.rowGap);
-    const left=columns[0]+dx-tile/2, top=rows[0]+dy-height/2;
-    const width=parseFloat(style.width), boardHeight=parseFloat(style.height);
-    return Number.isFinite(left+top+dx+dy) ? {width,boardHeight,tile,height,dx,dy,left,top} : null;
-  }
-
-  function coefficientDepth(weight=1) {
-    const magnitude=Math.abs(weight);
-    return magnitude>1 ? .66*(magnitude-1)/(magnitude+1) : 0;
-  }
-
-  function paintProofAreas() {
-    if(!activeAreaPreview || !game || !buttons.length) { proofDrawing.replaceChildren(); return; }
-    const geo=proofGeometry();
-    if(!geo) return;
-    const {w,h}=game.board, {width,boardHeight,tile,height,dx,dy,left,top}=geo;
-    const step=Math.min(tile,height);
-    const grid={x:left-dx/2,y:top-dy/2,dx,dy,radius:Math.min(6,step*.16),inset:Math.min(1.75,step*.1)};
-    const paths=document.createDocumentFragment();
-    const {areas,weights}=activeAreaPreview;
-    const append=(kind,d,parent=paths)=>{
-      const path=document.createElementNS(proofDrawing.namespaceURI,'path');
-      path.setAttribute('class',kind);
-      path.setAttribute('d',d);
-      path.setAttribute('fill-rule','evenodd');
-      parent.append(path);
-      return path;
-    };
-    for(const [i,kind] of proofKinds.entries()) {
-      const cells=areas[i];
-      if(!cells?.size) continue;
-      const opposite={positive:2,negative:1,'selection-positive':5,'selection-negative':4}[kind];
-      const d=regionSelection.contour(cells,w,h,grid,areas[opposite]);
-      append(kind,d);
-      if(weights?.size && kind!=='cancelled') {
-        const shades=new Map();
-        for(const cell of cells) {
-          const magnitude=Math.abs(weights.get(cell)??1);
-          if(magnitude<=1) continue;
-          const x=grid.x+(cell%w)*dx, y=grid.y+Math.floor(cell/w)*dy;
-          const square=`M${x},${y}H${x+dx}V${y+dy}H${x}Z`;
-          shades.set(magnitude,(shades.get(magnitude)??'')+square);
-        }
-        if(shades.size) {
-          // Clip the shading to the shared contour so adjacent weights do not create extra borders.
-          const clip=document.createElementNS(proofDrawing.namespaceURI,'clipPath');
-          const shading=document.createElementNS(proofDrawing.namespaceURI,'g');
-          const clipId=`${kind}-clip`;
-          clip.setAttribute('id',clipId);
-          append('',d,clip).setAttribute('clip-rule','evenodd');
-          shading.setAttribute('clip-path',`url(#${clipId})`);
-          for(const [magnitude,squares] of shades) {
-            append(`${kind}-shade`,squares,shading).setAttribute('fill-opacity',coefficientDepth(magnitude));
-          }
-          paths.append(clip,shading);
-        }
-      }
-      if(kind==='element') append('element-hatch',d);
-      append(`${kind} boundary`,d);
-    }
-    proofDrawing.setAttribute('viewBox',`0 0 ${width} ${boardHeight}`);
-    proofDrawing.replaceChildren(proofPattern,paths);
-  }
-
-  new ResizeObserver(()=>{paintInk();paintProofAreas();}).observe($('board'));
+  new ResizeObserver(()=>{
+    boardOverlays.paintInk(game,editing);
+    boardOverlays.paintProofAreas(game,activeAreaPreview);
+  }).observe($('board'));
 
   function render() {
-    const {board,visible,flags,highlight,state,focus} = game;
-    const first=new Set(board.opening), proofClues=new Set(highlight?.sources);
-    const proofSafe=new Set(highlight?.safe), proofMines=new Set(highlight?.mines);
-    let revealed=0;
     batchControls();
-    for (const [i,b] of buttons.entries()) {
-      const n = visible[i], mine=editing && !game.numbers && board.bombs[i];
-      const marked = flags.has(i) || (!editing && state === 'won' && n < 0);
-      const label = mine ? (marked?'雷，有旗':'雷') : n >= 0 ? (n || '空白') : marked ? '旗' : '未开';
-      const marks = ['cell', n >= 0 ? 'open' : 'covered'];
-      if (first.has(i)) marks.push('first');
-      if (n > 0) marks.push(`n${n}`);
-      if (marked) marks.push('flagged');
-      if (mine) marks.push('edit-mine');
-      if (proofClues.has(i) || activeSelectionClues.includes(i)) marks.push('clue');
-      const answer=game.answers && game.judgment?.state[i];
-      if (proofSafe.has(i) || answer==='safe') marks.push('target-safe');
-      if (proofMines.has(i) || answer==='mine') marks.push('target-mine');
-      let body = mine ? icon('mine')+(marked?`<span class="edit-flag">${icon('flag')}</span>`:'') : marked ? icon('flag') : n > 0 || n===0 && editing && game.numbers ? `<span class="cell-number">${n}</span>` : '';
-      const confirmed=game.manual?.marked.get(i);
-      const depth=coefficientDepth(highlight?.weights?.get(i));
-      if(depth) b.style.setProperty('--hint-depth',`${depth*100}%`);
-      else if(b.style.getPropertyValue('--hint-depth')) b.style.removeProperty('--hint-depth');
-      const red=n<0?confirmedInk(game,i):undefined;
-      const blue=n<0?game.notes.layers.blue.get(i):undefined;
-      const archived=n<0?game.notes.layers.archivedBlue.get(i):undefined;
-      if(blue) {
-        if(blue.symbol!=='x') body+=inkGlyph(blue.symbol);
-        if(blue.level>2) body+=`<sub class="ink-rank">${blue.level}</sub>`;
-      }
-      if(archived) body+=`<svg class="archived-note" viewBox="0 0 12 12" aria-hidden="true">${archived.symbol==='o'?'<circle cx="6" cy="6" r="4"/>':'<path d="M2 10L10 2"/>'}</svg>`;
-      if (b.classList.contains('proof-preview')) marks.push('proof-preview');
-      const opening=b.classList.contains('covered') && n>=0;
-      const flagPlaced=b.classList.contains('cell') && marked && !b.classList.contains('flagged');
-      if (b.className !== marks.join(' ')) b.className = marks.join(' ');
-      if (b.dataset.body !== body) { b.innerHTML = body; b.dataset.body = body; }
-      if(opening) feedback.tile('open',b,Math.min(revealed++*11,99));
-      if(flagPlaced && !mine) feedback.visual('flag',b.querySelector('.icon'),65);
-      b.tabIndex = i === focus ? 0 : -1;
-      b.setAttribute('aria-label',`${coord(i)} ${label}${first.has(i) ? '，开局给出' : ''}${confirmed==='mine'?'，已确认有雷':confirmed==='safe'?'，已确认安全':red?`，红色笔记：${red.symbol==='x'?'雷':'安全'}`:''}${blue?`，蓝色 ${blue.symbol}${blue.level>1?` ${blue.level} 层`:''}`:''}${archived?`，绿色持久标${archived.symbol==='o'?'雷':'安全'}`:''}`);
-    }
-    $('remaining').textContent = !editing && state === 'won' ? '0' : board.mines-flags.size;
-    $('totalMines').classList.toggle('clue-total', !!highlight?.sources.includes(-1));
-    paintInk();
-    time();
+    boardView.render(game,editing,proofHighlight,activeSelectionClues);
     if(selectionHistory.weights.size || selectionHistory.clueWeights.size) {
       updateSelectionReadout();
       updateProofPreview();
@@ -551,23 +249,23 @@
       activeProofRow=row;
     }
     const proof=proofTargets.get(target)??proofRows.get(target);
-    const selection=selectionTargets.get(hoveredSelection??focusedSelection);
+    const selection=selectionView.preview(hoveredSelection??focusedSelection);
     const clues=proof?[]:selection?.clues??[];
     if(clues!==activeSelectionClues) {
-      const hintClues=new Set(game?.highlight?.sources);
+      const hintClues=new Set(proofHighlight?.sources);
       for(const cell of activeSelectionClues) {
-        if(!hintClues.has(cell)) buttons[cell]?.classList.remove('clue');
+        if(!hintClues.has(cell)) boardView.buttons[cell]?.classList.remove('clue');
       }
-      for(const cell of clues) buttons[cell]?.classList.add('clue');
+      for(const cell of clues) boardView.buttons[cell]?.classList.add('clue');
       activeSelectionClues=clues;
     }
     const next=proof??selection?.preview??(selectionHistory.weights.size?selectionPreview():null);
     if(next===activeAreaPreview) return;
-    for(const v of activeAreaPreview?.cells??[]) buttons[v]?.classList.remove('proof-preview');
+    for(const v of activeAreaPreview?.cells??[]) boardView.buttons[v]?.classList.remove('proof-preview');
     activeAreaPreview=next;
-    for(const v of next?.cells??[]) buttons[v]?.classList.add('proof-preview');
+    for(const v of next?.cells??[]) boardView.buttons[v]?.classList.add('proof-preview');
     $('totalMines')?.classList.toggle('proof-hover',!!next?.total);
-    paintProofAreas();
+    boardOverlays.paintProofAreas(game,activeAreaPreview);
   }
 
   function clearProofHover() {
@@ -591,13 +289,9 @@
     return new Map([...selectionHistory.weights].filter(([cell])=>!known.has(cell)));
   }
 
-  function selectionTarget(target) {
-    const token=target?.closest?.('.selection-token');
-    return selectionReadout.contains(token)?token:undefined;
-  }
   function updateSelectionHover(event,target) {
     if(event.pointerType!=='mouse') return;
-    hoveredSelection=selectionTarget(target);
+    hoveredSelection=selectionView.tokenAt(target);
     updateProofPreview();
   }
 
@@ -677,23 +371,23 @@
       }
       try {
         const worker=job.worker=selectionExpressionWorker??=background(`
-          ${makeRegionSelection.toString()}
+          ${makeSelectionExpression.toString()}
           ${makeProofFormat.toString()}
           const engine=makeMinesEngine();
-          const selection=makeRegionSelection(engine.adj);
+          const selection=makeSelectionExpression();
           const format=makeProofFormat();
-          onmessage=({data:{w,h,visible,known,weights,clueWeights}})=>{
+          onmessage=({data:{w,h,visible,known,weights,clueWeights,rectangleWeights}})=>{
             const regionVisible=visible.map((value,cell)=>known.has(cell)?0:value);
             const partition=cells=>format.regions(cells,w,h,regionVisible);
             const {terms}=selection.readout(weights,clueWeights,visible,engine.adj(w,h),known,
-              rest=>selection.regionTerms(rest,w,known,partition));
-            postMessage(terms.map(term=>({...term,label:term.clue===undefined
-              ?format.label(term.cells,w,h,regionVisible):format.coordinate(term.clue,w)})));
+              rest=>selection.regionTerms(rest,w,known,partition),w,rectangleWeights);
+            postMessage(terms.map(term=>({...term,label:term.rectangle?format.rectangleLabel(term.rectangle,w)
+              :term.clue!==undefined?format.coordinate(term.clue,w):format.label(term.cells,w,h,regionVisible,{namedRegions:false})})));
           };`);
         worker.onmessage=({data:terms})=>{
           if(selectionExpressionJob!==job) return;
           selectionExpressionJob=undefined;
-          renderSelectionTerms(terms);
+          selectionView.render(terms);
         };
         worker.onerror=worker.onmessageerror=fail;
         worker.postMessage(data);
@@ -704,9 +398,9 @@
   function updateSelectionReadout() {
     const known=game && selectionHistory.weights.size?selectionKnown():null;
     const {w,h,mines,ns}=game?.board??{};
-    const visible=game?.visible, {clueWeights}=selectionHistory;
+    const visible=game?.visible, {clueWeights,rectangleWeights}=selectionHistory;
     const key=known?JSON.stringify([w,h,mines,visible,[...known],
-      [...selectionHistory.weights],[...clueWeights]]):null;
+      [...selectionHistory.weights],[...clueWeights],[...rectangleWeights]]):null;
     if(key===selectionReadoutKey) return;
     selectionReadoutKey=key;
     const weights=known?selectionUnknownWeights(known):null;
@@ -725,36 +419,25 @@
       selectionCountKey=undefined;
       cancelSelectionCount();
       $('selectionBounds').textContent=String(clue.total);
-      renderSelectionTerms([{...clue,label:format.coordinate(clue.clue,w)}]);
-      return;
-    }
-    updateSelectionCount(known,weights);
-    updateSelectionExpression({w,h,visible,known,weights,clueWeights});
-  }
-
-  function renderSelectionTerms(terms) {
-    const prefix=(coefficient,index)=>
-      `${index?(coefficient<0?' − ':' + '):(coefficient<0?'−':'')}${Math.abs(coefficient)>1?`${Math.abs(coefficient)}·`:''}`;
-    const items=terms.flatMap(({coefficient,cells,clue,label},index)=>{
-      const isClue=clue!==undefined;
-      const kind=coefficient<0?'selection-token negative':'selection-token';
-      const node=element('span',isClue?`${kind} clue-token`:kind,label);
-      node.tabIndex=0;
-      if(isClue) node.title=`${label} 的线索邻域`;
-      selectionTargets.set(node,{
-        clues:isClue?[clue]:undefined,
-        preview:proofPreview([[],[],[],cells],false,new Map(cells.map(cell=>[cell,coefficient])))
-      });
-      return [prefix(coefficient,index),node];
-    });
-    $('selectionTerms').replaceChildren(...items);
+      if(!rectangleWeights.size) {
+        selectionView.render([{...clue,label:format.coordinate(clue.clue,w)}]);
+        return;
+      }
+    } else updateSelectionCount(known,weights);
+    updateSelectionExpression({w,h,visible,known,weights,clueWeights,rectangleWeights});
   }
 
   function setSelectionMode(mode='') {
     selectionMode=mode;
     $('selectionAdd').ariaPressed=String(mode==='add');
     $('selectionSubtract').ariaPressed=String(mode==='subtract');
-    $('board').classList.toggle('selecting',!!mode);
+    updateSelectionAxes();
+  }
+
+  function updateSelectionAxes() {
+    const active=!!selectionMode && !editing && game?.state==='playing';
+    const disabled=!active || $('selectionMenu').disabled;
+    boardView.updateAxes(active,disabled);
   }
 
   function selectionHistoryControls() {
@@ -776,19 +459,36 @@
     refreshSelection();
   }
 
+  function applySelection(cells,{clue,focus,rectangle}={}) {
+    const unknown=regionSelection.unknown(cells,selectionKnown());
+    const sign=selectionMode==='add'?1:-1;
+    if(!selectionHistory.select(unknown,clue,sign,rectangle)) return;
+    if(focus!==undefined) {
+      boardView.buttons[game.focus].tabIndex=-1;
+      game.focus=focus;
+      boardView.buttons[focus].tabIndex=0;
+    }
+    refreshSelection();
+    feedback.sound('click');
+  }
+
   function selectBoardCell(i) {
     if(!selectionMode || !game || editing || game.state!=='playing') return false;
     if($('selectionMenu').disabled) return true;
     const clue=game.visible[i]>=0?i:undefined;
-    const cells=regionSelection.unknown(clue===undefined?[i]:game.board.ns[clue],selectionKnown());
-    const sign=selectionMode==='add'?1:-1;
-    if(!selectionHistory.select(cells,clue,sign)) return true;
-    buttons[game.focus].tabIndex=-1;
-    game.focus=i;
-    buttons[i].tabIndex=0;
-    refreshSelection();
-    feedback.sound('click');
+    applySelection(clue===undefined?[i]:game.board.ns[clue],{clue,focus:i});
     return true;
+  }
+
+  function selectBoardRectangle(left,top,right,bottom) {
+    if(!selectionMode || !ready() || $('selectionMenu').disabled) return;
+    const {w}=game.board;
+    const cells=[];
+    for(let y=top;y<bottom;y++) {
+      for(let x=left;x<right;x++) cells.push(y*w+x);
+    }
+    dismissSearchResult();
+    applySelection(cells,{rectangle:[left,top,right,bottom]});
   }
 
   const proofPanel=$('proof');
@@ -801,8 +501,10 @@
   const compactReason=matchMedia('(max-width: 760px), (pointer: coarse) and (max-width: 1000px)');
   let proofVisible=false, reasonCollapsed=false, proofReturn, proofMode, proofRequest;
   const {layoutRadial,positionProofWindow,syncProofLayout,observe:observeToolLayout}=makeGameToolLayout({
-    $,radialLayout:makeRadialLayout(),viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,openReasonPanel,
-    compactReason,isProofVisible:()=>proofVisible,isReasonCollapsed:()=>reasonCollapsed,isEditing:()=>editing
+    $,radialLayout:makeRadialLayout(),proofLayout:proofWindowLayout,
+    viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,openReasonPanel,
+    compactReason,isProofVisible:()=>proofVisible,isReasonCollapsed:()=>reasonCollapsed,isEditing:()=>editing,
+    collapseReasonTools:()=>showReason(false)
   });
   syncProofLayout();
   let touchProof=false;
@@ -858,9 +560,9 @@
   function clearHint(keepProof=false) {
     if(!keepProof) cancelProofRequest();
     if(game) {
-      game.highlight = null;
-      if(game.selectedClues!==undefined) {
-        game.selectedClues=undefined;
+      proofHighlight = null;
+      if(shownProofClues!==undefined) {
+        shownProofClues=undefined;
         showVerification();
       }
     }
@@ -897,17 +599,10 @@
   }
 
   function finish() {
-    game.state = 'won'; game.ended = Date.now();
+    gameModel.markWon(game,Date.now());
     stopAuto();
     say('通关 · 所有安全格已打开','success');
     feedback.sound('won');
-  }
-
-  function removeFlag(g,i) {
-    g.flags.delete(i);
-    g.verification=undefined;
-    g.notes.discardRedo();
-    g.manual?.refreshTargets();
   }
 
   async function recordManual(g,cells,kind,from) {
@@ -924,12 +619,12 @@
     const wasDone=batch.done;
     const result=batch.record(cells,kind,from);
     if(result.wrong!==undefined) {
-      feedback.tile('rejected',buttons[result.wrong]);
+      feedback.tile('rejected',boardView.buttons[result.wrong]);
       feedback.sound('rejected');
       const cell=coord(result.wrong);
       say(kind==='mine'?`无法插旗：${cell} 可能安全。`:`无法开格：${cell} 可能有雷。`,'rejected'); return;
     }
-    for(const i of cells) feedback.clearRejection(buttons[i]);
+    for(const i of cells) feedback.clearRejection(boardView.buttons[i]);
     g.manual=batch;
     const confirmed=added.filter(i=>batch.marked.has(i));
     if(!confirmed.length) feedback.sound(from===undefined?'click':'erase');
@@ -941,7 +636,7 @@
     say('');
     g.current=g.verification=undefined; scheduleVerification();
     render();
-    for(const i of added) feedback.tile('ink',buttons[i]);
+    for(const i of added) feedback.tile('ink',boardView.buttons[i]);
     if(added.length) feedback.sound(!wasDone && g.manual.done?'ready':'ink');
   }
 
@@ -950,10 +645,7 @@
     dismissSearchResult();
     const task=run;
     const refreshProof=!auto&&proofVisible;
-    const safe=g.manual.cells('safe'), mines=g.manual.cells('mine');
-    const proven=new Set([...g.proven,...mines]);
-    const flags=new Set([...g.flags,...mines]);
-    for(const v of safe) flags.delete(v);
+    const {safe,mines,proven,flags}=gameModel.prepareCommit(g);
     if(safe.length) {
       say('正在开格并插旗…');
       const result=await ask('advance',{board:g.board,p:g.p,visible:g.visible,cells:safe,
@@ -963,16 +655,15 @@
         feedback.sound('rejected');
         say('未能更新棋盘，红色标记已保留。','error'); return false;
       }
-      Object.assign(g,{board:result.board,visible:result.visible,opened:g.opened+result.opened,judgment:null});
+      gameModel.applyAdvance(g,result);
       for(const i of result.cells??safe) flags.delete(i);
       discardOpenedMarks(g,result.cells??safe);
     }
-    feedback.handoff(inkDrawing);
+    feedback.handoff(boardOverlays.inkDrawing);
     g.proven=proven;
     g.flags=flags;
     discardOpenedMarks(g,safe);
-    g.manual=null;
-    g.notes.discardConfirmations();
+    gameModel.resetConfirmation(g);
     g.current=g.verification=undefined; scheduleVerification();
     const won=g.opened===g.visible.length-g.board.mines;
     clearHint(!won && proofVisible);
@@ -1026,73 +717,13 @@
     if(!proofVisible) return;
     proofMode=weak?'focus':'hint';
     updateProofButtons();
-    const panel=$('proof'), m=a.move;
-    const selectedClues=m?.sources.length;
-    if(game.selectedClues!==selectedClues) {
-      game.selectedClues=selectedClues;
+    const selectedClues=a.move?.sources.length;
+    if(shownProofClues!==selectedClues) {
+      shownProofClues=selectedClues;
       showVerification();
     }
     clearProofHover();
-    panel.replaceChildren();
-    if (!m) {
-      game.highlight = null;
-      panel.textContent = a.status === 'confirmed' && game.manual?.done ? '本轮已标记完毕，可以开格并插旗。'
-        : a.status === 'confirmed' ? '本轮已无新的确定格。'
-        : a.status === 'error' ? '推理提示计算失败，请重试。'
-        : a.status === 'minimum-unavailable' ? '本次未能完成最少线索验证。'
-        : a.status === 'batch-unavailable' ? '本次未能为这组线索的全部结论写出技巧证明。' : '现有技巧未找到下一步。';
-    } else {
-      const sources=[...new Set([...a.prior.flatMap(p=>p.sources),...m.sources])];
-      const safe=m.safe.filter(v=>!game.manual?.marked.has(v));
-      const mines=m.mines.filter(v=>!game.manual?.marked.has(v) && !game.flags.has(v));
-      const weights=new Map(), stepsList=weak?null:steps(game,m,weights);
-      game.highlight = {sources,safe:weak?[]:safe,mines:weak?[]:mines,weights};
-      const card=element('article','proof-card');
-      const top=element('div','proof-top');
-      top.append(element('h3','',weak?'相关线索':'本步结论'));
-      if (!weak) {
-        for(const [vs,kind,label] of [[safe,'safe','安全'],[mines,'mine','必雷']]) if(vs.length) {
-          const targets=element('div',`proof-chips targets ${kind}`);
-          targets.append(element('strong','target-label',label),...regionChips(game,vs,label,weights));
-          top.append(targets);
-        }
-      }
-      const body=element('div','proof-body'), clues=element('div','proof-chips clues');
-      const tokens=ss=>ss.slice().sort((a,b)=>a-b).map(s=>chip(game,s,s<0?'总雷数':`${coord(s)} · ${game.visible[s]}`));
-      clues.append(...tokens(weak?sources:m.sources));
-      body.append(element('p','proof-caption',`最少 ${m.sources.length} 条线索`));
-      if (weak) body.append(clues);
-      if (!weak) {
-        body.append(stepsList);
-        if(a.prior.length) {
-          const prior=element('div','proof-detail');
-          const toggle=element('button','proof-detail-toggle','本步之前证实的旗子');
-          toggle.type='button';
-          toggle.setAttribute('aria-controls','priorProof');
-          toggle.setAttribute('aria-expanded','false');
-          const fold=element('div','prior-fold');
-          fold.id='priorProof';
-          fold.inert=true;
-          const content=element('div','prior-content');
-          toggle.onclick=()=>{
-            fold.inert=!fold.inert;
-            toggle.setAttribute('aria-expanded',String(!fold.inert));
-          };
-          fold.append(content);
-          for(const p of a.prior) {
-            const previousWeights=new Map(), previousSteps=steps(game,p,previousWeights);
-            const targets=element('div','proof-chips targets mine');
-            targets.append(element('strong','target-label','必雷'),...regionChips(game,p.mines,'必雷',previousWeights));
-            content.append(targets,previousSteps);
-          }
-          prior.append(toggle,fold);
-          body.append(prior);
-        }
-      }
-      card.append(top,body);
-      panel.append(card);
-    }
-    panel.scrollTop=0;
+    proofHighlight=reasonView.display(game,a,weak);
     render();
   }
 
@@ -1265,46 +896,28 @@
 
   function setMode(next) {
     editing=next;
-    $('gameMode').setAttribute('aria-pressed',String(!next));
-    $('editMode').setAttribute('aria-pressed',String(next));
-    $('settings').hidden=next;
-    if(next) setRadial('selection',false);
-    $('selectionMenu').hidden=next;
-    for(const id of ['editorSettings','editTools','playPosition']) $(id).hidden=!next;
-  }
-
-  function copyPosition(g) {
-    const position=seeds.decode(seeds.encode(g));
-    position.notes[1]=[...g.notes.layers.blue];
-    position.notes[2]=[...g.notes.layers.archivedBlue];
-    return position;
+    controlsView.showMode(next,()=>setRadial('selection',false));
   }
 
   function mountDraft(position) {
-    draft=position;
-    $('editWidth').value=position.board.w;
-    $('editHeight').value=position.board.h;
-    $('draftMines').max=position.visible.length;
-    $('draftMines').value=position.board.mines;
+    editorModel.draft=position;
     draftMinesValid=true;
-    $('mineTools').hidden=position.numbers;
-    $('numberTools').hidden=!position.numbers;
-    for(const button of $('editTools').querySelectorAll('[data-draft]')) button.setAttribute('aria-pressed',String((button.dataset.draft==='numbers')===position.numbers));
+    controlsView.showDraft(position);
     mount(position);
   }
 
   function switchMode(next) {
     if(editing===next || generation.searching || gameRequests.busy || auto) return;
     if(next) {
-      let position=draft;
+      let position=editorModel.draft;
       if(!position) try {
         const w=$('width').valueAsNumber, h=$('height').valueAsNumber;
         position=positionGame(game ? copyPosition(game) : seeds.dimensionsOk(w,h) ? seeds.create(w,h) :
           seeds.create(Number($('width').defaultValue),Number($('height').defaultValue)));
       } catch(error) {say(error instanceof RangeError?'浏览器无法分配此棋盘，请缩小尺寸。':error.message,'error');return;}
-      parkedGame=game;
+      editorModel.parkedGame=game;
       setMode(next); mountDraft(position);
-    } else {setMode(next);draftMinesValid=true;mount(parkedGame);}
+    } else {setMode(next);draftMinesValid=true;mount(editorModel.parkedGame);}
     say('');
   }
 
@@ -1314,81 +927,28 @@
     catch(error) {say(error instanceof RangeError?'浏览器无法分配此棋盘，请缩小尺寸。':error.message,'error');}
   }
 
-  function resizeDraftTo({w,h},blank) {
-    const old=game.board, translate=i=>{
-      const x=i%old.w, y=Math.floor(i/old.w);
-      return x<w && y<h ? y*w+x : -1;
-    };
-    const bits=Array(w*h).fill(0);
-    if(!blank) for(let i=0;i<old.bombs.length;i++) {
-      const at=translate(i);
-      if(at>=0) bits[at]=Number(old.bombs[i])+2*Number(game.visible[i]>=0)+4*Number(game.flags.has(i));
-    }
-    let next;
-    if(game.numbers) {
-      const digits=Array(w*h).fill('.'), flags=[];
-      if(!blank) for(const [i,n] of game.visible.entries()) {
-        const at=translate(i);
-        if(at<0) continue;
-        if(n>=0) digits[at]=String(n);
-        else if(game.flags.has(i)) flags.push(at);
-      }
-      next=seeds.numbers(w,h,blank?0:Math.min(old.mines,w*h),digits.join(''),flags);
-    } else next=seeds.create(w,h,bits.join(''));
-    if(!blank) next.notes=noteColors.map(color=>[...game.notes.layers[color]].flatMap(([i,note])=>{
-      const at=translate(i);
-      return at>=0 ? [[at,note]] : [];
-    }));
-    mountDraft(positionGame(next));
+  function resizeDraftTo(dimensions,blank) {
+    mountDraft(positionGame(editorModel.resize(game,dimensions,blank)));
     say(blank?'已新建空白局面。':'已调整棋盘尺寸。');
   }
 
   function editCell(i,marking=false,value=digit) {
     if(!editing || gameRequests.busy) return;
-    const g=game, {board:b}=g, n=g.visible[i], tool=marking?'flag':g.numbers?'number':editTool;
-    g.focus=i;
-    if(tool==='flag') {
-      if(n>=0) {feedback.sound('click');return;}
-      const removed=g.flags.delete(i);
-      if(!removed) g.flags.add(i);
-      feedback.sound(removed?'erase':'flag');
-      refreshDraftMarks();
-      render(); return;
-    }
-    if(tool==='number') {
-      if(n===value) {feedback.sound('click');return;}
-      g.visible[i]=value;
-      feedback.sound(value<0?'erase':'ink');
-    } else if(tool==='mine') {
-      b.bombs[i]=!b.bombs[i];
-      feedback.sound(b.bombs[i]?'ink':'erase');
-      const delta=b.bombs[i]?1:-1;
-      b.mines+=delta; g.p.mines=b.mines;
-      if(b.bombs[i]) g.visible[i]=-1;
-      for(const v of b.ns[i]) {
-        b.clues[v]+=delta;
-        if(g.visible[v]>=0) g.visible[v]=b.clues[v];
-      }
-      boardSize();
-    } else if(b.bombs[i]) {feedback.sound('rejected');say('有雷的格子不能设为已开。','error');return;}
-    else {
-      if(n>=0) g.visible[i]=-1;
-      else engine.reveal(b,g.visible,i,g.flags);
-      feedback.sound(n>=0?'erase':'open');
-    }
-    if(n<0 && g.visible[i]>=0) discardOpenedMarks(g,g.visible.flatMap((value,cell)=>value>=0?[cell]:[]));
-    b.opening=g.visible.flatMap((v,at)=>v>=0?[at]:[]);
-    b.first=b.opening[0]??0;
-    g.opened=g.visible.filter(value=>value>=0).length;
-    g.verification=g.current=g.witness=undefined;
+    const tool=marking?'flag':game.numbers?'number':editTool;
+    const result=editorModel.edit(game,i,tool,value);
+    if(result.status==='unchanged') {feedback.sound('click');return;}
+    if(result.status==='blocked') {feedback.sound('rejected');say('有雷的格子不能设为已开。','error');return;}
+    feedback.sound(result.sound);
+    if(result.status==='flag') {refreshDraftMarks();render();return;}
+    if(tool==='mine') boardView.showSize(game);
+    discardOpenedMarks(game,result.opened);
     scheduleVerification(); render(); say('');
   }
 
   function discardOpenedMarks(g,cells) {
     if(!cells.length) return;
     input.endStroke();
-    for(const i of cells) g.flags.delete(i);
-    g.notes.discardCells(cells);
+    gameModel.discardOpenedMarks(g,cells);
     input.history();
   }
 
@@ -1595,8 +1155,8 @@
   $('editorSettings').onsubmit=e=>{e.preventDefault();resizeDraft(false);};
   $('blankPosition').onclick=()=>resizeDraft(true);
   $('copyGamePosition').onclick=()=>{
-    if(!parkedGame) return;
-    mountDraft(positionGame(copyPosition(parkedGame)));
+    if(!editorModel.parkedGame) return;
+    mountDraft(positionGame(copyPosition(editorModel.parkedGame)));
     say('已复制当前游戏局面。');
   };
   $('editTools').onclick=e=>{
@@ -1606,7 +1166,7 @@
       const {w,h,mines}=game.board;
       if(mode==='numbers') {
         const position=seeds.numbers(w,h,mines,game.visible.map(n=>n<0?'.':n).join(''),[...game.flags]);
-        position.notes=noteColors.map(color=>[...game.notes.layers[color]]);
+        position.notes=gameModel.noteEntries(game);
         mountDraft(positionGame(position));
       } else {
         if(!game.witness) {
@@ -1624,10 +1184,8 @@
   };
   $('draftMines').oninput=()=>{
     const value=$('draftMines').valueAsNumber;
-    draftMinesValid=Number.isInteger(value) && value>=0 && value<=game.visible.length;
-    if(draftMinesValid) game.board.mines=game.p.mines=value;
-    game.witness=game.current=game.verification=undefined;
-    boardSize(); render(); scheduleVerification(); controls();
+    draftMinesValid=editorModel.setMineCount(game,value);
+    boardView.showSize(game); render(); scheduleVerification(); controls();
   };
   function chooseDigit(value) {
     digit=value;
@@ -1646,7 +1204,7 @@
     try {
       const g=await prepareGame(copyPosition(game),undefined,game.witness);
       setMode(false);
-      parkedGame=undefined;
+      editorModel.parkedGame=undefined;
       mount(g);
       say('已将编辑局面载入游戏。','success');
     } catch(error) {say(error.message,'error');}
@@ -1660,8 +1218,7 @@
     const result=await ask('expand',{board,visible:g.visible,flags:editing?[]:g.flags});
     if(g!==game) return;
     if(result?.status!=='expanded') {say('未能确定最少开扩格数，局面未改变。','error');return;}
-    g.manual=null;
-    g.notes.discardConfirmations();
+    gameModel.resetConfirmation(g);
     g.visible=result.visible; g.opened+=result.cells.length;
     discardOpenedMarks(g,result.cells);
     if(editing) {
@@ -1720,7 +1277,7 @@
       dismissSearchResult();
       if(editing) refreshDraftMarks();
       render();
-      if(cells.length) feedback.tile(editing?'ink':'blue',buttons[cells.at(-1)]);
+      if(cells.length) feedback.tile(editing?'ink':'blue',boardView.buttons[cells.at(-1)]);
       feedback.sound(kind,cells.length || 1);
     }
   },
@@ -1818,11 +1375,11 @@
   selectionReadout.addEventListener('pointerover',e=>updateSelectionHover(e,e.target));
   selectionReadout.addEventListener('pointerout',e=>updateSelectionHover(e,e.relatedTarget));
   selectionReadout.addEventListener('focusin',e=>{
-    focusedSelection=selectionTarget(e.target);
+    focusedSelection=selectionView.tokenAt(e.target);
     updateProofPreview();
   });
   selectionReadout.addEventListener('focusout',e=>{
-    focusedSelection=selectionTarget(e.relatedTarget);
+    focusedSelection=selectionView.tokenAt(e.relatedTarget);
     updateProofPreview();
   });
   const selectionLauncher=$('selectionMenu');
@@ -2006,7 +1563,7 @@
       case 'ArrowLeft': if(i%w) n--; break;
       case 'ArrowRight': if(i%w<w-1) n++; break;
       case 'ArrowUp': if(i>=w) n-=w; break;
-      case 'ArrowDown': if(i+w<buttons.length) n+=w; break;
+      case 'ArrowDown': if(i+w<boardView.buttons.length) n+=w; break;
       case 'f': case 'F':
         e.preventDefault();
         dismissSearchResult();
@@ -2017,7 +1574,7 @@
     }
     e.preventDefault();
     if(n!==i) dismissSearchResult();
-    game.focus=n; buttons[i].tabIndex=-1; buttons[n].tabIndex=0; buttons[n].focus();
+    game.focus=n; boardView.buttons[i].tabIndex=-1; boardView.buttons[n].tabIndex=0; boardView.buttons[n].focus();
   });
   setInterval(time,250);
   controls();

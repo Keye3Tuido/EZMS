@@ -1,0 +1,16 @@
+schema_version: '1.0'
+purpose: 按界面职责呈现局面、工具和操作结果
+contents_summary: 棋盘、覆盖层、笔迹、推导面板、选区词条和控制区各自管理对应的页面节点。应用提供状态、输入回调和渲染所需的辅助能力。
+files:
+- name: board-overlays.js
+  purpose: 按棋盘几何绘制笔迹及选区与推导高亮
+- name: board-view.js
+  purpose: 创建棋盘坐标和格子，显示数字、旗标、当前焦点及计时
+- name: controls-view.js
+  purpose: 同步表单、工具可用性、搜索状态和操作提示
+- name: ink-view.js
+  purpose: 生成笔迹路径和标记符号，并定位棋盘格子
+- name: reason-view.js
+  purpose: 呈现推导公式和推理指标，返回供棋盘显示的高亮数据
+- name: selection-view.js
+  purpose: 渲染选区表达式词条并提供悬停与焦点对应的预览数据

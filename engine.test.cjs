@@ -1544,7 +1544,8 @@ test('单路和并行生成都保留原目标，辅助线程失效时启用候�
   const {runInNewContext}=require('node:vm');
   const source=readFileSync(`${__dirname}/app.js`,'utf8');
   const block=(start,end)=>source.slice(source.indexOf(start),source.indexOf(end));
-  const handlers=`function controls(){${block("    const cancel=$","    for (const id of ['gameMode'")}}`+
+  const handlers=`const searchView=makeControlsView({$});
+    function controls(){searchView.showSearchControls(generation.searching,generation.candidate);}`+
     block('  const generation=makeGenerationController(', '  function mountGenerated(')+
     block("  $('useCandidate').onclick", "  $('restart').onclick");
   const p={w:5,h:5,minAverage:2,minMultiPercent:30,minPeakClues:15};
@@ -1556,7 +1557,8 @@ let auto, game;
 const gameRequests={busy:false};
 generate();
 ({candidate:()=>generation.candidate,searching:()=>generation.searching})`,{
-      engine, makeGenerationController:require('./generation-controller'), navigator:{hardwareConcurrency}, readSettings:()=>p, stopAuto(){}, say(){},
+      engine, makeGenerationController:require('./generation-controller'), makeControlsView:require('./view/controls-view'),
+      navigator:{hardwareConcurrency}, readSettings:()=>p, stopAuto(){}, say(){},
       $(id){
         if(!elements.has(id)) elements.set(id,{querySelector:()=>null,classList:{toggle(){}},setAttribute(){}});
         return elements.get(id);

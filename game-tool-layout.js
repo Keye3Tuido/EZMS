@@ -1,38 +1,62 @@
 // 把圆弧几何应用到页面，并为紧凑布局中的推导浮窗留出空间。
-function makeGameToolLayout({$,radialLayout,viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,
-  openReasonPanel,compactReason,isProofVisible,isReasonCollapsed,isEditing}) {
-  let reasonMenuBounds;
+function makeGameToolLayout({$,radialLayout,proofLayout,viewport,header,reasonSlot,proofPane,reasonContent,reasonStatus,
+  openReasonPanel,compactReason,isProofVisible,isReasonCollapsed,isEditing,collapseReasonTools}) {
+  let reasonMenuBounds, reasonButtons=[];
 
   function positionProofWindow() {
-    if(!compactReason.matches || !isProofVisible()) return;
-    const top=document.documentElement.dataset.fullscreenMode ? header.getBoundingClientRect().bottom+8 : 12;
-    const minRoom=proofPane.querySelector('.panel-head').offsetHeight+24;
-    const gap=10;
-    // Use the settled layout, even while the circular buttons are in motion.
-    const {left:fanLeft,right:fanRight,top:fanTop}=$('reasonFlower').inert
-      ? $('toolDock').getBoundingClientRect() : reasonMenuBounds;
-    const aboveFan=fanTop-gap;
-    const shortLandscape=window.innerHeight <= 500 && window.innerWidth > window.innerHeight;
-    const tight=aboveFan-top<minRoom;
-    const rightRoom=window.innerWidth-fanRight;
-    const sideRoom=Math.max(fanLeft,rightRoom);
-    const side=(shortLandscape && sideRoom>=230) || (tight && sideRoom>=170);
-    const useRight=side && rightRoom>fanLeft;
-    proofPane.classList.toggle('proof-close-left',tight && !side);
-    proofPane.style.setProperty('--proof-left',useRight?`${fanRight+gap}px`:'12px');
-    if(side && !useRight) proofPane.style.setProperty('--proof-right',`${window.innerWidth-fanLeft+gap}px`);
-    else proofPane.style.removeProperty('--proof-right');
-    const bottom=side?window.innerHeight-12:Math.max(top+minRoom,aboveFan);
+    if(proofPane.inert) return;
+    const fullscreen=!!document.documentElement.dataset.fullscreenMode;
     const rect=reasonSlot.getBoundingClientRect();
-    const above=Math.min(bottom,rect.top-8)-top;
-    const below=bottom-Math.max(top,rect.bottom+8);
-    // Leave the current reasoning visible even when the page is scrolled to it.
-    const useBelow=above<Math.min(180,(bottom-top)*.45) && below>above;
-    const y=useBelow?Math.max(top,rect.bottom+8):top;
-    const room=useBelow?below:above;
-    // Leave room for the title and a scrollable strip on short screens.
-    proofPane.style.setProperty('--proof-top',`${Math.min(y,Math.max(top,bottom-minRoom))}px`);
-    proofPane.style.setProperty('--proof-room',`${Math.max(minRoom,room)}px`);
+    if(!compactReason.matches) {
+      $('closeProof').style.removeProperty('left');
+      $('closeProof').style.removeProperty('top');
+      proofPane.classList.remove('proof-close-compact');
+      // Keep the sidebar height stable while the surrounding page scrolls.
+      const scroll=fullscreen ? header.parentElement.scrollTop : window.scrollY;
+      proofPane.style.setProperty('--proof-start',`${Math.max(0,rect.top+scroll)}px`);
+      return;
+    }
+    const dock=$('toolDock');
+    const menuClosed=$('reasonFlower').inert;
+    const placement=proofLayout.positionFloatingProof({
+      width:window.innerWidth,height:window.innerHeight,
+      headerBottom:fullscreen?header.getBoundingClientRect().bottom:undefined,
+      reasonSlot:rect,
+      tools:menuClosed?dock.getBoundingClientRect():reasonMenuBounds,
+      verticalDock:menuClosed && getComputedStyle(dock).flexDirection==='column'
+    });
+    proofPane.classList.toggle('proof-close-left',placement.closeOnLeft);
+    const {left,right,top,room}=placement;
+    proofPane.style.setProperty('--proof-left',`${left}px`);
+    if(right===undefined) proofPane.style.removeProperty('--proof-right');
+    else proofPane.style.setProperty('--proof-right',`${right}px`);
+    proofPane.style.setProperty('--proof-top',`${top}px`);
+    proofPane.style.setProperty('--proof-room',`${room}px`);
+    positionProofClose();
+  }
+
+  function positionProofClose() {
+    const button=$('closeProof');
+    const heading=proofPane.querySelector('.panel-head').getBoundingClientRect();
+    const title=proofPane.querySelector('h2').getBoundingClientRect();
+    const expanded=!$('reasonFlower').inert;
+    const obstacles=[...$('toolDock').querySelectorAll('.launcher:not([hidden])')]
+      .filter(button=>!expanded || button!==$('reasonMenu')).map(button=>button.getBoundingClientRect());
+    if(expanded) obstacles.push(...reasonButtons);
+    function move(x,y) {
+      button.style.left=`${x}px`;
+      button.style.top=`${y}px`;
+    }
+    const findSlot=()=>proofLayout.findCloseButtonOffset({heading,title,button:button.getBoundingClientRect(),obstacles});
+    move(0,0);
+    proofPane.classList.remove('proof-close-compact');
+    let slot=findSlot();
+    if(!slot) {
+      proofPane.classList.add('proof-close-compact');
+      slot=findSlot();
+    }
+    if(slot) move(slot.x,slot.y);
+    else if(expanded) collapseReasonTools();
   }
 
   function syncProofLayout() {
@@ -76,11 +100,18 @@ function makeGameToolLayout({$,radialLayout,viewport,header,reasonSlot,proofPane
     const positioned=radialLayout.arrange(items.map(item=>({item,width:item.offsetWidth,height:item.offsetHeight})),{
       width:viewport.clientWidth,height:viewport.clientHeight,originX,originY,obstacles,launcher:anchor,kind,header:stickyHeader
     });
-    if(kind==='reason') reasonMenuBounds={
-      left:originX+positioned.center.x+positioned.bounds.left,
-      right:originX+positioned.center.x+positioned.bounds.right,
-      top:originY+positioned.center.y+positioned.bounds.top
-    };
+    if(kind==='reason') {
+      reasonMenuBounds={
+        left:originX+positioned.center.x+positioned.bounds.left,
+        right:originX+positioned.center.x+positioned.bounds.right,
+        top:originY+positioned.center.y+positioned.bounds.top
+      };
+      reasonButtons=[...positioned.items,{width:anchor.width,height:anchor.height,
+        screenX:positioned.center.x,screenY:positioned.center.y}].map(({width,height,screenX,screenY})=>({
+        left:originX+screenX-width/2,right:originX+screenX+width/2,
+        top:originY+screenY-height/2,bottom:originY+screenY+height/2
+      }));
+    }
     // A fixed element's origin may include a reserved scrollbar gutter.
     const frame=flower.getBoundingClientRect(), style=getComputedStyle(flower);
     const [movingX=0,movingY=0]=style.translate.split(' ').map(value=>parseFloat(value)||0);
@@ -141,6 +172,7 @@ function makeGameToolLayout({$,radialLayout,viewport,header,reasonSlot,proofPane
     });
     const toolLayoutObserver=new ResizeObserver(refreshOpenRadials);
     toolLayoutObserver.observe(header);
+    toolLayoutObserver.observe(viewport.querySelector('.setup-bar'));
     toolLayoutObserver.observe(reasonSlot);
   }
   return {layoutRadial,positionProofWindow,syncProofLayout,observe};

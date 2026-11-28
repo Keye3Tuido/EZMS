@@ -1,6 +1,6 @@
 schema_version: '1.0'
 purpose: 离线经典无猜扫雷游戏
-contents_summary: 页面协调对局与编辑器，独立模块控制搜索、生成推导公式和布置工具。引擎统一组装棋盘规则、公开约束、技巧推理和棋局生成。
+contents_summary: 应用协调对局和编辑器的交互与后台请求，Model 提供局面与标记状态，View 负责棋盘和工具显示。引擎组装棋盘规则、公开约束、技巧推理和棋局生成。
 entry: index.html
 files:
 - name: LICENSE
@@ -8,7 +8,7 @@ files:
 - name: README.md
   purpose: 游戏操作、生成规则与难度指标说明
 - name: app.js
-  purpose: 组装页面依赖，协调对局、编辑器、操作提示和棋盘渲染
+  purpose: 组装 Model、View 和服务，协调对局、编辑器、事件与后台请求
   details: 游戏与编辑器共享种子和公开局面判定。编辑器分别核验红标、旗子和无猜通关。对局在确认全部结论后提交，过期的提示结果会丢弃。公式行和选区文字可联动棋盘高亮。编辑时保留原棋局选区，重开时清空选区、标记及历史。复杂选区在后台整理表达式并精确计数，过期任务可取消。搜索结束后结果保留至首次棋盘操作。
   depends_on:
   - target: engine.js
@@ -20,7 +20,11 @@ files:
   - target: generation-controller.js
     reason: 管理并行搜索的状态、候选和 Worker 生命周期
   - target: board-input.js
-    reason: 复用手动确认批次、红蓝标记历史、记号图形和棋盘笔迹路径
+    reason: 管理画笔输入与标记工具状态
+  - target: model
+    reason: 创建与变换游戏和编辑器局面，维护确认与标记数据
+  - target: view
+    reason: 将应用状态和用户操作结果呈现在棋盘、推理和控制区
   - target: position-seed.js
     reason: 复用局面编码、解码和结构检查
   - target: game-feedback.js
@@ -30,14 +34,21 @@ files:
   - target: radial-layout.js
     reason: 为页面工具布局提供纯几何算法
   - target: game-tool-layout.js
-    reason: 为圆弧按钮和推导面板分配视口空间并保持焦点
+    reason: 将计算结果应用到圆弧按钮和推导面板并保持焦点
+  - target: proof-layout.js
+    reason: 为推导面板适配层注入与页面无关的布局规则
   - target: game-requests.js
     reason: 发起提示、判定、开格和开扩等请求，并同步界面忙碌状态
   - target: region-selection.js
-    reason: 合并选区系数并为选区和推导生成轮廓
+    reason: 管理选区系数历史并为选区和推导生成轮廓
+  - target: selection-expression.js
+    reason: 为选区模块和后台线程提供同一套表达式合并规则
 - name: board-input.js
-  purpose: 收集手动求解确认，管理编辑器红笔及游戏红蓝标记的共用历史，生成可闭合的连格笔迹
-  details: 根据公开局面分类核对旗和红标，恢复未提交的正确红标。画笔只在盖住格落笔。取交集使用所有层级的蓝标初始化或抵消绿色标记，并清空普通蓝标。
+  purpose: 将指针与按键交互转成标记操作，管理画笔工具、长按和撤销重做按钮
+  details: Node.js 入口保留既有导出，转发至标记模型和笔迹视图。
+  depends_on:
+  - target: view/ink-view.js
+    reason: 显示与棋盘笔迹一致的标记符号
 - name: engine-board.js
   purpose: 提供基础棋盘规则与可复现的随机序列
   details: 定义八邻域、初始雷位、自动展开、数字格操作和种子随机数。
@@ -112,21 +123,36 @@ files:
   purpose: 管理对局和编辑器共用的单请求 Worker 通道
   details: 收到计算结果或传输失败后解除忙碌，失败和取消时回收旧线程并忽略迟到消息。
 - name: game-tool-layout.js
-  purpose: 测量圆弧按钮和推导窗的可用空间，管理侧栏和浮窗切换及焦点恢复
+  purpose: 测量视口和控件，将布局结果应用到圆弧及推导窗，管理侧栏与浮窗切换和焦点恢复
   depends_on:
   - target: radial-layout.js
-    reason: 使用页面注入的几何算法设置按钮、轨迹和面板位置
+    reason: 使用注入的几何算法设置圆弧按钮和轨迹
+  - target: proof-layout.js
+    reason: 使用注入的布局规则布置浮窗及避让关闭按钮
 - name: generation-controller.js
   purpose: 调度搜索线程、汇总进度和最优候选，并报告搜索结果
   details: 通过注入的并发策略、随机数与 Worker 接口启动搜索。第一路保留原目标，异常退出时补位。首个达标结果结束整组搜索，异常后可保留候选供手动载入。
 - name: index.html
   purpose: 离线游戏入口，定义生成设置、编辑器、局面种子对话框和棋盘证明区域
+- name: model.test.cjs
+  purpose: 脱离浏览器核验回合准备及提交和数字草稿尺寸变换
+  depends_on:
+  - target: model
+    reason: 直接调用棋局及编辑器状态操作
 - name: position-seed.js
   purpose: 使用无前缀 Base92 读写雷图局面和数字草稿，保存已开格、旗子和红标，不存蓝标
   details: 红标字段仅保留未开格上的记录，导入和导出时都忽略已开格上的红标。
 - name: proof-format.js
   purpose: 保留公式的比较关系，格式化负常数换位、组合变量与区域坐标
   details: 将连续加减合为一式，保留取整边界；按格区分相消项、正项和负项。按原式的上下界识别可直接定值的格子，供推导面板合并结论并裁剪未使用的步骤。
+- name: proof-layout.js
+  purpose: 根据视口、推理区域和工具坐标计算浮窗位置及关闭按钮的可点击位置
+  details: 返回 CSS 像素坐标和正文可用空间。关闭按钮找不到空位时由页面决定如何回退。
+- name: proof-layout.test.cjs
+  purpose: 核验狭窄视口的正文空间、按钮避让和无空位情况
+  depends_on:
+  - target: proof-layout.js
+    reason: 直接验证视口坐标与布局结果
 - name: proof-panel.test.cjs
   purpose: 用导入局面核验推导公式、引用编号与结论高亮，并验证请求取消
   depends_on:
@@ -155,16 +181,24 @@ files:
   - target: radial-layout.js
     reason: 验证响应式菜单几何计算
 - name: region-selection.js
-  purpose: 合并正负选区并寻找更短的区域表达式
-  details: 选区排除公开已知格，通过独立历史同时撤销和重做区域与线索的系数。表达式优先提取完整线索邻域，再合并矩形，最后列出剩余单格，正系数项排在前。带孔的矩形可用一个区域减去缺口表示。轮廓保留内部空洞，在不与另一颜色相交时连接对角区域。
+  purpose: 管理选区系数、历史、已知格和棋盘轮廓
+  details: 独立历史同时恢复格子、线索与矩形的系数。轮廓保留内部空洞，在不与另一颜色相交时连接对角区域。
   depends_on:
   - target: engine.js
-    reason: 读取数字格的八邻域
+    reason: 使用注入的八邻域函数定位数字格的选区
+  - target: selection-expression.js
+    reason: 共享系数相消、已知格过滤和表达式整理规则
 - name: region-selection.test.cjs
   purpose: 核验选区相消、区域简化、撤销重做及轮廓
   depends_on:
   - target: region-selection.js
     reason: 验证选区运算规则
+- name: selection-expression.js
+  purpose: 根据格子系数、公开线索和已知格整理等价选区表达式
+  details: 优先减少总项数，在预算内尝试用完整线索邻域和矩形替代离散格。正系数项排在前。页面和后台线程共用此实现。
 - name: styles.css
   purpose: 定义响应式布局、棋盘和推导外观、公式高亮及悬浮圆弧几何
   details: 棋盘按可用宽高缩放方格、坐标、数字和图标，达到最小格尺寸时允许棋盘内滚动。桌面推导与当前推理原位切换；窄屏推导独立浮动，当前推理在棋盘下方。搜索状态、操作提示和选区使用独立卡片，按内容和可用宽度排布，隐藏的卡片不占空间。长选区内容可在读数内滚动。短横屏推导浮窗为右侧推理工具留出空间。全屏沿用屏幕方向和原有工具布局。
+directories:
+- name: model
+- name: view

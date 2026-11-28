@@ -7,6 +7,7 @@ const engine = require('./engine');
 const format = require('./proof-format');
 const makeProofRenderer = require('./proof-renderer');
 const makeGameRequests = require('./game-requests');
+const makeGameModel = require('./model/game-model');
 const seeds = require('./position-seed')(engine.adj);
 const source = readFileSync(`${__dirname}/app.js`, 'utf8');
 
@@ -289,7 +290,7 @@ test('提交后自动刷新的线索可立即关闭，取消后不渲染旧结�
     const worker={postMessage(){},addEventListener(){},terminate(){events.push('terminate');}};
     const gameRequests=makeGameRequests({openWorker:()=>worker,onBusyChange:controls});
     const {cancel:cancelPlayRequest}=gameRequests;
-    let proofVisible=true, proofMode='focus', proofRequest, proofReturn;
+    let proofVisible=true, proofMode='focus', proofRequest, proofReturn, proofHighlight, shownProofClues;
     const game={state:'playing',visible:[0,-1,-1],opened:1,board:{mines:1},
       flags:new Set(),proven:new Set(),notes:{discardConfirmations(){}},
       manual:{done:true,cells:kind=>kind==='mine'?[1]:[]}};
@@ -298,7 +299,8 @@ test('提交后自动刷新的线索可立即关闭，取消后不渲染旧结�
     const commit=commitBatch(game);
     ({commit,toggleHint,visible:()=>proofVisible,pending:()=>gameRequests.busy && worker.onmessage ? data=>worker.onmessage({data}) : null})`
   ].join('\n'),{filename:'app.js'}).runInNewContext({
-    events, makeGameRequests, dismissSearchResult(){}, feedback:{handoff(){},sound(){}}, inkDrawing:{}, discardOpenedMarks(){},
+    events, makeGameRequests, gameModel:makeGameModel({engine,seeds}), dismissSearchResult(){},
+    feedback:{handoff(){},sound(){}}, boardOverlays:{inkDrawing:{}}, discardOpenedMarks(){},
     scheduleVerification(){}, clearProofHover(){}, proofPanel:{replaceChildren(){}}, element(){},
     say(){}, render(){}, controls(){}, focusProofReturn(){}, display:(_result,weak)=>events.push(weak)
   });

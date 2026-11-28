@@ -6,25 +6,36 @@
   <meta http-equiv="Cache-Control" content="no-store">
   <title>无猜扫雷EZMS</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="styles.css?v=20261128-5">
-  <link rel="stylesheet" href="game-motion.css?v=20261127-2">
-  <script defer src="region-selection.js?v=20261127-8"></script>
+  <link rel="stylesheet" href="styles.css?v=20261128-10">
+  <link rel="stylesheet" href="game-motion.css?v=20261128-1">
+  <script defer src="selection-expression.js?v=20261128-1"></script>
+  <script defer src="region-selection.js?v=20261128-4"></script>
   <script defer src="radial-layout.js?v=20261128-3"></script>
   <script defer src="engine-board.js?v=20261128-1"></script>
   <script defer src="engine-constraints.js?v=20261128-1"></script>
   <script defer src="engine-inference.js?v=20261128-1"></script>
   <script defer src="engine-generation.js?v=20261128-1"></script>
   <script defer src="engine.js?v=20261128-2"></script>
-  <script defer src="proof-format.js?v=20261128-1"></script>
+  <script defer src="proof-format.js?v=20261128-2"></script>
   <script defer src="proof-renderer.js?v=20261128-1"></script>
-  <script defer src="board-input.js?v=20261128-1"></script>
+  <script defer src="model/mark-model.js?v=20261128-1"></script>
+  <script defer src="view/ink-view.js?v=20261128-1"></script>
+  <script defer src="board-input.js?v=20261128-2"></script>
   <script defer src="position-seed.js?v=20261126-3"></script>
   <script defer src="game-feedback.js?v=20261126-8"></script>
   <script defer src="game-fullscreen.js?v=20261126-10"></script>
   <script defer src="generation-controller.js?v=20261128-1"></script>
-  <script defer src="game-tool-layout.js?v=20261128-2"></script>
+  <script defer src="proof-layout.js?v=20261128-1"></script>
+  <script defer src="game-tool-layout.js?v=20261128-6"></script>
   <script defer src="game-requests.js?v=20261128-2"></script>
-  <script defer src="app.js?v=20261128-12"></script>
+  <script defer src="model/game-model.js?v=20261128-1"></script>
+  <script defer src="model/editor-model.js?v=20261128-1"></script>
+  <script defer src="view/board-overlays.js?v=20261128-1"></script>
+  <script defer src="view/board-view.js?v=20261128-1"></script>
+  <script defer src="view/reason-view.js?v=20261128-1"></script>
+  <script defer src="view/controls-view.js?v=20261128-1"></script>
+  <script defer src="view/selection-view.js?v=20261128-1"></script>
+  <script defer src="app.js?v=20261128-17"></script>
 </head>
 <body>
   <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -41,6 +52,7 @@
     <symbol id="pen" viewBox="0 0 24 24"><path d="m4 20 4-1 11-11-3-3L5 16l-1 4Zm9-12 3 3"/></symbol>
     <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s4-6 10-6 10 6 10 6-4 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
     <symbol id="formulaIcon" viewBox="0 0 24 24"><path d="M18 5H6l6 7-6 7h12"/></symbol>
+    <symbol id="selectBoardIcon" viewBox="0 0 24 24"><path d="M5 5l14 14m-9 0h9v-9"/></symbol>
     <symbol id="selectionIcon" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="17" height="17" rx="1" stroke-dasharray="3 2"/></symbol>
     <symbol id="selectionAddIcon" viewBox="0 0 24 24"><path d="M15 8H4v12h12v-8" stroke-dasharray="2.5 2"/><path d="M20 1v6m-3-3h6"/></symbol>
     <symbol id="selectionSubtractIcon" viewBox="0 0 24 24"><path d="M15 8H4v12h12v-8" stroke-dasharray="2.5 2"/><path d="M17 4h6"/></symbol>
